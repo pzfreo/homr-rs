@@ -111,3 +111,24 @@ and contour, clefs, bar lines) and 151/151 for staff detection.
   (fused multiply-add again); the port matches Pyodide.
 - Decision: the input is the decoded image (BGR). Partsong hands homr a PNG
   it made itself (lossless), so decoding isn't part of parity.
+
+## Stage 4: transformer output -> MusicXML
+- Ported homr's EncodedSymbol and durations (exact fractions), the voice
+  clean-up (remove_duplicated_symbols: chord grouping, over-eager tuplet
+  removal, lower staff without a clef, duplicate pitches - including homr's
+  quirk that never replaces one - redundant clefs/keys/time signatures),
+  parse_staffs (_ensure_same_number_of_staffs with its periodic layout search,
+  voices, the upper/lower filter for non-grand staffs), the mapping of each
+  symbol's position back to the input image (canvas offset, resizes, crops,
+  inverse dewarp: point-in-triangle in float32 as numpy does it,
+  invertAffineTransform), and the whole MusicXML writer (measures, chords,
+  backups, voices rebalanced per measure, ties from slurs, tuplets, repeats,
+  voltas) with a minimal element tree that serialises like ElementTree.
+- tools/dump_decoder.py records natively what the transformer returned for
+  each staff (the models only run there); tools/pyodide_replay.mjs replays it
+  in Pyodide through homr's whole pipeline to its MusicXML.
+- **6 of 6 pages: MusicXML byte-identical** (masks + preprocessed page ->
+  page analysis -> staff images -> replayed symbols -> MusicXML, imgpos
+  comments included). 2 more dev pages (fix-1, fix-six-1) crash in upstream
+  homr itself with an AssertionError (a backup of zero duration) - a homr bug
+  Partsong already works around (_build_note_chord_without_zero_rests).

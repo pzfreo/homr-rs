@@ -112,9 +112,11 @@ fn span_and_optimal_points(staff: &Staff, img: &Gray) -> (Lines, Lines) {
     (span, optimal)
 }
 
-struct Tri {
+pub struct Tri {
     src: [[f32; 2]; 3],
     dst: [[f32; 2]; 3],
+    /// estimate(): getAffineTransform(src, dst), None for a degenerate triangle
+    mat: Option<[f64; 6]>,
 }
 
 fn degenerate(t: &[[f32; 2]; 3]) -> bool {
@@ -165,7 +167,9 @@ fn dewarp_triangles(img: &Gray, staff: &Staff) -> Option<Vec<Tri>> {
     let mut tris = Vec::new();
     for t in sub.triangle_list() {
         if let (Some(a), Some(b), Some(c)) = (find(t[0]), find(t[1]), find(t[2])) {
-            tris.push(Tri { src: [sp[a], sp[b], sp[c]], dst: [dp[a], dp[b], dp[c]] });
+            let (src, dst) = ([sp[a], sp[b], sp[c]], [dp[a], dp[b], dp[c]]);
+            let mat = if degenerate(&src) || degenerate(&dst) { None } else { Some(get_affine_transform(&src, &dst)) };
+            tris.push(Tri { src, dst, mat });
         }
     }
     Some(tris)
@@ -258,8 +262,84 @@ fn center_on_canvas(img: &Gray, size: (i64, i64)) -> Gray {
     out
 }
 
+/// What prepare_staff_image did, to map points on the canvas back to the page
+/// (its `to_page` chain).
+pub struct StaffMapping {
+    canvas_y_offset: i64,
+    before_canvas: (usize, usize),  // (h, w)
+    canvas_content: (usize, usize), // (h, w)
+    crop2: (i64, i64),
+    tris: Option<Vec<Tri>>,
+    crop1: (i64, i64),
+    page: (usize, usize),
+    resized: (usize, usize),
+}
+
+/// undo_resize(shape_before, shape_after) applied to a point
+fn undo_resize(p: (f64, f64), before: (usize, usize), after: (usize, usize)) -> (f64, f64) {
+    let sx = after.1 as f64 / before.1 as f64;
+    let sy = after.0 as f64 / before.0 as f64;
+    (p.0 / sx, p.1 / sy)
+}
+
+fn point_in_triangle(p: (f64, f64), t: &[[f32; 2]; 3]) -> bool {
+    let cross = |a: [f32; 2], b: [f32; 2]| -> f64 { ((b[0] - a[0]) * (p.1 as f32 - a[1]) - (b[1] - a[1]) * (p.0 as f32 - a[0])) as f64 };
+    let (d1, d2, d3) = (cross(t[0], t[1]), cross(t[1], t[2]), cross(t[2], t[0]));
+    let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+    let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+    !(neg && pos)
+}
+
+/// cv2.invertAffineTransform for a double matrix
+fn invert_affine(m: &[f64; 6]) -> [f64; 6] {
+    let d = m[0] * m[4] - m[1] * m[3];
+    let d = if d != 0.0 { 1.0 / d } else { 0.0 };
+    let (a11, a22, a12, a21) = (m[4] * d, m[0] * d, -m[1] * d, -m[3] * d);
+    let b1 = -a11 * m[2] - a12 * m[5];
+    let b2 = -a21 * m[2] - a22 * m[5];
+    [a11, a12, b1, a21, a22, b2]
+}
+
+impl StaffMapping {
+    /// PiecewiseAffineTransform.inverse_transform_point
+    fn undewarp(&self, p: (f64, f64)) -> (f64, f64) {
+        let Some(tris) = &self.tris else { return p };
+        for t in tris {
+            let Some(m) = &t.mat else { continue };
+            if !point_in_triangle(p, &t.dst) {
+                continue;
+            }
+            let inv = invert_affine(m);
+            let v = [p.0 as f32 as f64, p.1 as f32 as f64, 1.0f32 as f64];
+            return (inv[0] * v[0] + inv[1] * v[1] + inv[2] * v[2], inv[3] * v[0] + inv[4] * v[1] + inv[5] * v[2]);
+        }
+        p
+    }
+    /// staff_to_page: a point on the canvas to the page image
+    pub fn to_page(&self, p: (f64, f64)) -> (f64, f64) {
+        let p = (p.0 + 0.0, p.1 + (-self.canvas_y_offset) as f64);
+        let p = undo_resize(p, self.before_canvas, self.canvas_content);
+        let p = (p.0 + self.crop2.0 as f64, p.1 + self.crop2.1 as f64);
+        let p = self.undewarp(p);
+        let p = (p.0 + self.crop1.0 as f64, p.1 + self.crop1.1 as f64);
+        undo_resize(p, self.page, self.resized)
+    }
+}
+
+pub struct PreparedStaff {
+    pub canvas: Gray,
+    /// the staff in the coordinates of the cropped, scaled staff image
+    pub staff: Staff,
+    pub mapping: StaffMapping,
+}
+
 /// prepare_staff_image: the uint8 canvas the transformer reads for this staff.
 pub fn prepare_staff_image(staff: &Staff, image: &Gray, regions: &Regions) -> Result<Gray, String> {
+    Ok(prepare_staff(staff, image, regions)?.canvas)
+}
+
+/// prepare_staff_image with the transformed staff and the mapping back to the page.
+pub fn prepare_staff(staff: &Staff, image: &Gray, regions: &Regions) -> Result<PreparedStaff, String> {
     let u = unit_size(staff);
     let region = [
         py_int(staff.min_x - 2.0 * u),
@@ -274,13 +354,27 @@ pub fn prepare_staff_image(staff: &Staff, image: &Gray, regions: &Regions) -> Re
     let (cropped, tl) = crop(&resized, rf[0] - 10.0, rf[1] - 50.0, rf[2] + 10.0, rf[3] + 50.0);
     let step2 = [rf[0] - tl.0 as f64, rf[1] - tl.1 as f64, rf[2] - tl.0 as f64, rf[3] - tl.1 as f64];
     let staff2 = transform_staff(staff, tl.0 as f64 / scale, tl.1 as f64 / scale, scale)?;
-    let dewarped = match dewarp_triangles(&cropped, &staff2) {
-        Some(tris) => warp_image(&cropped, &tris),
+    let tris = dewarp_triangles(&cropped, &staff2);
+    let dewarped = match &tris {
+        Some(t) => warp_image(&cropped, t),
         None => cropped,
     };
-    let (mut cropped2, _) = crop(&dewarped, step2[0], step2[1], step2[2], step2[3]);
+    let (mut cropped2, tl2) = crop(&dewarped, step2[0], step2[1], step2[2], step2[3]);
     remove_black_contours(&mut cropped2, unit_size(&staff2));
-    Ok(center_on_canvas(&cropped2, dims))
+    let before_canvas = (cropped2.h, cropped2.w);
+    let canvas = center_on_canvas(&cropped2, dims);
+    let content = (dims.1 as usize, dims.0 as usize);
+    let mapping = StaffMapping {
+        canvas_y_offset: (CANVAS_H as i64 - content.0 as i64).div_euclid(2),
+        before_canvas,
+        canvas_content: content,
+        crop2: tl2,
+        tris,
+        crop1: tl,
+        page: (image.h, image.w),
+        resized: (resized.h, resized.w),
+    };
+    Ok(PreparedStaff { canvas, staff: staff2, mapping })
 }
 
 /// The model's input from the canvas: (pixel / 255 - 0.7931) / 0.1738, float32.
