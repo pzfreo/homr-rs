@@ -183,10 +183,57 @@ pub fn subtract(a: &[u8], b: &[u8]) -> Vec<u8> {
 const XY_SHIFT: i64 = 16;
 const XY_ONE: i64 = 1 << XY_SHIFT;
 
-/// Line(img, pt1, pt2, color, 8): LineIterator with connectivity 8, left to right.
+/// clipLine(Size, pt1, pt2): clips the segment to the image; false if it's outside.
+pub fn clip_line(w: i64, h: i64, p1: &mut (i64, i64), p2: &mut (i64, i64)) -> bool {
+    let (right, bottom) = (w - 1, h - 1);
+    if w <= 0 || h <= 0 {
+        return false;
+    }
+    let code = |x: i64, y: i64| (x < 0) as i32 + (x > right) as i32 * 2 + (y < 0) as i32 * 4 + (y > bottom) as i32 * 8;
+    let (mut x1, mut y1, mut x2, mut y2) = (p1.0, p1.1, p2.0, p2.1);
+    let mut c1 = code(x1, y1);
+    let mut c2 = code(x2, y2);
+    if (c1 & c2) == 0 && (c1 | c2) != 0 {
+        if c1 & 12 != 0 {
+            let a = if c1 < 8 { 0 } else { bottom };
+            x1 += ((a - y1) as f64 * (x2 - x1) as f64 / (y2 - y1) as f64) as i64;
+            y1 = a;
+            c1 = (x1 < 0) as i32 + (x1 > right) as i32 * 2;
+        }
+        if c2 & 12 != 0 {
+            let a = if c2 < 8 { 0 } else { bottom };
+            x2 += ((a - y2) as f64 * (x2 - x1) as f64 / (y2 - y1) as f64) as i64;
+            y2 = a;
+            c2 = (x2 < 0) as i32 + (x2 > right) as i32 * 2;
+        }
+        if (c1 & c2) == 0 && (c1 | c2) != 0 {
+            if c1 != 0 {
+                let a = if c1 == 1 { 0 } else { right };
+                y1 += ((a - x1) as f64 * (y2 - y1) as f64 / (x2 - x1) as f64) as i64;
+                x1 = a;
+                c1 = 0;
+            }
+            if c2 != 0 {
+                let a = if c2 == 1 { 0 } else { right };
+                y2 += ((a - x2) as f64 * (y2 - y1) as f64 / (x2 - x1) as f64) as i64;
+                x2 = a;
+                c2 = 0;
+            }
+        }
+    }
+    *p1 = (x1, y1);
+    *p2 = (x2, y2);
+    (c1 | c2) == 0
+}
+
+/// Line(img, pt1, pt2, color, 8): LineIterator (clipped to the image),
+/// connectivity 8, left to right.
 fn line(img: &mut [u8], h: usize, w: usize, p1: (i64, i64), p2: (i64, i64), color: u8) {
-    // (callers here only draw inside the image, so no clipping)
-    let (mut pt1, pt2) = (p1, p2);
+    let (mut pt1, mut pt2) = (p1, p2);
+    let outside = |p: (i64, i64)| p.0 < 0 || p.0 >= w as i64 || p.1 < 0 || p.1 >= h as i64;
+    if (outside(pt1) || outside(pt2)) && !clip_line(w as i64, h as i64, &mut pt1, &mut pt2) {
+        return;
+    }
     let (mut delta_x, mut delta_y) = (1i64, 1i64);
     let mut dx = pt2.0 - pt1.0;
     let mut dy = pt2.1 - pt1.1;
@@ -215,13 +262,105 @@ fn line(img: &mut [u8], h: usize, w: usize, p1: (i64, i64), p2: (i64, i64), colo
     let count = dx + 1;
     let mut p = pt1;
     for _ in 0..count {
-        if p.0 >= 0 && p.1 >= 0 && (p.0 as usize) < w && (p.1 as usize) < h {
-            img[p.1 as usize * w + p.0 as usize] = color;
-        }
+        img[p.1 as usize * w + p.0 as usize] = color;
         let mask = if err < 0 { -1i64 } else { 0 };
         err += minus_delta + (plus_delta & mask);
         p.0 += minus_shift + (plus_shift & mask);
         p.1 += minus_step + (plus_step & mask);
+    }
+}
+
+/// fillConvexPoly(img, pts, color) with LINE_8 and shift 0.
+pub fn fill_convex_poly(img: &mut [u8], h: usize, w: usize, v: &[[i64; 2]], color: u8) {
+    let npts = v.len();
+    if npts == 0 {
+        return;
+    }
+    let delta1 = XY_ONE >> 1;
+    let delta2 = XY_ONE >> 1;
+    let mut p0 = (v[npts - 1][0] << XY_SHIFT, v[npts - 1][1] << XY_SHIFT);
+    let (mut xmin, mut xmax, mut ymin, mut ymax) = (v[0][0], v[0][0], v[0][1], v[0][1]);
+    let mut imin = 0usize;
+    for (i, q) in v.iter().enumerate() {
+        if q[1] < ymin {
+            ymin = q[1];
+            imin = i;
+        }
+        ymax = ymax.max(q[1]);
+        xmax = xmax.max(q[0]);
+        xmin = xmin.min(q[0]);
+        let p = (q[0] << XY_SHIFT, q[1] << XY_SHIFT);
+        line(img, h, w, (p0.0 >> XY_SHIFT, p0.1 >> XY_SHIFT), (p.0 >> XY_SHIFT, p.1 >> XY_SHIFT), color);
+        p0 = p;
+    }
+    if npts < 3 || xmax < 0 || ymax < 0 || xmin >= w as i64 || ymin >= h as i64 {
+        return;
+    }
+    let ymax = ymax.min(h as i64 - 1);
+    #[derive(Clone, Copy)]
+    struct E {
+        idx: usize,
+        di: usize,
+        x: i64,
+        dx: i64,
+        ye: i64,
+    }
+    let mut edge = [E { idx: imin, di: 1, x: -XY_ONE, dx: 0, ye: ymin }, E { idx: imin, di: npts - 1, x: -XY_ONE, dx: 0, ye: ymin }];
+    let mut edges = npts as i64;
+    let mut y = ymin;
+    loop {
+        for e in edge.iter_mut() {
+            if y >= e.ye {
+                let mut idx0 = e.idx;
+                let mut idx = idx0 + e.di;
+                if idx >= npts {
+                    idx -= npts;
+                }
+                loop {
+                    let go = edges > 0;
+                    edges -= 1;
+                    if !go {
+                        break;
+                    }
+                    let ty = v[idx][1];
+                    if ty > y {
+                        let xs = v[idx0][0] << XY_SHIFT;
+                        let xe = v[idx][0] << XY_SHIFT;
+                        e.ye = ty;
+                        e.dx = ((xe - xs) * 2 + (ty - y)) / (2 * (ty - y));
+                        e.x = xs;
+                        e.idx = idx;
+                        break;
+                    }
+                    idx0 = idx;
+                    idx += e.di;
+                    if idx >= npts {
+                        idx -= npts;
+                    }
+                }
+            }
+        }
+        if edges < 0 {
+            break;
+        }
+        if y >= 0 {
+            let (left, right) = if edge[0].x > edge[1].x { (1, 0) } else { (0, 1) };
+            let mut xx1 = (edge[left].x + delta1) >> XY_SHIFT;
+            let mut xx2 = (edge[right].x + delta2) >> XY_SHIFT;
+            if xx2 >= 0 && xx1 < w as i64 {
+                xx1 = xx1.max(0);
+                xx2 = xx2.min(w as i64 - 1);
+                for x in xx1..=xx2 {
+                    img[y as usize * w + x as usize] = color;
+                }
+            }
+        }
+        edge[0].x += edge[0].dx;
+        edge[1].x += edge[1].dx;
+        y += 1;
+        if y > ymax {
+            break;
+        }
     }
 }
 

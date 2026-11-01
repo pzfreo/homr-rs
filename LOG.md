@@ -75,3 +75,18 @@ results as they happen; newest at the bottom.
 7 fail in homr - no noteheads / no staffs - and fail the same way in Rust).
 Same on the narrower checks: 151/151 for symbol detection (every fragment box
 and contour, clefs, bar lines) and 151/151 for staff detection.
+
+## Stage 3: staff images (page image + staff -> the model's input canvas)
+- Ported OpenCV 4.11's resize (uint8 bilinear, fixed point; the exact-2x
+  area path too), getAffineTransform (6x6 LU as cv::solve), warpAffine
+  (fixed-point remap tables, BORDER_CONSTANT), Subdiv2D (incremental
+  Delaunay: quad-edges, locate, insert with flips, getTriangleList order),
+  clipLine, the clipped Bresenham LineIterator and fillConvexPoly; and homr's
+  prepare_staff_image, dewarping (span/optimal points, piecewise affine warp),
+  remove_black_contours_at_edges_of_image and center_image_on_canvas.
+- Checked: OpenCV's vectorised remap/resize paths give the same integers as
+  the scalar code for uint8, so Pyodide's SIMD settings don't matter there.
+- tools/pyodide_staffs.mjs records, in Pyodide, every staff image homr
+  prepares (model call stubbed out), with the image before/after dewarping.
+- **58 of 58 staff canvases identical** on the first 8 dev pages (9 pages,
+  one has no staffs). Full corpus next.

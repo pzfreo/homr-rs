@@ -9,4 +9,6 @@ pub mod polygon;
 pub mod raster;
 pub mod sintable;
 pub mod staff;
+pub mod staff_image;
 pub mod symbols;
+pub mod warp;

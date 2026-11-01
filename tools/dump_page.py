@@ -1,5 +1,6 @@
 """Dumps homr's page analysis for each page image: the segmentation masks
-after preprocessing (load_and_preprocess_predictions) and what OpenCV and
+after preprocessing (load_and_preprocess_predictions), the preprocessed page
+image staffs are cut from, and what OpenCV and
 homr make of them, for checking the port stage by stage.
 
     python tools/dump_page.py <homr dir> <cases dir> <page images...>
@@ -26,7 +27,8 @@ def spy(*args, **kwargs):
         "clefs_keys": predictions.clefs_keys, "stem_rests": predictions.stems_rest,
     }
     masks["bar_line_img"] = prepare_bar_line_image(predictions.stems_rest)
-    meta = {"shape": list(predictions.staff.shape), "contours": {}}
+    np.ascontiguousarray(predictions.preprocessed, dtype=np.uint8).tofile(os.path.join(d, "preprocessed.bin"))
+    meta = {"shape": list(predictions.staff.shape), "preprocessed_shape": list(predictions.preprocessed.shape), "contours": {}}
     for name, m in masks.items():
         m = np.ascontiguousarray(m, dtype=np.uint8)
         m.tofile(os.path.join(d, f"{name}.bin"))
