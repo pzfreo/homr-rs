@@ -132,3 +132,5 @@ and contour, clefs, bar lines) and 151/151 for staff detection.
   comments included). 2 more dev pages (fix-1, fix-six-1) crash in upstream
   homr itself with an AssertionError (a backup of zero duration) - a homr bug
   Partsong already works around (_build_note_chord_without_zero_rests).
+- **Stage 3 on the whole corpus: 627 of 627 staff images identical**
+  (88 music pages; the other 70 have no staffs or noteheads in homr itself).
