@@ -68,3 +68,10 @@ results as they happen; newest at the bottom.
   with prefix sums for binary masks: 3.4G for a whole page's analysis, of which
   1.6G is the brace image (5x35 elliptical dilation). TODO later: bit-packed
   rows.
+
+### Stage 1 result
+**Masks -> MultiStaffs: 158 of 158 corpus pages identical to homr in Pyodide**
+(151 analysed, grids compared bit for bit, grand staffs and systems the same;
+7 fail in homr - no noteheads / no staffs - and fail the same way in Rust).
+Same on the narrower checks: 151/151 for symbol detection (every fragment box
+and contour, clefs, bar lines) and 151/151 for staff detection.
