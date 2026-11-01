@@ -115,7 +115,6 @@ pub fn pil_resize(img: &Bgr, tw: usize, th: usize) -> Bgr {
     let need_v = th != img.h;
     let (hb, hk) = coeffs(img.w, tw);
     let (vb, vk) = coeffs(img.h, th);
-    let mut cur = img.clone();
     if need_h {
         let first = vb[0].0;
         let last = vb[th - 1].0 + vb[th - 1].1;
@@ -123,43 +122,48 @@ pub fn pil_resize(img: &Bgr, tw: usize, th: usize) -> Bgr {
         let mut out = vec![0u8; tw * rows * 3];
         for yy in 0..rows {
             let src = &img.data[(yy + first) * img.w * 3..(yy + first + 1) * img.w * 3];
+            let dst = &mut out[yy * tw * 3..(yy + 1) * tw * 3];
             for xx in 0..tw {
                 let (xmin, xmax) = hb[xx];
-                let k = &hk[xx];
-                for c in 0..3 {
-                    let mut ss = 1i32 << 21;
-                    for x in 0..xmax {
-                        ss = ss.wrapping_add(src[(x + xmin) * 3 + c] as i32 * k[x]);
-                    }
-                    out[(yy * tw + xx) * 3 + c] = clip8(ss);
+                let k = &hk[xx][..xmax];
+                let px = &src[xmin * 3..(xmin + xmax) * 3];
+                let (mut s0, mut s1, mut s2) = (1i32 << 21, 1i32 << 21, 1i32 << 21);
+                for (p, &kv) in px.chunks_exact(3).zip(k) {
+                    s0 = s0.wrapping_add(p[0] as i32 * kv);
+                    s1 = s1.wrapping_add(p[1] as i32 * kv);
+                    s2 = s2.wrapping_add(p[2] as i32 * kv);
                 }
+                dst[xx * 3] = clip8(s0);
+                dst[xx * 3 + 1] = clip8(s1);
+                dst[xx * 3 + 2] = clip8(s2);
             }
         }
-        cur = Bgr { w: tw, h: rows, data: out };
+        let cur = Bgr { w: tw, h: rows, data: out };
         let vb2: Vec<(usize, usize)> = vb.iter().map(|&(a, b)| (a - first, b)).collect();
         return vertical(&cur, th, if need_v { Some((&vb2, &vk)) } else { None });
     }
-    vertical(&cur, th, if need_v { Some((&vb, &vk)) } else { None })
+    vertical(img, th, if need_v { Some((&vb, &vk)) } else { None })
 }
 
 fn vertical(img: &Bgr, th: usize, k: Option<(&Vec<(usize, usize)>, &Vec<Vec<i32>>)>) -> Bgr {
     let Some((vb, vk)) = k else { return img.clone() };
-    let w = img.w;
-    let mut out = vec![0u8; w * th * 3];
+    let row = img.w * 3;
+    let mut out = vec![0u8; row * th];
+    let mut acc = vec![0i32; row];
     for yy in 0..th {
         let (ymin, ymax) = vb[yy];
-        let kk = &vk[yy];
-        for xx in 0..w {
-            for c in 0..3 {
-                let mut ss = 1i32 << 21;
-                for y in 0..ymax {
-                    ss = ss.wrapping_add(img.data[((y + ymin) * w + xx) * 3 + c] as i32 * kk[y]);
-                }
-                out[(yy * w + xx) * 3 + c] = clip8(ss);
+        acc.iter_mut().for_each(|a| *a = 1 << 21);
+        for (y, &kv) in vk[yy][..ymax].iter().enumerate() {
+            let src = &img.data[(y + ymin) * row..(y + ymin + 1) * row];
+            for (a, &p) in acc.iter_mut().zip(src) {
+                *a = a.wrapping_add(p as i32 * kv);
             }
         }
+        for (o, &a) in out[yy * row..(yy + 1) * row].iter_mut().zip(&acc) {
+            *o = clip8(a);
+        }
     }
-    Bgr { w, h: th, data: out }
+    Bgr { w: img.w, h: th, data: out }
 }
 
 /// resize_image: 1920 wide, aspect kept (height rounded half to even).
@@ -363,22 +367,18 @@ pub fn masks(merged: &[u8], h: usize, w: usize) -> SegMasks {
 
 /// estimate_noise: sum |Laplacian-like filter2D| / area (BORDER_REFLECT_101).
 fn estimate_noise(tile: &[u8], h: usize, w: usize) -> f64 {
-    const K: [[i64; 3]; 3] = [[1, -2, 1], [-2, 4, -2], [1, -2, 1]];
-    let mut sum = 0f64;
+    let xs: Vec<[usize; 3]> = (0..w as i64).map(|x| [reflect101(x - 1, w as i64) as usize, x as usize, reflect101(x + 1, w as i64) as usize]).collect();
+    let mut sum = 0u64;
     for y in 0..h as i64 {
-        for x in 0..w as i64 {
-            let mut v = 0i64;
-            for dy in -1..=1i64 {
-                for dx in -1..=1i64 {
-                    let yy = reflect101(y + dy, h as i64) as usize;
-                    let xx = reflect101(x + dx, w as i64) as usize;
-                    v += K[(dy + 1) as usize][(dx + 1) as usize] * tile[yy * w + xx] as i64;
-                }
-            }
-            sum += (v.abs()) as f64;
+        let r = [reflect101(y - 1, h as i64) as usize, y as usize, reflect101(y + 1, h as i64) as usize];
+        let (a, b, c) = (&tile[r[0] * w..r[0] * w + w], &tile[r[1] * w..r[1] * w + w], &tile[r[2] * w..r[2] * w + w]);
+        for x in &xs {
+            // [[1, -2, 1], [-2, 4, -2], [1, -2, 1]]
+            let v = a[x[0]] as i32 - 2 * a[x[1]] as i32 + a[x[2]] as i32 - 2 * b[x[0]] as i32 + 4 * b[x[1]] as i32 - 2 * b[x[2]] as i32 + c[x[0]] as i32 - 2 * c[x[1]] as i32 + c[x[2]] as i32;
+            sum += v.unsigned_abs() as u64;
         }
     }
-    sum / (h * w) as f64
+    sum as f64 / (h * w) as f64
 }
 
 /// filter_predictions: a mask of the cells to keep, or None (keep everything).

@@ -147,3 +147,11 @@ and contour, clefs, bar lines) and 151/151 for staff detection.
 - After these: stage 1 158/158 pages, stage 3 627/627 staff images, contours
   948/948 corpus masks + 40/40 RETR_EXTERNAL - unchanged.
 - bench/py_page.mjs and bench/rs_page.mjs reproduce the comparison.
+- Stage 2 (page image -> segnet tiles; segnet output -> masks), 5 pages, as
+  WebAssembly: first 36.4G against Pyodide's 32.7G (slower: numpy/OpenCV/Pillow
+  are native C there). After optimising the hot spots found natively with
+  profile_pre/profile_crop (Pillow resize with whole-row loops; autocrop's
+  morphology without per-shift allocations and with 8-at-a-time bit
+  packing/unpacking; the noise filter's 3x3 without per-pixel reflection):
+  **22.0G (1.5x fewer than Pyodide)**, still 5/5 identical; stage 1 still
+  158/158. bench/py_pre.mjs and bench/rs_pre.mjs reproduce it.

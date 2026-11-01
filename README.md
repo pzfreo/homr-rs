@@ -54,6 +54,8 @@ port follows homr.
 Whole page from masks to MusicXML (the transformer's output replayed), in the
 browser engine (Node/V8): homr in Pyodide 38.1G retired instructions a page,
 this port as WebAssembly 2.2G (17x fewer). Staff detection alone: 41x fewer.
+Stage 2 (page image to segnet input, its output to masks): Pyodide 6.5G a page,
+the port 4.4G (here homr's work is mostly native numpy/OpenCV/Pillow already).
 
 ## Results for staff detection (the first stage ported)
 

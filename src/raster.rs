@@ -126,10 +126,20 @@ fn binary_value(img: &[u8]) -> Option<u8> {
 /// all its in-image pixels are v. Same result as the byte-wise version.
 fn morph_binary(img: &[u8], h: usize, w: usize, segs: &[(i64, i64, i64, i64)], dilate: bool, v: u8) -> Vec<u8> {
     let words = w.div_ceil(64);
+    // 8 bytes -> 8 bits (bit i set if byte i is nonzero)
+    let pack8 = |b: &[u8]| -> u64 {
+        let x = u64::from_le_bytes(b.try_into().unwrap());
+        let hi = ((x & 0x7f7f7f7f7f7f7f7f).wrapping_add(0x7f7f7f7f7f7f7f7f) | x) & 0x8080808080808080;
+        (hi >> 7).wrapping_mul(0x0102040810204080) >> 56
+    };
     let pack = |row: &[u8]| -> Vec<u64> {
         let mut out = vec![0u64; words];
-        for (x, &p) in row.iter().enumerate() {
-            if p != 0 {
+        let full8 = row.len() / 8;
+        for i in 0..full8 {
+            out[i / 8] |= pack8(&row[i * 8..i * 8 + 8]) << ((i % 8) * 8);
+        }
+        for x in full8 * 8..row.len() {
+            if row[x] != 0 {
                 out[x / 64] |= 1 << (x % 64);
             }
         }
@@ -144,39 +154,32 @@ fn morph_binary(img: &[u8], h: usize, w: usize, segs: &[(i64, i64, i64, i64)], d
             r[last] |= !tail_mask;
         }
     };
-    let fast_shift = |r: &[u64], k: i64, fill: bool| -> Vec<u64> {
-        // word-level shift by k bits (k may be negative)
+    // acc[i] op= (r shifted by k bits), with fill outside the row
+    let shift_into = |acc: &mut [u64], r: &[u64], k: i64, fill: bool| {
         let fillw = if fill { !0u64 } else { 0 };
         let n = words as i64;
         let (q, rem) = (k.div_euclid(64), k.rem_euclid(64) as u32);
         let get = |i: i64| -> u64 { if i < 0 || i >= n { fillw } else { r[i as usize] } };
-        (0..n)
-            .map(|i| {
-                let lo = get(i + q);
-                if rem == 0 {
-                    lo
-                } else {
-                    let hi = get(i + q + 1);
-                    (lo >> rem) | (hi << (64 - rem))
-                }
-            })
-            .collect()
+        for (i, x) in acc.iter_mut().enumerate() {
+            let i = i as i64;
+            let lo = get(i + q);
+            let s = if rem == 0 { lo } else { (lo >> rem) | (get(i + q + 1) << (64 - rem)) };
+            *x = if dilate { *x | s } else { *x & s };
+        }
     };
     let mut out: Vec<Vec<u64>> = vec![vec![if dilate { 0 } else { !0u64 }; words]; h];
     let mut cache: Vec<((i64, i64), Vec<Vec<u64>>)> = Vec::new();
     for &(dy0, dy1, a, b) in segs {
         if !cache.iter().any(|c| c.0 == (a, b)) {
+            let mut r = vec![0u64; words];
             let hor: Vec<Vec<u64>> = rows
                 .iter()
-                .map(|r| {
-                    let mut r = r.clone();
+                .map(|row| {
+                    r.copy_from_slice(row);
                     full(&mut r);
                     let mut acc = vec![if dilate { 0 } else { !0u64 }; words];
                     for k in a..=b {
-                        let s = fast_shift(&r, k, !dilate);
-                        for (x, y) in acc.iter_mut().zip(&s) {
-                            *x = if dilate { *x | y } else { *x & y };
-                        }
+                        shift_into(&mut acc, &r, k, !dilate);
                     }
                     acc
                 })
@@ -201,11 +204,22 @@ fn morph_binary(img: &[u8], h: usize, w: usize, segs: &[(i64, i64, i64, i64)], d
             }
         }
     }
+    // 8 bits -> 8 bytes of v or 0
+    let table: Vec<u64> = (0..256u64).map(|b| (0..8).fold(0u64, |t, i| if (b >> i) & 1 == 1 { t | (v as u64) << (8 * i) } else { t })).collect();
+    let spread = |b: u64| table[b as usize];
     let mut res = vec![0u8; h * w];
     for y in 0..h {
-        for x in 0..w {
+        let row = &mut res[y * w..(y + 1) * w];
+        let full8 = w / 8;
+        for i in 0..full8 {
+            let byte = (out[y][i / 8] >> ((i % 8) * 8)) & 0xff;
+            if byte != 0 {
+                row[i * 8..i * 8 + 8].copy_from_slice(&spread(byte).to_le_bytes());
+            }
+        }
+        for x in full8 * 8..w {
             if (out[y][x / 64] >> (x % 64)) & 1 == 1 {
-                res[y * w + x] = v;
+                row[x] = v;
             }
         }
     }
