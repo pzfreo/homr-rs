@@ -1,0 +1,13 @@
+[package]
+name = "homr-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Prototype port of homr's staff detection (homr/staff_detection.py) to Rust"
+license = "AGPL-3.0-only"
+
+[dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+debug = false
