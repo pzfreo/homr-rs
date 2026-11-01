@@ -24,6 +24,12 @@ fn main() {
     let _ = detect_staff_mid(&image, shape[0], shape[1], &f, &clefs, &bars, &mut mid);
     let m = mid.unwrap();
     println!("others: rust {} python {}", m.others.len(), py["others"].as_array().unwrap().len());
+    for (r, p) in m.others.iter().zip(py["others"].as_array().unwrap()) {
+        let pb: Vec<f64> = p.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        if r.iter().zip(&pb).any(|(a, b)| (a - b).abs() > 1e-9) {
+            println!("  other differs: rust {r:?} python {pb:?}");
+        }
+    }
     let pa = py["anchors"].as_array().unwrap();
     println!("anchors: rust {} python {}", m.anchors.len(), pa.len());
     for (i, (r, p)) in m.anchors.iter().zip(pa).enumerate() {

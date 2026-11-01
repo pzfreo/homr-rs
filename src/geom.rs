@@ -200,15 +200,56 @@ fn convex_touch_i64(a: &[[i64; 2]; 4], b: &[[i64; 2]; 4]) -> bool {
     true
 }
 
-/// cv2.minAreaRect, ported from OpenCV 5.0.0 (modules/geometry/src/rotcalipers.cpp
+/// cv2.minAreaRect, ported from OpenCV (modules/imgproc/src/rotcalipers.cpp
 /// and convhull.cpp) step for step, so the float32 results match exactly.
+/// The default follows OpenCV 4.11 (as in Pyodide, which Partsong runs);
+/// the `opencv5` feature follows OpenCV 5.0, which reports the box with a
+/// different width/height/angle convention.
 pub fn min_area_rect(points: &[[i32; 2]]) -> RBox {
+    let (cx, cy, w, h, angle) = min_area_rect_raw(points);
+    RBox::new(cx as f64, cy as f64, w as f64, h as f64, angle as f64, NO_FRAGMENT)
+}
+
+/// cv2.minAreaRect as OpenCV returns it: (cx, cy, w, h, angle) in float32.
+pub fn min_area_rect_raw(points: &[[i32; 2]]) -> (f32, f32, f32, f32, f32) {
     let hull: Vec<[f32; 2]> = convex_hull_cv(points).iter().map(|&k| [points[k][0] as f32, points[k][1] as f32]).collect();
+    if cfg!(feature = "opencv5") { box_v5(&hull) } else { box_v4(&hull) }
+}
+
+/// OpenCV 4.x: width along out[1], angle = atan2 of out[1] (radians kept as
+/// float32, then converted to degrees).
+fn box_v4(hull: &[[f32; 2]]) -> (f32, f32, f32, f32, f32) {
     let n = hull.len();
-    let (cx, cy, w, h, angle): (f32, f32, f32, f32, f64);
+    let (mut cx, mut cy, mut w, mut h, mut angle) = (0f32, 0f32, 0f32, 0f32, 0f32);
+    if n > 2 {
+        let out = rotating_calipers(hull);
+        cx = out[0][0] + (out[1][0] + out[2][0]) * 0.5f32;
+        cy = out[0][1] + (out[1][1] + out[2][1]) * 0.5f32;
+        w = ((out[1][0] as f64) * out[1][0] as f64 + (out[1][1] as f64) * out[1][1] as f64).sqrt() as f32;
+        h = ((out[2][0] as f64) * out[2][0] as f64 + (out[2][1] as f64) * out[2][1] as f64).sqrt() as f32;
+        angle = (out[1][1] as f64).atan2(out[1][0] as f64) as f32;
+    } else if n == 2 {
+        cx = (hull[0][0] + hull[1][0]) * 0.5f32;
+        cy = (hull[0][1] + hull[1][1]) * 0.5f32;
+        let dx = (hull[1][0] - hull[0][0]) as f64;
+        let dy = (hull[1][1] - hull[0][1]) as f64;
+        w = (dx * dx + dy * dy).sqrt() as f32;
+        h = 0.0;
+        angle = dy.atan2(dx) as f32;
+    } else if n == 1 {
+        cx = hull[0][0];
+        cy = hull[0][1];
+    }
+    // box.angle (float, radians) * 180 is a float multiplication; then / CV_PI in double
+    (cx, cy, w, h, ((angle * 180.0f32) as f64 / PI) as f32)
+}
+
+fn box_v5(hull: &[[f32; 2]]) -> (f32, f32, f32, f32, f32) {
+    let n = hull.len();
+    let (cx, cy, w, h): (f32, f32, f32, f32);
     let mut angle_d = -PI / 2.0;
     if n > 2 {
-        let out = rotating_calipers(&hull);
+        let out = rotating_calipers(hull);
         cx = out[0][0] + (out[1][0] + out[2][0]) * 0.5f32;
         cy = out[0][1] + (out[1][1] + out[2][1]) * 0.5f32;
         let mut ww = ((out[2][0] as f64) * out[2][0] as f64 + (out[2][1] as f64) * out[2][1] as f64).sqrt() as f32;
@@ -243,8 +284,7 @@ pub fn min_area_rect(points: &[[i32; 2]]) -> RBox {
         w = 0.0;
         h = 0.0;
     }
-    angle = (angle_d * 180.0 / PI) as f32 as f64;
-    RBox::new(cx as f64, cy as f64, w as f64, h as f64, angle, NO_FRAGMENT)
+    (cx, cy, w, h, (angle_d * 180.0 / PI) as f32)
 }
 
 fn rotating_calipers(points: &[[f32; 2]]) -> [[f32; 2]; 3] {
