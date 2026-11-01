@@ -27,6 +27,7 @@ impl Node {
 }
 
 struct Scanner {
+    external: bool,
     img: Vec<i8>,
     w: usize, // padded width
     h: usize,
@@ -203,6 +204,12 @@ impl Scanner {
         n.is_hole = is_hole;
         n.origin = (start.0 + OFFSET.0, start.1 + OFFSET.1);
         self.tree.push(n);
+        if self.external {
+            // isSimple(): marked with MASK8_NEW, no parent table
+            self.fetch_contour(start, 2, idx);
+            self.tree[idx].origin = start;
+            return idx;
+        }
         let lval = *nbd;
         *nbd = (((*nbd as i32) + 1) & MASK8_LVAL) as i8;
         if *nbd == 0 {
@@ -228,8 +235,11 @@ impl Scanner {
             }
             is_hole = true;
         }
+        if self.external && (is_hole || self.at(last_pos.0, last_pos.1) > 0) {
+            return false;
+        }
         let mut main_parent: i32 = -1;
-        if last_pos.0 <= 0 {
+        if self.external || last_pos.0 <= 0 {
             main_parent = 0;
         } else {
             let lval = (self.at(last_pos.0, last_pos.1) as i32) & MASK8_LVAL;
@@ -290,6 +300,15 @@ impl Scanner {
 
 /// cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[0]
 pub fn find_contours(mask: &[u8], h: usize, w: usize) -> Vec<Vec<[i32; 2]>> {
+    find_contours_mode(mask, h, w, false)
+}
+
+/// cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+pub fn find_external_contours(mask: &[u8], h: usize, w: usize) -> Vec<Vec<[i32; 2]>> {
+    find_contours_mode(mask, h, w, true)
+}
+
+fn find_contours_mode(mask: &[u8], h: usize, w: usize, external: bool) -> Vec<Vec<[i32; 2]>> {
     let (pw, ph) = (w + 2, h + 2);
     let mut img = vec![0i8; pw * ph];
     for y in 0..h {
@@ -302,7 +321,7 @@ pub fn find_contours(mask: &[u8], h: usize, w: usize) -> Vec<Vec<[i32; 2]>> {
     let mut root = Node::new();
     root.is_hole = true;
     root.brect = (0, 0, pw as i32, ph as i32);
-    let mut sc = Scanner { img, w: pw, h: ph, pt: (1, 1), lnbd: (0, 1), nbd: 2, tree: vec![root], ctable: [-1; 128] };
+    let mut sc = Scanner { external, img, w: pw, h: ph, pt: (1, 1), lnbd: (0, 1), nbd: 2, tree: vec![root], ctable: [-1; 128] };
     while sc.find_next() {}
     // contourTreeToResults: depth first from the root, first child (the newest) first
     let mut out = Vec::with_capacity(sc.tree.len() - 1);

@@ -90,3 +90,24 @@ and contour, clefs, bar lines) and 151/151 for staff detection.
   prepares (model call stubbed out), with the image before/after dewarping.
 - **58 of 58 staff canvases identical** on the first 8 dev pages (9 pages,
   one has no staffs). Full corpus next.
+
+## Stage 2: page image -> segmentation masks (around the model)
+- Ported homr's autocrop (cvtColor BGR2GRAY fixed point, calcHist,
+  threshold, morphologyEx close/erode, findContours RETR_EXTERNAL - added to
+  the contour port and checked against cv2 on 40 random masks - contourArea,
+  boundingRect), resize_image (**Pillow 12.2's bicubic resample**, Pyodide's
+  version: fixed-point coefficients, horizontal then vertical pass), CLAHE
+  (clip 1.0, 8x8 tiles, reflect-101 padding, float32 bilinear blend of tile
+  lookup tables), segnet's tiling (white-padded 320px tiles, step 320),
+  merge_patches (float32 average of class numbers, truncated), the noise
+  filter (filter2D reflect-101, the uint8 wrap of the noise level) and
+  make_lines_stronger.
+- tools/dump_segnet.py runs segnet natively (the model only runs there) and
+  keeps each tile's class map; tools/pyodide_pre.mjs makes the references in
+  Pyodide from the decoded image and those class maps.
+- **5 of 5 pages identical**: resized page, CLAHE image, merged class map,
+  all five masks after filtering, and the filtered page image.
+- Finding: native OpenCV's CLAHE differs from Pyodide's in 5-102 pixels a page
+  (fused multiply-add again); the port matches Pyodide.
+- Decision: the input is the decoded image (BGR). Partsong hands homr a PNG
+  it made itself (lossless), so decoding isn't part of parity.

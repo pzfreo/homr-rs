@@ -6,6 +6,7 @@ pub mod ellipse;
 pub mod geom;
 pub mod npmath;
 pub mod polygon;
+pub mod preprocess;
 pub mod raster;
 pub mod sintable;
 pub mod staff;
