@@ -51,3 +51,20 @@ results as they happen; newest at the bottom.
 - Decision: skip add_notes_to_staffs. It attaches notes to staffs, but
   nothing downstream reads them except debug images (staff_parsing only uses
   them under `if debug.debug`), so they can't change homr's output.
+- Ported braces and grand staffs (brace_dot_detection.py, MultiStaff,
+  Staff.merge), with OpenCV's elliptical structuring elements, erode/dilate,
+  and fillPoly (Bresenham edges + scanline edge collection) for
+  _trim_symbol_to_core_span. homr's "connections at bar lines / clefs" never
+  fire in this pipeline (staffs only ever get notes attached), so only the
+  "at lines" connections are ported.
+- **Finding: last-bit differences came from the maths library.** homr in
+  Pyodide uses musl's libm (tan, atan2...), native Rust used Apple's. Decision:
+  use the `libm` crate (a Rust port of musl) everywhere; it's also what Rust
+  uses on WebAssembly, so native tests and the browser agree.
+- Page analysis end to end (masks -> MultiStaffs, grids compared bit for bit):
+  first 56 pages: 48 exact before the libm fix, the remaining 8 were all last
+  bit differences; full 4.11 corpus being checked.
+- Speed: morphology was naive (16G instructions a page); now sliding windows,
+  with prefix sums for binary masks: 3.4G for a whole page's analysis, of which
+  1.6G is the brace image (5x35 elliptical dilation). TODO later: bit-packed
+  rows.

@@ -2,7 +2,8 @@
 // compiled to WebAssembly). Takes the segmentation masks dumped by
 // tools/dump_page.py (natively; the masks come from the model) and runs homr's
 // detect_staffs_in_image on them, writing case.json (staff detection's inputs
-// and result, as tools/dump_staff.py) into <out>/<page>.
+// and result, as tools/dump_staff.py) and multi.json (homr's MultiStaffs) into
+// <out>/<page>.
 //   node tools/pyodide_ref.mjs <homr dir> <pages dir> <out dir> [pages...]
 import { createRequire } from "node:module";
 import fs from "node:fs";
@@ -58,16 +59,22 @@ def run(page_dir, out_dir):
             "python_instructions": 0,
         })
         np.ascontiguousarray(image, dtype=np.uint8).tofile(f"{out_dir}/staff.bin")
-        raise Done
+        return result
     main.detect_staff = spy
+    multi = None
     try:
         with contextlib.redirect_stderr(io.StringIO()):
-            main.detect_staffs_in_image("/tmp/page.png", config(main))
-    except Done:
-        pass
+            multi = main.detect_staffs_in_image("/tmp/page.png", config(main))[0]
+    except Exception as e:
+        case["error"] = f"{type(e).__name__}: {e}"
     finally:
         main.detect_staff = orig
+    if "expected" not in case:
+        raise Exception(case.get("error", "no staff detection"))
     json.dump(case, open(f"{out_dir}/case.json", "w"))
+    if multi is not None:
+        json.dump([[{"grand": bool(s.is_grandstaff), "grid": [[float(p.x), [float(y) for y in p.y], float(p.angle)] for p in s.grid]} for s in ms.staffs] for ms in multi],
+                  open(f"{out_dir}/multi.json", "w"))
 `);
 const pages = (only.length ? only : fs.readdirSync(pagesDir)).filter((p) => fs.existsSync(path.join(pagesDir, p, "page.json")));
 for (const p of pages) {

@@ -6,6 +6,7 @@ description = "Prototype port of homr's staff detection (homr/staff_detection.py
 license = "AGPL-3.0-only"
 
 [dependencies]
+libm = "0.2"
 serde_json = { version = "1", features = ["float_roundtrip"] }
 
 [profile.release]

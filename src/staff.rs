@@ -29,6 +29,9 @@ pub struct Staff {
 }
 
 impl Staff {
+    pub fn from_grid(grid: Vec<StaffPoint>) -> Result<Staff, String> {
+        Staff::new(grid)
+    }
     fn new(grid: Vec<StaffPoint>) -> Result<Staff, String> {
         if grid.is_empty() {
             return Err("empty staff grid (homr raises IndexError)".into());

@@ -22,8 +22,8 @@ pub struct RBox {
 pub fn box_points_f32(cx: f64, cy: f64, w: f64, h: f64, angle: f64) -> [[f32; 2]; 4] {
     let (cx, cy, w, h) = (cx as f32, cy as f32, w as f32, h as f32);
     let a_rad = (angle as f32) as f64 * PI / 180.0;
-    let b = (a_rad.cos() as f32) * 0.5f32;
-    let a = (a_rad.sin() as f32) * 0.5f32;
+    let b = (libm::cos(a_rad) as f32) * 0.5f32;
+    let a = (libm::sin(a_rad) as f32) * 0.5f32;
     let p0 = [cx - a * h - b * w, cy + b * h - a * w];
     let p1 = [cx + a * h - b * w, cy - b * h - a * w];
     let p2 = [2.0 * cx - p0[0], 2.0 * cy - p0[1]];
@@ -69,7 +69,7 @@ impl RBox {
     }
     /// get_center_extrapolated
     pub fn center_at(&self, x: f64) -> f64 {
-        (x - self.cx) * (self.angle / 180.0 * PI).tan() + self.cy
+        (x - self.cx) * libm::tan(self.angle / 180.0 * PI) + self.cy
     }
     fn can_touch(&self, o: &RBox) -> bool {
         let d = ((self.cx - o.cx).powi(2) + (self.cy - o.cy).powi(2)).sqrt();
@@ -91,8 +91,8 @@ impl RBox {
         if center_x - l.cx - (l.w / 2.0).floor() > max_gap || r.cx - center_x - (r.w / 2.0).floor() > max_gap {
             return false;
         }
-        let la = (l.angle * PI / 180.0).tan();
-        let ra = (r.angle * PI / 180.0).tan();
+        let la = libm::tan(l.angle * PI / 180.0);
+        let ra = libm::tan(r.angle * PI / 180.0);
         let ly = (center_x - l.cx) * la + l.cy;
         let ry = (center_x - r.cx) * ra + r.cy;
         (ly - ry).abs() <= tol
@@ -227,7 +227,7 @@ fn box_v4(hull: &[[f32; 2]]) -> (f32, f32, f32, f32, f32) {
         cy = out[0][1] + (out[1][1] + out[2][1]) * 0.5f32;
         w = ((out[1][0] as f64) * out[1][0] as f64 + (out[1][1] as f64) * out[1][1] as f64).sqrt() as f32;
         h = ((out[2][0] as f64) * out[2][0] as f64 + (out[2][1] as f64) * out[2][1] as f64).sqrt() as f32;
-        angle = (out[1][1] as f64).atan2(out[1][0] as f64) as f32;
+        angle = libm::atan2(out[1][1] as f64, out[1][0] as f64) as f32;
     } else if n == 2 {
         cx = (hull[0][0] + hull[1][0]) * 0.5f32;
         cy = (hull[0][1] + hull[1][1]) * 0.5f32;
@@ -235,7 +235,7 @@ fn box_v4(hull: &[[f32; 2]]) -> (f32, f32, f32, f32, f32) {
         let dy = (hull[1][1] - hull[0][1]) as f64;
         w = (dx * dx + dy * dy).sqrt() as f32;
         h = 0.0;
-        angle = dy.atan2(dx) as f32;
+        angle = libm::atan2(dy, dx) as f32;
     } else if n == 1 {
         cx = hull[0][0];
         cy = hull[0][1];
@@ -257,7 +257,7 @@ fn box_v5(hull: &[[f32; 2]]) -> (f32, f32, f32, f32, f32) {
         if out[1][0] == 0.0 && out[1][1] > 0.0 {
             std::mem::swap(&mut ww, &mut hh);
         } else {
-            angle_d = -(out[1][0] as f64).atan2(out[1][1] as f64);
+            angle_d = -libm::atan2(out[1][0] as f64, out[1][1] as f64);
         }
         w = ww;
         h = hh;
@@ -270,10 +270,10 @@ fn box_v5(hull: &[[f32; 2]]) -> (f32, f32, f32, f32, f32) {
         if dx == 0.0 {
             std::mem::swap(&mut ww, &mut hh);
         } else if dy < 0.0 {
-            angle_d = dy.atan2(dx);
+            angle_d = libm::atan2(dy, dx);
             std::mem::swap(&mut ww, &mut hh);
         } else if dy > 0.0 {
-            angle_d = -dx.atan2(dy);
+            angle_d = -libm::atan2(dx, dy);
         }
         w = ww;
         h = hh;

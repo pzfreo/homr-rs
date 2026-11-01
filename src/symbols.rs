@@ -210,19 +210,7 @@ pub fn break_wide_fragments(fragments: Vec<Shape>, limit: f64) -> Vec<Shape> {
 
 /// prepare_bar_line_image: dilate with a 5 (rows) x 3 (columns) kernel of ones.
 pub fn dilate_5x3(mask: &[u8], h: usize, w: usize) -> Vec<u8> {
-    let mut out = vec![0u8; h * w];
-    for y in 0..h {
-        for x in 0..w {
-            let mut m = 0u8;
-            for yy in y.saturating_sub(2)..(y + 3).min(h) {
-                for xx in x.saturating_sub(1)..(x + 2).min(w) {
-                    m = m.max(mask[yy * w + xx]);
-                }
-            }
-            out[y * w + x] = m;
-        }
-    }
-    out
+    crate::raster::morph(mask, h, w, &vec![vec![1u8; 3]; 5], true)
 }
 
 pub struct NoteheadWithStem {

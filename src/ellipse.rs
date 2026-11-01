@@ -155,8 +155,8 @@ fn fit_no_direct(points: &[[i32; 2]]) -> (f32, f32, f32, f32, f32) {
         a3[i * 3..i * 3 + 3].copy_from_slice(&[(px - rp0) * (px - rp0), (py - rp1) * (py - rp1), (px - rp0) * (py - rp1)]);
     }
     let g = lstsq(&a3, n, 3, &vec![1.0; n]);
-    let rp4 = -0.5 * g[2].atan2(g[1] - g[0]);
-    let t = if g[2].abs() > 1e-8 { g[2] / (-2.0 * rp4).sin() } else { g[1] - g[0] };
+    let rp4 = -0.5 * libm::atan2(g[2], g[1] - g[0]);
+    let t = if g[2].abs() > 1e-8 { g[2] / libm::sin(-2.0 * rp4) } else { g[1] - g[0] };
     let mut rp2 = (g[0] + g[1] - t).abs();
     if rp2 > 1e-8 {
         rp2 = (2.0 / rp2).sqrt();
@@ -200,10 +200,10 @@ fn eigvecs3(m: &[[f64; 3]; 3]) -> Option<Vec<[f64; 3]>> {
         return None;
     }
     let r = (-p / 3.0).max(0.0).sqrt();
-    let phi = if r == 0.0 { 0.0 } else { ((3.0 * q) / (2.0 * p * r)).clamp(-1.0, 1.0).acos() / 3.0 };
+    let phi = if r == 0.0 { 0.0 } else { libm::acos(((3.0 * q) / (2.0 * p * r)).clamp(-1.0, 1.0)) / 3.0 };
     let mut out = Vec::new();
     for k in 0..3 {
-        let l = 2.0 * r * (phi - 2.0 * std::f64::consts::PI * k as f64 / 3.0).cos() + tr / 3.0;
+        let l = 2.0 * r * libm::cos(phi - 2.0 * std::f64::consts::PI * k as f64 / 3.0) + tr / 3.0;
         let a = [[m[0][0] - l, m[0][1], m[0][2]], [m[1][0], m[1][1] - l, m[1][2]], [m[2][0], m[2][1], m[2][2] - l]];
         let cross = |u: [f64; 3], v: [f64; 3]| [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
         let cands = [cross(a[0], a[1]), cross(a[0], a[2]), cross(a[1], a[2])];
@@ -290,7 +290,7 @@ fn fit_direct(points: &[[i32; 2]]) -> Option<(f32, f32, f32, f32, f32)> {
         let a = 2f64.sqrt() * ((u1 - 4.0 * u2) / ((l1 - l2) * l3)).sqrt() / scale;
         let b = 2f64.sqrt() * (-1.0 * ((u1 - 4.0 * u2) / ((l1 + l2) * l3))).sqrt() / scale;
         let pi = std::f64::consts::PI;
-        let theta = if pv[1] == 0.0 { if pv[0] < pv[2] { 0.0 } else { pi / 2.0 } } else { pi / 2.0 + 0.5 * pv[1].atan2(pv[0] - pv[2]) };
+        let theta = if pv[1] == 0.0 { if pv[0] < pv[2] { 0.0 } else { pi / 2.0 } } else { pi / 2.0 + 0.5 * libm::atan2(pv[1], pv[0] - pv[2]) };
         let (mut w, mut h) = ((2.0 * a) as f32, (2.0 * b) as f32);
         let angle;
         if w > h {
