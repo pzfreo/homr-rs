@@ -269,6 +269,18 @@ impl Scanner {
         while y < height {
             let mut p: i32 = 0;
             while x < width {
+                // skip runs equal to `prev`, 8 bytes at a time (as OpenCV's SIMD scan)
+                let row = y as usize * self.w;
+                let pattern = u64::from_ne_bytes([prev as i8 as u8; 8]);
+                while x + 8 <= width {
+                    let i = row + x as usize;
+                    let bytes: [i8; 8] = self.img[i..i + 8].try_into().unwrap();
+                    let chunk = u64::from_ne_bytes(bytes.map(|b| b as u8));
+                    if chunk != pattern {
+                        break;
+                    }
+                    x += 8;
+                }
                 while x < width {
                     p = self.at(x, y) as i32;
                     if p != prev {

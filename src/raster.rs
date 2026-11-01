@@ -121,58 +121,95 @@ fn binary_value(img: &[u8]) -> Option<u8> {
     Some(v)
 }
 
-/// morph for images of 0s and one other value, with prefix sums: a window
-/// dilates to v if it holds any v, erodes to v if all its in-image pixels are v.
+/// morph for images of 0s and one other value v, on bit-packed rows (64
+/// pixels a word): a window dilates to v if it holds any v, erodes to v if
+/// all its in-image pixels are v. Same result as the byte-wise version.
 fn morph_binary(img: &[u8], h: usize, w: usize, segs: &[(i64, i64, i64, i64)], dilate: bool, v: u8) -> Vec<u8> {
-    let identity = if dilate { 0u8 } else { 255u8 };
-    let mut out = vec![identity; h * w];
-    let (hi_, wi) = (h as i64, w as i64);
-    let decide = |n: u32, len: i64| -> u8 {
-        if len <= 0 {
-            identity
-        } else if dilate {
-            if n > 0 { v } else { 0 }
-        } else if n as i64 == len {
-            v
-        } else {
-            0
+    let words = w.div_ceil(64);
+    let pack = |row: &[u8]| -> Vec<u64> {
+        let mut out = vec![0u64; words];
+        for (x, &p) in row.iter().enumerate() {
+            if p != 0 {
+                out[x / 64] |= 1 << (x % 64);
+            }
+        }
+        out
+    };
+    let rows: Vec<Vec<u64>> = (0..h).map(|y| pack(&img[y * w..(y + 1) * w])).collect();
+    // bits beyond the image width: for erode they count as set (outside is ignored)
+    let tail_mask = if w % 64 == 0 { !0u64 } else { (1u64 << (w % 64)) - 1 };
+    let full = |r: &mut Vec<u64>| {
+        if !dilate {
+            let last = r.len() - 1;
+            r[last] |= !tail_mask;
         }
     };
-    let mut pref = vec![0u32; w + 1];
-    // per distinct horizontal span: column prefix sums of the horizontal pass
-    let mut cache: Vec<((i64, i64), Vec<u32>)> = Vec::new();
+    let fast_shift = |r: &[u64], k: i64, fill: bool| -> Vec<u64> {
+        // word-level shift by k bits (k may be negative)
+        let fillw = if fill { !0u64 } else { 0 };
+        let n = words as i64;
+        let (q, rem) = (k.div_euclid(64), k.rem_euclid(64) as u32);
+        let get = |i: i64| -> u64 { if i < 0 || i >= n { fillw } else { r[i as usize] } };
+        (0..n)
+            .map(|i| {
+                let lo = get(i + q);
+                if rem == 0 {
+                    lo
+                } else {
+                    let hi = get(i + q + 1);
+                    (lo >> rem) | (hi << (64 - rem))
+                }
+            })
+            .collect()
+    };
+    let mut out: Vec<Vec<u64>> = vec![vec![if dilate { 0 } else { !0u64 }; words]; h];
+    let mut cache: Vec<((i64, i64), Vec<Vec<u64>>)> = Vec::new();
     for &(dy0, dy1, a, b) in segs {
         if !cache.iter().any(|c| c.0 == (a, b)) {
-            let mut hor = vec![0u8; w];
-            let mut cum = vec![0u32; (h + 1) * w];
-            for y in 0..h {
-                let row = &img[y * w..(y + 1) * w];
-                for x in 0..w {
-                    pref[x + 1] = pref[x] + (row[x] != 0) as u32;
-                }
-                for x in 0..wi {
-                    let (lo, hi) = ((x + a).max(0), (x + b).min(wi - 1));
-                    let n = if lo <= hi { pref[hi as usize + 1] - pref[lo as usize] } else { 0 };
-                    hor[x as usize] = decide(n, hi - lo + 1);
-                }
-                for x in 0..w {
-                    cum[(y + 1) * w + x] = cum[y * w + x] + (hor[x] != 0) as u32;
+            let hor: Vec<Vec<u64>> = rows
+                .iter()
+                .map(|r| {
+                    let mut r = r.clone();
+                    full(&mut r);
+                    let mut acc = vec![if dilate { 0 } else { !0u64 }; words];
+                    for k in a..=b {
+                        let s = fast_shift(&r, k, !dilate);
+                        for (x, y) in acc.iter_mut().zip(&s) {
+                            *x = if dilate { *x | y } else { *x & y };
+                        }
+                    }
+                    acc
+                })
+                .collect();
+            cache.push(((a, b), hor));
+        }
+        let hor = &cache.iter().find(|c| c.0 == (a, b)).unwrap().1;
+        for y in 0..h as i64 {
+            let (lo, hi) = ((y + dy0).max(0), (y + dy1).min(h as i64 - 1));
+            let o = &mut out[y as usize];
+            if lo > hi {
+                continue; // window entirely outside: identity
+            }
+            let mut acc = vec![if dilate { 0 } else { !0u64 }; words];
+            for yy in lo..=hi {
+                for (x, s) in acc.iter_mut().zip(&hor[yy as usize]) {
+                    *x = if dilate { *x | s } else { *x & s };
                 }
             }
-            cache.push(((a, b), cum));
-        }
-        let cum = &cache.iter().find(|c| c.0 == (a, b)).unwrap().1;
-        for y in 0..hi_ {
-            let (lo, hi) = ((y + dy0).max(0), (y + dy1).min(hi_ - 1));
-            for x in 0..w {
-                let n = if lo <= hi { cum[(hi as usize + 1) * w + x] - cum[lo as usize * w + x] } else { 0 };
-                let r = decide(n, hi - lo + 1);
-                let o = &mut out[y as usize * w + x];
-                *o = if dilate { (*o).max(r) } else { (*o).min(r) };
+            for (x, s) in o.iter_mut().zip(&acc) {
+                *x = if dilate { *x | s } else { *x & s };
             }
         }
     }
-    out
+    let mut res = vec![0u8; h * w];
+    for y in 0..h {
+        for x in 0..w {
+            if (out[y][x / 64] >> (x % 64)) & 1 == 1 {
+                res[y * w + x] = v;
+            }
+        }
+    }
+    res
 }
 
 /// cv2.subtract for uint8 (saturating).

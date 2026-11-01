@@ -134,3 +134,16 @@ and contour, clefs, bar lines) and 151/151 for staff detection.
   Partsong already works around (_build_note_chord_without_zero_rests).
 - **Stage 3 on the whole corpus: 627 of 627 staff images identical**
   (88 music pages; the other 70 have no staffs or noteheads in homr itself).
+
+## Speed (retired instructions, browser engine: Node/V8)
+- Whole page from masks to MusicXML (page analysis, staff images, replayed
+  transformer output, MusicXML), 6 pages: homr in Pyodide 38.1G a page; the
+  port as WebAssembly first 5.9G (6.5x fewer), then after three
+  optimisations **2.2G (17x fewer)**, still identical everywhere:
+  - binary morphology on bit-packed rows (brace image 1.6G -> 0.3G a page);
+  - staff images resize only the part of the page they crop (homr resizes the
+    whole page for every staff): ~320M -> ~100M a staff;
+  - contour scanning skips equal runs 8 bytes at a time.
+- After these: stage 1 158/158 pages, stage 3 627/627 staff images, contours
+  948/948 corpus masks + 40/40 RETR_EXTERNAL - unchanged.
+- bench/py_page.mjs and bench/rs_page.mjs reproduce the comparison.

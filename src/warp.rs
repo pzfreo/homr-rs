@@ -38,8 +38,16 @@ fn cv_floor(v: f64) -> i64 {
 
 /// cv2.resize(img, (dw, dh)) for uint8 single channel with INTER_LINEAR.
 pub fn resize(src: &Gray, dw: usize, dh: usize) -> Gray {
+    resize_region(src, dw, dh, 0, 0, dw, dh)
+}
+
+/// The part [x0, x1) x [y0, y1) of cv2.resize(img, (dw, dh)), computed alone
+/// (each output pixel only depends on the source pixels around it).
+pub fn resize_region(src: &Gray, dw: usize, dh: usize, x0: usize, y0: usize, x1: usize, y1: usize) -> Gray {
+    let (x1, y1) = (x1.min(dw), y1.min(dh));
+    let (ow, oh) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
     if dw == src.w && dh == src.h {
-        return src.clone();
+        return src.slice(x0 as i64, y0 as i64, x1 as i64, y1 as i64);
     }
     let inv_scale_x = dw as f64 / src.w as f64;
     let inv_scale_y = dh as f64 / src.h as f64;
@@ -49,53 +57,61 @@ pub fn resize(src: &Gray, dw: usize, dh: usize) -> Gray {
     let iscale_y = scale_y.round_ties_even() as i64;
     let is_area_fast = (scale_x - iscale_x as f64).abs() < f64::EPSILON && (scale_y - iscale_y as f64).abs() < f64::EPSILON;
     if is_area_fast && iscale_x == 2 && iscale_y == 2 {
-        return resize_area_fast_2x(src, dw, dh);
+        return resize_area_fast_2x(src, dw, dh).slice(x0 as i64, y0 as i64, x1 as i64, y1 as i64);
     }
     const BITS: i32 = 11;
     const SCALE: f32 = (1 << BITS) as f32;
     let (sw, sh) = (src.w as i64, src.h as i64);
-    let mut xofs = vec![0i64; dw];
-    let mut ialpha = vec![0i32; dw * 2];
-    let mut xmin = 0usize;
+    // xmax: the first output column whose right neighbour is past the image
     let mut xmax = dw;
+    let mut xofs = vec![0i64; ow];
+    let mut ialpha = vec![0i32; ow * 2];
     for dx in 0..dw {
-        let mut fx = ((dx as f64 + 0.5) * scale_x - 0.5) as f32;
-        let mut sx = cv_floor(fx as f64);
+        let fx0 = ((dx as f64 + 0.5) * scale_x - 0.5) as f32;
+        let sx0 = cv_floor(fx0 as f64);
+        if sx0 + 1 >= sw {
+            xmax = xmax.min(dx);
+        }
+        if dx < x0 || dx >= x1 {
+            if dx >= x1 && xmax <= dx {
+                break;
+            }
+            continue;
+        }
+        let mut fx = fx0;
+        let mut sx = sx0;
         fx -= sx as f32;
         if sx < 0 {
-            xmin = dx + 1;
             fx = 0.0;
             sx = 0;
         }
-        if sx + 1 >= sw {
-            xmax = xmax.min(dx);
-            if sx >= sw - 1 {
-                fx = 0.0;
-                sx = sw - 1;
-            }
+        if sx + 1 >= sw && sx >= sw - 1 {
+            fx = 0.0;
+            sx = sw - 1;
         }
-        xofs[dx] = sx;
-        ialpha[dx * 2] = ((1.0f32 - fx) * SCALE).round_ties_even() as i32;
-        ialpha[dx * 2 + 1] = (fx * SCALE).round_ties_even() as i32;
+        let i = dx - x0;
+        xofs[i] = sx;
+        ialpha[i * 2] = ((1.0f32 - fx) * SCALE).round_ties_even() as i32;
+        ialpha[i * 2 + 1] = (fx * SCALE).round_ties_even() as i32;
     }
-    let _ = xmin;
-    let mut yofs = vec![0i64; dh];
-    let mut ibeta = vec![0i32; dh * 2];
-    for dy in 0..dh {
+    let mut yofs = vec![0i64; oh];
+    let mut ibeta = vec![0i32; oh * 2];
+    for dy in y0..y1 {
         let mut fy = ((dy as f64 + 0.5) * scale_y - 0.5) as f32;
         let sy = cv_floor(fy as f64);
         fy -= sy as f32;
-        yofs[dy] = sy;
-        ibeta[dy * 2] = ((1.0f32 - fy) * SCALE).round_ties_even() as i32;
-        ibeta[dy * 2 + 1] = (fy * SCALE).round_ties_even() as i32;
+        let i = dy - y0;
+        yofs[i] = sy;
+        ibeta[i * 2] = ((1.0f32 - fy) * SCALE).round_ties_even() as i32;
+        ibeta[i * 2 + 1] = (fy * SCALE).round_ties_even() as i32;
     }
     let hresize = |sy: i64| -> Vec<i32> {
         let row = &src.data[sy as usize * src.w..(sy as usize + 1) * src.w];
-        let mut out = vec![0i32; dw];
-        for dx in 0..dw {
-            let sx = xofs[dx] as usize;
-            out[dx] = if dx < xmax {
-                row[sx] as i32 * ialpha[dx * 2] + row[sx + 1] as i32 * ialpha[dx * 2 + 1]
+        let mut out = vec![0i32; ow];
+        for i in 0..ow {
+            let sx = xofs[i] as usize;
+            out[i] = if x0 + i < xmax {
+                row[sx] as i32 * ialpha[i * 2] + row[sx + 1] as i32 * ialpha[i * 2 + 1]
             } else {
                 row[sx] as i32 * (1 << BITS)
             };
@@ -103,29 +119,25 @@ pub fn resize(src: &Gray, dw: usize, dh: usize) -> Gray {
         out
     };
     let clip = |y: i64| if y >= 0 { if y < sh { y } else { sh - 1 } } else { 0 };
-    let mut dst = Gray::new(dw, dh, 0);
+    let mut dst = Gray::new(ow, oh, 0);
     let mut cache: Vec<(i64, Vec<i32>)> = Vec::new();
-    for dy in 0..dh {
-        let sy0 = yofs[dy];
-        let rows: Vec<Vec<i32>> = (0..2)
-            .map(|k| {
-                let sy = clip(sy0 + k);
-                if let Some(r) = cache.iter().find(|c| c.0 == sy) {
-                    r.1.clone()
-                } else {
-                    let r = hresize(sy);
-                    cache.push((sy, r.clone()));
-                    if cache.len() > 4 {
-                        cache.remove(0);
-                    }
-                    r
+    for i in 0..oh {
+        let sy0 = yofs[i];
+        for k in 0..2 {
+            let sy = clip(sy0 + k);
+            if !cache.iter().any(|c| c.0 == sy) {
+                cache.push((sy, hresize(sy)));
+                if cache.len() > 4 {
+                    cache.remove(0);
                 }
-            })
-            .collect();
-        let (b0, b1) = (ibeta[dy * 2], ibeta[dy * 2 + 1]);
-        for x in 0..dw {
-            let v = (((b0 * (rows[0][x] >> 4)) >> 16) + ((b1 * (rows[1][x] >> 4)) >> 16) + 2) >> 2;
-            dst.data[dy * dw + x] = v.clamp(0, 255) as u8;
+            }
+        }
+        let r0 = &cache.iter().find(|c| c.0 == clip(sy0)).unwrap().1;
+        let r1 = &cache.iter().find(|c| c.0 == clip(sy0 + 1)).unwrap().1;
+        let (b0, b1) = (ibeta[i * 2], ibeta[i * 2 + 1]);
+        for x in 0..ow {
+            let v = (((b0 * (r0[x] >> 4)) >> 16) + ((b1 * (r1[x] >> 4)) >> 16) + 2) >> 2;
+            dst.data[i * ow + x] = v.clamp(0, 255) as u8;
         }
     }
     dst

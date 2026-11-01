@@ -49,6 +49,15 @@ fn main() {
     lap("detect_staff");
     let _ = brace_dot_image(&sy, &st, h, w);
     lap("brace dot image");
-    let _ = multi_staffs(&staffs, &sy, &st, h, w);
+    let multi = multi_staffs(&staffs, &sy, &st, h, w).unwrap();
     lap("multi_staffs (all)");
+    let ps: Vec<usize> = page["preprocessed_shape"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
+    let image = homr_rs::warp::Gray { w: ps[1], h: ps[0], data: rd("preprocessed") };
+    let regions = homr_rs::staff_image::Regions { centers: multi.iter().flat_map(|m| m.staffs.iter().map(|s| (s.min_y, s.max_y))).collect() };
+    for m in &multi {
+        for s in &m.staffs {
+            let _ = homr_rs::staff_image::prepare_staff(s, &image, &regions);
+            lap("one staff image");
+        }
+    }
 }

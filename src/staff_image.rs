@@ -7,7 +7,7 @@ use crate::contours::find_contours;
 use crate::npmath::{np_mean, py_int, py_round};
 use crate::raster::fill_convex_poly;
 use crate::staff::{Staff, StaffPoint};
-use crate::warp::{bounding_rect_f, get_affine_transform, resize, warp_affine, Gray, Subdiv2D};
+use crate::warp::{bounding_rect_f, get_affine_transform, resize, resize_region, warp_affine, Gray, Subdiv2D};
 
 pub const CANVAS_W: usize = 1280;
 pub const CANVAS_H: usize = 256;
@@ -44,6 +44,13 @@ fn canvas_size(height: i64, width: i64) -> (i64, i64) {
     } else {
         (CANVAS_W as i64, py_int(height as f64 / width as f64 * CANVAS_W as f64))
     }
+}
+
+/// crop_image_and_return_new_top's rectangle (x0, y0, x1, y1) on a w x h image
+fn crop_rect(w: usize, h: usize, x1: f64, y1: f64, x2: f64, y2: f64) -> (i64, i64, i64, i64) {
+    let lx = |x: f64| 0.max((w as i64 - 1).min(py_round(x)));
+    let ly = |y: f64| 0.max((h as i64 - 1).min(py_round(y)));
+    (lx(x1.min(x2)), ly(y1.min(y2)), lx(x1.max(x2)), ly(y1.max(y2)))
 }
 
 /// crop_image_and_return_new_top
@@ -349,9 +356,12 @@ pub fn prepare_staff(staff: &Staff, image: &Gray, regions: &Regions) -> Result<P
     ];
     let dims = canvas_size(region[3] - region[1], region[2] - region[0]);
     let scale = dims.1 as f64 / (region[3] - region[1]) as f64;
-    let resized = resize(image, py_int(image.w as f64 * scale) as usize, py_int(image.h as f64 * scale) as usize);
+    let (rw, rh) = (py_int(image.w as f64 * scale) as usize, py_int(image.h as f64 * scale) as usize);
     let rf: Vec<f64> = region.iter().map(|&v| (v as f64 * scale).round_ties_even()).collect();
-    let (cropped, tl) = crop(&resized, rf[0] - 10.0, rf[1] - 50.0, rf[2] + 10.0, rf[3] + 50.0);
+    // crop(resize(page)): only the cropped part of the resized page is computed
+    let (xa, ya, xb, yb) = crop_rect(rw, rh, rf[0] - 10.0, rf[1] - 50.0, rf[2] + 10.0, rf[3] + 50.0);
+    let cropped = resize_region(image, rw, rh, xa as usize, ya as usize, xb as usize, yb as usize);
+    let tl = (xa, ya);
     let step2 = [rf[0] - tl.0 as f64, rf[1] - tl.1 as f64, rf[2] - tl.0 as f64, rf[3] - tl.1 as f64];
     let staff2 = transform_staff(staff, tl.0 as f64 / scale, tl.1 as f64 / scale, scale)?;
     let tris = dewarp_triangles(&cropped, &staff2);
@@ -372,7 +382,7 @@ pub fn prepare_staff(staff: &Staff, image: &Gray, regions: &Regions) -> Result<P
         tris,
         crop1: tl,
         page: (image.h, image.w),
-        resized: (resized.h, resized.w),
+        resized: (rh, rw),
     };
     Ok(PreparedStaff { canvas, staff: staff2, mapping })
 }
