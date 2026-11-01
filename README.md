@@ -4,9 +4,20 @@ A Rust port of [homr](https://github.com/liebharc/homr), Christian Liebhardt's
 optical music recognition, aimed at running in the browser as WebAssembly
 without Python. homr is AGPL-3.0, and so is this port (see `LICENSE`).
 
-**Status: prototype.** One stage is ported: staff detection
-(`homr/staff_detection.py: detect_staff`, homr commit `863eb3c`). The rest of
-homr, including running its models, is still Python.
+**Status: everything except the models is ported**, checked against homr as
+Partsong runs it (in Pyodide, with OpenCV 4.11): from the page image to the
+segmentation model's input, from its output to the staffs and systems, the
+staff images the transformer reads, and from the transformer's output to
+homr's MusicXML. The three ONNX models (segmentation, encoder, decoder) stay
+with onnxruntime(-web); Rust prepares their inputs and reads their outputs, so
+nothing has to block on JavaScript. See LOG.md for how each stage was checked.
+
+| stage | from | to | checked on the corpus |
+|---|---|---|---|
+| 2 | page image | segnet tiles; masks from its output | 5 pages identical (full corpus running) |
+| 1 | masks | staffs, systems (MultiStaffs) | 158/158 pages identical |
+| 3 | page + staff | the transformer's canvas | 627/627 staff images identical |
+| 4 | transformer output | MusicXML | 6/6 pages byte-identical (full corpus running) |
 
 ## Faithful to homr
 
@@ -20,7 +31,13 @@ summation. Each of these changed results on real pages before it was matched.
 Fixes or improvements to homr's behaviour belong upstream in homr first; this
 port follows homr.
 
-## Results so far (staff detection)
+## Speed
+
+Whole page from masks to MusicXML (the transformer's output replayed), in the
+browser engine (Node/V8): homr in Pyodide 38.1G retired instructions a page,
+this port as WebAssembly 2.2G (17x fewer). Staff detection alone: 41x fewer.
+
+## Results for staff detection (the first stage ported)
 
 Counted in retired instructions (`proc_pid_rusage`), not wall time.
 

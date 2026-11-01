@@ -322,3 +322,105 @@ pub fn sort_token_chords(symbols: &[Symbol]) -> Vec<Vec<Symbol>> {
     }
     chords
 }
+
+// ---------- the vocabulary (token number <-> string) ----------
+
+const TIME_DENOMINATORS: [i64; 10] = [1, 2, 3, 4, 6, 8, 12, 16, 32, 48];
+
+/// build_rhythm(): the rhythm tokens in order (index = token number).
+pub fn rhythm_vocab() -> Vec<String> {
+    let mut r: Vec<String> = ["PAD", "BOS", "EOS", "chord", "barline", "doublebarline", "bolddoublebarline", "repeatStart", "repeatEnd", "repeatEndStart", "voltaStart", "voltaStop", "voltaDiscontinue"].iter().map(|s| s.to_string()).collect();
+    r.extend((3..6).map(|c| format!("clef_F{c}")));
+    r.extend((1..6).map(|c| format!("clef_C{c}")));
+    r.extend((1..3).map(|c| format!("clef_G{c}")));
+    r.push("clef_TAB5".into());
+    r.extend((-7..8).map(|c| format!("keySignature_{c}")));
+    r.extend(TIME_DENOMINATORS.iter().map(|c| format!("timeSignature/{c}")));
+    r.extend((2..11).map(|c| format!("rest_{c}m")));
+    let bases = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 32, 64, 128];
+    let mut kern = Vec::new();
+    for d in bases {
+        for g in ["", "G"] {
+            for dot in ["", ".", ".."] {
+                kern.push(format!("{d}{g}{dot}"));
+            }
+        }
+    }
+    let irregular = [7, 11, 13, 18, 20, 21, 22, 24, 26, 28, 30, 34, 36, 40, 48, 56, 96];
+    r.extend(kern.iter().map(|k| format!("note_{k}")));
+    r.extend(irregular.iter().map(|k| format!("note_{k}")));
+    r.extend(kern.iter().map(|k| format!("rest_{k}")));
+    r.extend(irregular.iter().map(|k| format!("rest_{k}")));
+    r
+}
+
+pub fn lift_vocab() -> Vec<String> {
+    [NONOTE, EMPTY, "#", "##", "N", "b", "bb"].iter().map(|s| s.to_string()).collect()
+}
+
+pub fn position_vocab() -> Vec<String> {
+    [NONOTE, "upper", "upper2", "lower", "lower2"].iter().map(|s| s.to_string()).collect()
+}
+
+pub fn slur_vocab() -> Vec<String> {
+    [NONOTE, EMPTY, "slurStart_slurStop", "slurStart", "slurStop"].iter().map(|s| s.to_string()).collect()
+}
+
+pub fn pitch_vocab() -> Vec<String> {
+    let mut p: Vec<String> = vec![NONOTE.into(), EMPTY.into()];
+    let mut names = Vec::new();
+    for octave in 0..10 {
+        for n in ["C", "D", "E", "F", "G", "A", "B"] {
+            names.push(format!("{n}{octave}"));
+        }
+    }
+    names.reverse();
+    p.extend(names);
+    p
+}
+
+pub fn articulation_vocab() -> Vec<String> {
+    let lieder = "accent accent_arpeggiate accent_arpeggiate_fermata accent_arpeggiate_staccato accent_arpeggiate_tenuto accent_breathMark accent_breathMark_fermata accent_fermata accent_fermata_tremolo accent_staccatissimo accent_staccato accent_staccato_tenuto accent_staccato_tremolo accent_staccato_trill accent_tenuto accent_tremolo accent_trill arpeggiate arpeggiate_breathMark arpeggiate_fermata arpeggiate_fermata_staccato arpeggiate_fermata_tenuto arpeggiate_staccatissimo arpeggiate_staccatissimo_staccato arpeggiate_staccato arpeggiate_staccato_tenuto arpeggiate_tenuto arpeggiate_tremolo arpeggiate_trill breathMark breathMark_fermata breathMark_fermata_tenuto breathMark_staccato breathMark_tenuto breathMark_tremolo breathMark_trill fermata fermata_staccato fermata_tenuto fermata_tremolo fermata_trill fermata_turn mordent staccatissimo staccatissimo_staccato staccatissimo_staccato_tenuto staccatissimo_staccato_tenuto_trill staccatissimo_tenuto staccato staccato_tenuto staccato_tremolo staccato_trill staccato_turn tenuto tenuto_tremolo tenuto_trill tremolo trill trill_turn turn";
+    let mut a: Vec<String> = vec![NONOTE.into(), EMPTY.into()];
+    a.extend(lieder.split(' ').map(|s| s.to_string()));
+    a
+}
+
+/// The decoder's chosen token numbers for one step (rhythm, pitch, lift,
+/// position, articulation, slur), as homr's ScoreDecoder detokenizes them.
+pub struct Vocab {
+    rhythm: Vec<String>,
+    pitch: Vec<String>,
+    lift: Vec<String>,
+    position: Vec<String>,
+    articulation: Vec<String>,
+    slur: Vec<String>,
+}
+
+impl Default for Vocab {
+    fn default() -> Self {
+        Vocab { rhythm: rhythm_vocab(), pitch: pitch_vocab(), lift: lift_vocab(), position: position_vocab(), articulation: articulation_vocab(), slur: slur_vocab() }
+    }
+}
+
+impl Vocab {
+    /// One decoder step to a Symbol (None for BOS/EOS/PAD rhythms, which homr's
+    /// detokenize drops; homr stops at EOS before that).
+    pub fn symbol(&self, t: [usize; 6], coordinates: Option<Vec<f64>>) -> Option<Symbol> {
+        let tok = |v: &Vec<String>, i: usize| v.get(i).cloned().unwrap_or_default();
+        let rhythm = tok(&self.rhythm, t[0]);
+        if ["BOS", "EOS", "PAD"].contains(&rhythm.as_str()) {
+            return None;
+        }
+        Some(Symbol {
+            rhythm,
+            pitch: tok(&self.pitch, t[1]),
+            lift: tok(&self.lift, t[2]),
+            position: tok(&self.position, t[3]),
+            articulation: tok(&self.articulation, t[4]),
+            slur: tok(&self.slur, t[5]),
+            coordinates,
+            image_coordinates: None,
+        })
+    }
+}
