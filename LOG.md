@@ -44,3 +44,10 @@ results as they happen; newest at the bottom.
   off; now parses exactly (float_roundtrip).
 - Masks -> staff detection inputs (fragments with contours, clefs, bars):
   exact on the first 2 Pyodide-reference pages; full corpus running.
+- **Masks -> staffs: exact on all 53 corpus pages** against homr in Pyodide
+  (symbol detection: every fragment's box and contour, clefs, bar lines; then
+  staff detection's grids). 3 more pages fail in homr itself ("No noteheads
+  found").
+- Decision: skip add_notes_to_staffs. It attaches notes to staffs, but
+  nothing downstream reads them except debug images (staff_parsing only uses
+  them under `if debug.debug`), so they can't change homr's output.
