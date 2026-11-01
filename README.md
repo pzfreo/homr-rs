@@ -19,6 +19,24 @@ nothing has to block on JavaScript. See LOG.md for how each stage was checked.
 | 3 | page + staff | the transformer's canvas | 627/627 staff images identical |
 | 4 | transformer output | MusicXML | 6/6 pages byte-identical (full corpus running) |
 
+## Using it
+
+A page goes through the models three times; Rust does everything around them.
+
+    preprocess::preprocess(&bgr)                  // autocrop, resize to 1920 wide, CLAHE
+    preprocess::tile_origins / tile_input         // -> segnet input tiles
+      [segnet] -> per-tile argmax class maps
+    preprocess::merge_tiles, masks, postprocess   // -> masks (noise filtered, staff strengthened)
+    page::analyse_page(&masks)                    // -> staffs and systems (MultiStaffs)
+    staff_image::prepare_staff(&staff, &gray, ..) // -> the transformer's canvas + mapping back
+    staff_image::to_model_input(&canvas)          // -> encoder input
+      [encoder, decoder loop] -> token numbers + coordinates per step
+    tokens::Vocab::symbol(tokens, coordinates)    // -> homr's symbols
+    score::page_xml(&multi, &gray, &mapping, ..)  // -> homr's MusicXML (with a predict callback)
+
+`score::page_xml` follows homr's own voice assembly; an app with its own layout
+(Partsong) calls `prepare_staff` per staff and the symbol/MusicXML parts itself.
+
 ## Faithful to homr
 
 The port aims to give exactly homr's results, not approximately: same staffs,
