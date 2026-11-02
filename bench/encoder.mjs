@@ -26,7 +26,7 @@ for(const source of fs.readFileSync(corpus,'utf8').trim().split('\n')){
   const ef=new Float32Array(expected.buffer),gf=new Float32Array(e.memory.buffer,op,got.length);
   for(let i=0;i<got.length;i++){diff+=Number(got[i]!==expected[i]);const error=Math.abs(gf[i]-ef[i]);if(!Number.isFinite(error))throw Error('nonfinite output');max=Math.max(max,error);sum+=error;}
   const dst=path.join(out,page,String(staff));fs.mkdirSync(dst,{recursive:true});fs.writeFileSync(path.join(dst,'context.bin'),Buffer.from(e.memory.buffer,op,ref.length));
-  const row={staff,values:got.length,bit_differences:diff,max_abs:max,mean_abs:sum/got.length,instructions,phases};
+  const row={staff,values:got.length,bit_differences:diff,max_abs:max,mean_abs:sum/got.length,instructions,phases,memory_bytes:e.memory.buffer.byteLength};
   if(decoder){
    const refs=JSON.parse(fs.readFileSync(path.join(process.env.DECODER_REFS,page,String(staff),'steps.json')));const steps=process.env.COMBINED?e.encoder_decode(handle,decoder,ip,tokensOut,608):e.decoder_run(decoder,op,tokensOut,608,0);if(!steps)throw Error('decode failed');
    let changedSteps=0,changedHeads=0;const symbols=[];
