@@ -11,6 +11,28 @@ pub fn gelu(x: f32) -> f32 {
 pub fn erf(x: f32) -> f32 {
     crate::decoder::activation::erf(x)
 }
+pub fn gelu_in_place(x: &mut [f32]) {
+    #[cfg(any(target_arch = "aarch64", target_arch = "wasm32"))]
+    {
+        unsafe { super::simd::activation(x, true) };
+        return;
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "wasm32")))]
+    for v in x {
+        *v = gelu(*v);
+    }
+}
+pub fn erf_in_place(x: &mut [f32]) {
+    #[cfg(any(target_arch = "aarch64", target_arch = "wasm32"))]
+    {
+        unsafe { super::simd::activation(x, false) };
+        return;
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "wasm32")))]
+    for v in x {
+        *v = erf(*v);
+    }
+}
 
 /// Native Welford variance and fused affine transform; input/output are NHWC.
 pub fn layer_norm(
@@ -196,6 +218,13 @@ pub fn depthwise(
     kernel: usize,
     pad: usize,
 ) -> Vec<f32> {
+    assert_eq!(x.len(), h * w * c);
+    assert_eq!(weights.len(), c * kernel * kernel);
+    assert_eq!(bias.len(), c);
+    #[cfg(any(target_arch = "aarch64", target_arch = "wasm32"))]
+    if c.is_multiple_of(4) {
+        return unsafe { super::simd::depthwise(x, h, w, c, weights, bias, kernel, pad) };
+    }
     let mut out = vec![0.0; x.len()];
     for y in 0..h {
         for xx in 0..w {

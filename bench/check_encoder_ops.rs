@@ -84,8 +84,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &g.tensor(&node.inputs[2])?.floats()?,
                 node.floats["epsilon"],
             ),
-            "Erf" => x.iter().map(|&v| kernels::erf(v)).collect(),
-            "Gelu" => x.iter().map(|&v| kernels::gelu(v)).collect(),
+            "Erf" => {
+                let mut out = x.clone();
+                kernels::erf_in_place(&mut out);
+                out
+            }
+            "Gelu" => {
+                let mut out = x.clone();
+                kernels::gelu_in_place(&mut out);
+                out
+            }
             "Div" => {
                 let b = g.tensor(&node.inputs[1])?.scalar()?;
                 x.iter().map(|&v| v / b).collect()

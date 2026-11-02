@@ -285,9 +285,7 @@ impl Encoder {
                 );
                 y = b.fc1.run(&y);
                 observe(&format!("{}/mlp/fc1/Add_output_0", b.name), &y, h, w);
-                for v in &mut y {
-                    *v = kernels::gelu(*v);
-                }
+                kernels::gelu_in_place(&mut y);
                 observe(&format!("{}/mlp/act/Mul_1_output_0", b.name), &y, h, w);
                 y = b.fc2.run(&y);
                 observe(&format!("{}/mlp/fc2/Add_output_0", b.name), &y, h, w);

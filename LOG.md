@@ -1156,3 +1156,12 @@ stem instead initializes bias early. With the segmented schedule, every
 observed intermediate and all **655,360 output float32 bits** on angelus_0
 staff 0 match native exactly. This is whole-model sample agreement, not yet a
 corpus claim. Runtime weight loading uses homr's original encoder ONNX.
+
+### Stage 3: vector activations and depthwise
+
+Vectorized MLAS erf/GELU and padded NHWC depthwise convolution. All native
+single-node checks, optimized Gemm/Gelu probes and observed whole-model
+intermediates remain bit-identical on angelus_0 staff 0. The native corpus
+runner now executes every staff, compares float32 bits directly, and records
+retired instructions plus an operation breakdown. The first full native
+corpus run is underway; no corpus result is claimed yet.
