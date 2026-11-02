@@ -95,6 +95,49 @@ same output buffer; `bench/encoder_ops.mjs` checks isolated native probes.
 Optional `encoder-probes`, `encoder-trace`, and `encoder-profile` features
 are diagnostic only; normal artifacts have no diagnostic imports.
 
+### Shared-memory encoder workers
+
+`encoder-threads` adds allocation-free worker jobs for GEMM/convolution,
+depthwise convolution, GELU and LayerNorm. It preserves each output's original
+reduction order. The coordinator owns allocation and joins every operation;
+workers share the weights and have private stacks/TLS. Build shared-memory
+strict and fused artifacts separately from the ordinary nonshared fallback:
+
+```sh
+rustup toolchain install nightly --profile minimal --component rust-src
+python bench/build_encoder_threads.py <scratch-output-dir>
+```
+
+The builder recompiles the standard library with atomics and bulk memory.
+It produces `encoder-threads-strict.wasm` and `encoder-threads-fused.wasm`.
+The fused artifact still requires its fused-host probe to pass. In a browser,
+COOP/COEP isolation and a Web Worker coordinator are required: the pool uses
+blocking `Atomics.wait`, which is forbidden on Window. The host needs no
+wasm-bindgen glue:
+
+```js
+import {EncoderPool} from './tools/encoder_pool.mjs';
+const module = await WebAssembly.compile(await (await fetch(wasmUrl)).arrayBuffer());
+const pool = await EncoderPool.create(module, {threads: 4});
+const e = pool.exports;
+// Existing decoder_alloc/load and encoder_load/run/decode signatures apply.
+// Drop models and host buffers after inference, then release the pool:
+await pool.close();
+```
+
+Only the coordinator may call graph/allocator exports; worker instances call
+`encoder_work` with disjoint output ranges. Treat a pool as unusable after a
+worker failure and terminate it before discarding its memory. Ordinary
+nonshared builds keep the existing exports and work without isolation.
+LOG.md records exactness, interleaved scaling results and remaining device
+validation. `bench/thread_scaling.mjs` measures total process instructions and
+wall time; `bench/threads_chrome.mjs` is the isolated-page browser harness.
+
+`bench/gpu_fc1_chrome.mjs` prototypes ordered WGSL fc1 arithmetic with a
+load-time known-answer gate. This is an experimental operator probe, not a GPU
+encoder. LOG.md distinguishes actual results from scripts blocked by Chrome
+launch restrictions.
+
 ## Rust decoder
 
 ```rust,ignore

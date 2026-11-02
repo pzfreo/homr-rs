@@ -266,50 +266,38 @@ pub(super) unsafe fn activation(x: &mut [f32], gelu: bool) {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) unsafe fn depthwise(
-    x: &[f32],
-    h: usize,
+pub(super) unsafe fn depthwise_into(
+    padded: &[f32],
     w: usize,
     c: usize,
-    weights: &[f32],
+    packed: &[f32],
     bias: &[f32],
     kernel: usize,
     pad: usize,
-) -> Vec<f32> {
+    first_pixel: usize,
+    out: &mut [f32],
+) {
     let pw = w + 2 * pad;
-    let mut padded = vec![0.0; (h + 2 * pad) * pw * c];
-    for y in 0..h {
-        padded[((y + pad) * pw + pad) * c..((y + pad) * pw + pad + w) * c]
-            .copy_from_slice(&x[y * w * c..(y + 1) * w * c]);
-    }
-    let mut packed = vec![0.0; weights.len()];
-    for ch in 0..c {
-        for k in 0..kernel * kernel {
-            packed[k * c + ch] = weights[ch * kernel * kernel + k];
-        }
-    }
-    let mut out = vec![0.0; x.len()];
-    for y in 0..h {
-        for xx in 0..w {
-            for ch in (0..c).step_by(4) {
-                let mut sum = zero();
-                for ky in 0..kernel {
-                    for kx in 0..kernel {
-                        sum = maddv(
-                            load(padded.as_ptr().add(((y + ky) * pw + xx + kx) * c + ch)),
-                            load(packed.as_ptr().add((ky * kernel + kx) * c + ch)),
-                            sum,
-                        );
-                    }
+    for pixel in 0..out.len() / c {
+        let y = (first_pixel + pixel) / w;
+        let xx = (first_pixel + pixel) % w;
+        for ch in (0..c).step_by(4) {
+            let mut sum = zero();
+            for ky in 0..kernel {
+                for kx in 0..kernel {
+                    sum = maddv(
+                        load(padded.as_ptr().add(((y + ky) * pw + xx + kx) * c + ch)),
+                        load(packed.as_ptr().add((ky * kernel + kx) * c + ch)),
+                        sum,
+                    );
                 }
-                store(
-                    out.as_mut_ptr().add((y * w + xx) * c + ch),
-                    add(sum, load(bias.as_ptr().add(ch))),
-                );
             }
+            store(
+                out.as_mut_ptr().add(pixel * c + ch),
+                add(sum, load(bias.as_ptr().add(ch))),
+            );
         }
     }
-    out
 }
 pub(super) unsafe fn product(
     a: &[f32],

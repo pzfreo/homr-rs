@@ -1438,3 +1438,274 @@ on cx/encoder; nothing was pushed or posted, and neither Partsong nor homr was
 edited. Unattended decisions were the fixed graph executor, the rigorously
 bounded strict fast path, four disjoint corpus workers, and deferring a browser
 threading runtime until its own validation round.
+
+## Exact encoder threads and GPU prototype (cx/threads)
+
+### Shared-memory worker implementation and first verified stage
+
+Selected a host-managed synchronous worker pool, without std::thread or
+wasm-bindgen. The coordinator owns graph execution, allocation and convolution
+lowering. Kernels publish a stack-resident descriptor, dispatch disjoint output
+ranges, compute rank zero, then join all workers before the descriptor/buffers
+can be released. GEMM splits whole four-row tiles; depthwise splits spatial
+pixels; activations split whole SIMD vectors; LayerNorm splits complete rows.
+No contraction K or Welford channel reduction is split or reordered.
+
+tools/encoder_pool.mjs and encoder_worker.mjs work in Node and browser Workers.
+Workers share one memory/model, with private stacks, per-instance stack globals
+and initialized TLS blocks. They enter only allocation-free encoder_work.
+Atomics publish jobs and join; Atomics.wait/notify sleep instead of spinning.
+The coordinator must be a Web Worker in the browser because Window forbids
+blocking Atomics.wait. A worker failure poisons the pool; terminate workers
+before discarding memory rather than reusing an abandoned Rust stack job.
+
+The stock precompiled Rust std cannot link --shared-memory (confirmed by a
+linker rejection). bench/build_encoder_threads.py rebuilds std,panic_abort
+with atomics/bulk-memory and imports shared memory, exporting stack/TLS setup.
+The installed compiler is nightly 1.101.0 (3e92e1a2d, 2026-11-01). Existing
+strict/fused nonshared builds remain available with encoder-threads disabled.
+The shared build uses the existing encoder/decoder C ABI plus encoder_work.
+No model weights, inputs, output data or fixture hashes are embedded.
+
+All isolated Conv, depthwise Conv, LayerNorm, MatMul/Gemm, Div, Erf and Gelu
+checks pass with **zero differing bits**, in both shared WASM variants at
+**1, 2, 4 and 6 threads**. The strict four-thread follow-3 sample has an exact
+context and **121 matching decoder steps**, with **89 joined jobs per staff**.
+Native release tests and all-target/all-feature Clippy -D warnings pass after
+the allocation-free kernel refactor. Corpus checks are the next stage.
+
+The first exploratory scaling harness put all cases in one Node process, so
+its process-wide instruction counter could include idle engines' GC/JIT work.
+For example fused-one-thread samples were 22.086G, 20.970G and 22.323G despite
+other thread counts clustering near 20.98G. It is retained in scratch as
+threads_scaling_shared_process.json, not used as the final comparison. The
+final harness isolates each engine in its own persistent process and samples
+that process, including all its kernel workers. Cases still run sequentially,
+with one warm-up and three interleaved measured rounds, preserving every raw
+sample and the predeclared rotation/reversal order. This corrects attribution,
+not arithmetic or the chosen workload. The machine remains shared and loaded.
+
+### Node scaling: final isolated-process measurements
+
+Host reports Apple M5 Max, 18 logical CPUs, ARM64 Node 26.9.0. Every case has
+one coordinator plus N-1 allocation-free kernel workers; only one case runs
+at once. Other resident cases are separate idle processes. One warm-up per
+case, then three interleaved rounds with predeclared rotation/reversal. Model
+loading, pool creation and input-file reads are outside the measurement.
+Each measured Rust call checks native context bits; ORT repeats check their
+own warmed bytes (ORT is not claimed exact). Host dispatch, the final WASM
+context copy, output checks and coordinator work are included. Instruction
+counts cover the case process and all its workers, not the benchmark driver's
+IPC. Wall times include the measured call's IPC round trip; engine-only values
+are retained separately. No sample is dropped or replaced by a fastest run.
+
+Median of three, G retired instructions and seconds per staff:
+
+| engine | total threads | G instructions | seconds |
+|---|---:|---:|---:|
+| Rust fused shared WASM | 1 | 20.975702 | 1.884906 |
+| Rust fused shared WASM | 2 | 20.976307 | 0.847230 |
+| Rust fused shared WASM | 4 | 20.988078 | 0.563445 |
+| Rust fused shared WASM | 6 | 20.996975 | 0.255151 |
+| Rust strict shared WASM | 1 | 267.678843 | 38.058830 |
+| Rust strict shared WASM | 2 | 267.877712 | 22.316589 |
+| Rust strict shared WASM | 4 | 268.276638 | 6.411590 |
+| Rust strict shared WASM | 6 | 268.666513 | 4.035695 |
+| ORT-web 1.30 WASM | 1 | 28.407107 | 1.456688 |
+| ORT-web 1.30 WASM | 4 | 30.753257 | 0.387993 |
+
+Raw wall samples in seconds (round order), to show the loaded machine's range:
+
+| engine / threads | trial 1 | trial 2 | trial 3 |
+|---|---:|---:|---:|
+| fused / 1 | 1.659992 | 2.285288 | 1.884906 |
+| fused / 2 | 0.661052 | 1.310578 | 0.847230 |
+| fused / 4 | 0.563445 | 0.429210 | 0.635169 |
+| fused / 6 | 0.243802 | 0.255151 | 0.347490 |
+| strict / 1 | 23.206173 | 44.961189 | 38.058830 |
+| strict / 2 | 12.103092 | 36.750369 | 22.316589 |
+| strict / 4 | 5.847406 | 6.411590 | 14.292391 |
+| strict / 6 | 4.035695 | 4.017108 | 6.816574 |
+| ORT / 1 | 1.456688 | 1.403349 | 2.316602 |
+| ORT / 4 | 0.386605 | 0.387993 | 0.769672 |
+
+Strict instruction overhead relative to its one-thread shared path is 0.223%
+at four threads and 0.369% at six; fused is 0.059% and 0.101%. Sleeping waits
+avoid spin amplification. Instruction counts remain stable except ORT's last
+four-thread sample (41.542313G, retained, versus 30.546214G/30.753257G), where
+runtime work/spinning is included rather than subtracted. Superlinear wall
+ratios reflect load/core-placement differences on this heterogeneous machine;
+they are not claims of algorithmic speedup or portable phone scaling.
+Raw final evidence is threads_scaling_final.json; the exploratory shared-PID
+run is archived separately. Four-thread corpus work starts after timing exits.
+
+### WebGPU prototype and Chrome launch blocker
+
+The prototype is fc1 [20480,96] x [96,384], **7,864,320 output values**. Each
+invocation owns four adjacent outputs, executes ascending K with explicit WGSL
+fma, then applies bias separately. No parallel K reduction, fp16 or dot/subgroup
+reassociation is used. Input/native tensors come from the original optimized
+native single-node probe. The Rust output is independently generated and
+matches every native bit before the fixture is accepted. No model data is
+committed; tools/prepare_gpu_fc1.py writes all operands/references to scratch.
+
+The load-time known-answer design tests six storage-fed fma triples (fusion,
+double-rounding, subnormals, signed zero and ties), then selected cells from
+the same fc1 shader generator to distinguish K order and bias-after behavior.
+All **10 known answers** were independently verified against native fmaf and
+ORT 1.31.0. Both generated shaders parse and validate with Naga 27.0.3 in a
+scratch validator. These are analytic numeric answers, not model-output hashes.
+Production must reject the GPU path on any failure/device loss, rerun tests
+after device recreation, and still validate every model operator/full corpus
+on the target engine. Fma tests alone cannot certify LayerNorm division/sqrt
+or GELU, nor every input permitted by WGSL's floating-point rules.
+
+The GPU harness records Apple adapter information, refuses software/other
+adapters, compares every output against both native and Rust, warms once and
+times three runs. It reports compute-pass GPU timestamps when available,
+input-upload + dispatch/wait wall time, and output readback separately. Even a
+failed self-test is followed by the diagnostic fc1 comparison, but exact=true
+requires both tests and every full-output bit comparison to pass.
+
+Both the GPU and CPU Chrome scripts were launch-attempted with headless=new
+and enable-unsafe-webgpu. Chrome exits **SIGABRT before CDP** in this sandbox;
+no GPU shader ran and no Chrome speed/bit comparison is claimed. The actual
+fc1 GPU differences and timings are **unmeasured**, not zero. The CPU browser
+harness includes COOP/COEP and runs one engine at a time, warming/setup outside
+counters. Its new instructionsForPid addon reads the renderer's total retired
+instructions via proc_pid_rusage; it refuses stale addons that could silently
+read the Node driver's PID. Renderer PID changes invalidate the measurement.
+
+One-line GPU command from this clone, using the prepared scratch fixtures:
+
+    node bench/gpu_fc1_chrome.mjs ../threads_gpu_fixture ../threads_gpu_chrome.json
+
+CPU browser command (after building current bench/counter.c as threads_counter.node):
+
+    COUNTER_ADDON=../threads_counter.node node bench/threads_chrome.mjs ../threads_build ../models_files/encoder_pytorch_model_465-597144cab54c8f6d0f6c9619df5c5312694eadd6.onnx ../models_native/angelus_0/0 ../ortbench/node_modules/onnxruntime-web/dist ../threads_cpu_chrome.json
+
+The shaders, harnesses and their launch-failure evidence are ready for a host
+where Chrome can start. No workaround changes the sandbox or substitutes a
+software GPU for Apple Metal.
+
+### Threaded fused corpus verified
+
+Four-thread fused WASM completed **627/627 bit-identical contexts**, **38,076
+native decoder steps**, zero differing heads/steps/lengths, and XML **75
+byte-identical files + 13 matching native failures**. Every staff records
+**[89,89,89,89]** completed jobs across coordinator and workers: 55,803 joined
+jobs, 223,212 rank executions. The strict four-thread corpus is now running.
+
+### Phone recommendation and explicit estimate assumptions
+
+Rank current evidence by exactness first: (1) the shared CPU encoder, with
+the passing fused artifact on Android and strict on iPhone; (2) a future GPU
+encoder only after its arithmetic gate, every operator and the full corpus
+pass on the actual browser/device; (3) the ordinary nonshared strict/fused
+artifact where shared memory or the worker pool cannot be used. The pool
+improves elapsed CPU latency without materially increasing total work. It
+does not remove strict fused-emulation's roughly 267G instruction budget.
+
+No physical iPhone/Android CPU run or exact GPU timing was available. For a
+concrete planning scenario, assume a phone takes **2–4 times this loaded
+Mac's measured elapsed latency at the same worker count**. This assumption is
+not a measured hardware ratio: core placement, thermal limits, Safari versus
+V8 code generation and background load can move results outside the ranges.
+In particular the Mac's raw samples vary substantially and are not a device
+performance calibration. Do not use these estimates as a shipping promise.
+
+| exact CPU option | 6-core iPhone, strict (scenario) | 4-core Android, fused (scenario) | remaining work |
+|---|---:|---:|---|
+| shared pool, 6 iPhone / 4 Android threads | about 8–16 s/staff | about 1.1–2.3 s/staff | integrate host assets, validate full corpus and worker lifecycle on devices, choose thermal/UI worker cap |
+| nonshared fallback, 1 thread | about 76–152 s/staff | about 3.8–7.5 s/staff | device validation; no worker/isolation requirement |
+
+These fallback estimates use the measured one-thread shared path as an
+approximation; normal nonshared artifacts are regression-checked but were
+not separately wall-time benchmarked. The estimates intentionally expose that
+uncertainty rather than substituting the earlier faster exploratory run.
+
+The exact GPU whole-encoder phone time is **not estimable from this run**:
+Chrome never started, and neither this fc1 kernel nor a complete exact GPU
+encoder ran. The supplied Android **0.35 s/staff** is the current nonexact
+ORT-web GPU reference, not a measured time or promised target for our shader.
+Matching that order of latency is the reason to pursue the GPU experiment.
+Remaining work is to run the prepared Metal probe, then implement/verify
+depthwise and downsample schedules, ordered Welford LayerNorm with native
+division/sqrt rounding, MLAS erf/GELU, pointwise operations and device-resident
+buffers. Validate all 627 contexts/tokens on Chrome Metal and Safari/WebKit,
+plus Android backends, before selecting it as an exact path. A small fma
+self-test alone cannot establish whole-model exactness or portable WGSL
+floating-point guarantees. No full GPU encoder is implemented in this round.
+
+### Regression and build verification
+
+Both ordinary nonshared artifacts and both shared artifacts pass the combined
+encoder_decode regression: a separate bit-exact follow-3 context and **121
+matching native token steps** each. Shared samples use the one-rank dispatch
+path, while full corpus uses four ranks and all 1/2/4/6 operator probes pass.
+The existing C ABI signatures are retained; the shared build only adds its
+worker entry/imports and setup globals.
+
+Required checks pass: cargo fmt --check; cargo clippy --all-targets
+--all-features -- -D warnings; cargo test --release (**11 library tests**, all
+binary/doc targets); strict/fused shared WASM Clippy -D warnings using rebuilt
+std; strict/fused nonshared WASI tests (**10 pass, 1 should-panic test ignored
+by the aborting WASI runner**, with that test passing natively). Both normal
+WASM builds, both shared WASM builds and both shared diagnostic probe builds
+are rebuilt successfully. The two shared normal modules reproduce the frozen
+corpus modules **byte-for-byte** after rebuilding, establishing artifact
+provenance; this is not a substitute for output comparisons or a hash test.
+All actual outputs are still compared element by element against native.
+
+### Final threaded corpus result and unattended report
+
+The strict run and both XML replays exited successfully. Both normal shared
+artifacts execute the complete original corpus through **four total ranks**,
+including the coordinator. Every staff records **[89,89,89,89]** joined job
+executions: no single-thread fallback or missing rank is hidden in these runs.
+All 410,910,720 context float32 values per build are bit-compared directly.
+
+| build, 4 total threads | exact contexts | decoder steps | changed heads / steps / lengths | XML byte-identical / matching native failures |
+|---|---:|---:|---:|---:|
+| shared fused SIMD128 + relaxed SIMD | 627/627 | 38,076 | 0 / 0 / 0 | 75 / 13 |
+| shared strict SIMD128, fused emulation | 627/627 | 38,076 | 0 / 0 / 0 | 75 / 13 |
+
+All 1/2/4/6-thread native operator comparisons and benchmark staff outputs
+also pass; full-corpus runs use four threads, not every thread count. The
+ordinary single-thread artifacts retain every previous C ABI function with
+**zero imports**; shared artifacts retain them and add env.memory and
+encoder_threads.dispatch. Encoder/decoder combined API regression passes on
+both ordinary and both shared artifacts. Corpus uses the direct encoder_run
+output pointer as decoder_run input; neither stage's context crosses JS.
+
+Scratch evidence: threads_fused/comparison.json, threads_strict/comparison.json,
+threads_fused_xml/comparison.json, threads_strict_xml/comparison.json,
+threads_scaling_final.json and threads_final_checks.log. Input recordings and
+the unchanged native reference are reused; every staff actually runs the new
+encoder and its own Rust decoder. XML is a recorded-boundary replay, not a live
+Partsong/browser page run. Neither Partsong nor the homr checkout was edited.
+
+Unattended decisions were a host-managed allocation-free pool with rebuilt
+atomic std/private TLS, four-thread corpus runs to limit concurrent CPU use,
+isolated-process counters rather than the contaminated exploratory harness,
+and keeping the GPU result unknown after the observed Chrome SIGABRT. Phone
+ranges are explicitly uncalibrated planning assumptions; no device timing or
+exact GPU whole-model performance is invented. The next iPhone performance
+decision needs the prepared Metal probe and real-device validation. The
+remaining GPU work is the full graph, including exact division/sqrt/GELU and
+Chrome/Safari/device corpus checks; the prototype alone is not a GPU encoder.
+
+All source/tool changes and result numbers are local commits on cx/threads.
+Model weights, recordings, generated outputs, timing samples, XML and browser
+profiles stay in scratch. Nothing was pushed or posted.
+
+### WebGPU fc1 probe, run by the maintainer's side (Chrome 156, Apple Metal 3)
+
+`node bench/gpu_fc1_chrome.mjs`: **0 of 7,864,320** values differ from native
+(and from Rust) in each of three trials; median GPU time 0.40 ms. The
+known-answer gate still **fails**: the subnormal fma case returns 0 instead of
+the subnormal 2 (Metal flushes subnormal results to zero), and schedule cell 51
+(a subnormal answer) does likewise. fc1's corpus inputs happen to produce no
+subnormals, so the outputs agree, but bit-identity is not guaranteed on Metal for
+inputs that reach the subnormal range. An exact GPU encoder would need either
+proof that no subnormals arise, or detection and CPU fallback for affected tiles.

@@ -4,11 +4,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {createRequire} from 'node:module';
+import {EncoderPool} from '../tools/encoder_pool.mjs';
 const [wasm,model,root,out,corpus]=process.argv.slice(2);
 const counter=process.env.COUNTER_ADDON?createRequire(import.meta.url)(path.resolve(process.env.COUNTER_ADDON)):null;
 let profiling=false,previous=0,phases=Array(11).fill(0);
 const imports={encoder_profile:{mark(id){if(profiling){const now=counter.instructions();phases[id]+=now-previous;if(process.env.TRACE_PHASES)console.log('phase',id,now-previous);previous=counter.instructions();}}}};
-const {instance:{exports:e}}=await WebAssembly.instantiate(fs.readFileSync(wasm),imports);
+const pool=process.env.ENCODER_THREADS?await EncoderPool.create(await WebAssembly.compile(fs.readFileSync(wasm)),{threads:Number(process.env.ENCODER_THREADS)}):null;
+const e=pool?.exports??(await WebAssembly.instantiate(fs.readFileSync(wasm),imports)).instance.exports;
 const copy=bytes=>{const p=e.decoder_alloc(bytes.length);new Uint8Array(e.memory.buffer,p,bytes.length).set(bytes);return p;};
 const bytes=fs.readFileSync(model),p=copy(bytes),handle=e.encoder_load(p,bytes.length);e.decoder_free(p,bytes.length);if(!handle)throw Error('encoder rejected (including fused-host check)');
 const ip=e.decoder_alloc(256*1280*4),op=e.decoder_alloc(1280*512*4);let staffs=0,differing=0;const pages=[];
@@ -19,6 +21,7 @@ for(const source of fs.readFileSync(corpus,'utf8').trim().split('\n')){
  const calls=[];
  for(let staff=0;staff<meta.staffs;staff++){
   const d=path.join(root,page,String(staff));const image=fs.readFileSync(path.join(d,'input.f32'));new Uint8Array(e.memory.buffer,ip,image.length).set(image);
+  const jobsBefore=pool?.executions();
   phases=Array(11).fill(0);profiling=!!counter;const start=counter?.instructions();previous=start;
   if(e.encoder_run(handle,ip,op)!==1)throw Error('encode failed');
   const instructions=counter?counter.instructions()-start:null;profiling=false;
@@ -26,7 +29,9 @@ for(const source of fs.readFileSync(corpus,'utf8').trim().split('\n')){
   const ef=new Float32Array(expected.buffer),gf=new Float32Array(e.memory.buffer,op,got.length);
   for(let i=0;i<got.length;i++){diff+=Number(got[i]!==expected[i]);const error=Math.abs(gf[i]-ef[i]);if(!Number.isFinite(error))throw Error('nonfinite output');max=Math.max(max,error);sum+=error;}
   const dst=path.join(out,page,String(staff));fs.mkdirSync(dst,{recursive:true});fs.writeFileSync(path.join(dst,'context.bin'),Buffer.from(e.memory.buffer,op,ref.length));
-  const row={staff,values:got.length,bit_differences:diff,max_abs:max,mean_abs:sum/got.length,instructions,phases,memory_bytes:e.memory.buffer.byteLength};
+  const workerJobs=pool?.executions().map((n,i)=>n-jobsBefore[i]);
+  if(workerJobs?.some(n=>n===0))throw Error('a worker did not execute this staff');
+  const row={staff,values:got.length,bit_differences:diff,max_abs:max,mean_abs:sum/got.length,instructions,phases,memory_bytes:e.memory.buffer.byteLength,worker_jobs:workerJobs};
   if(decoder){
    const refs=JSON.parse(fs.readFileSync(path.join(process.env.DECODER_REFS,page,String(staff),'steps.json')));const steps=process.env.COMBINED?e.encoder_decode(handle,decoder,ip,tokensOut,608):e.decoder_run(decoder,op,tokensOut,608,0);if(!steps)throw Error('decode failed');
    let changedSteps=0,changedHeads=0;const symbols=[];
@@ -42,5 +47,6 @@ for(const source of fs.readFileSync(corpus,'utf8').trim().split('\n')){
  const row={page,encoder:rows};pages.push(row);fs.writeFileSync(path.join(out,page,'metrics.json.tmp'),JSON.stringify(row));fs.renameSync(path.join(out,page,'metrics.json.tmp'),path.join(out,page,'metrics.json'));
  if(decoder&&vocab){const meta=JSON.parse(fs.readFileSync(path.join(process.env.DECODER_REFS,page,'decoder.json')));meta.calls=calls;fs.writeFileSync(path.join(out,page,'decoder.json'),JSON.stringify(meta));}
 }
-const report={wasm,staffs,differing_staffs:differing,pages};fs.writeFileSync(path.join(out,'comparison.json'),JSON.stringify(report,null,2));console.log({staffs,differing});e.encoder_drop(handle);e.decoder_free(ip,256*1280*4);e.decoder_free(op,1280*512*4);if(differing)process.exitCode=1;
+const report={wasm,threads:pool?.threads??1,threaded_jobs:pool?.jobs??0,staffs,differing_staffs:differing,pages};fs.writeFileSync(path.join(out,'comparison.json'),JSON.stringify(report,null,2));console.log({staffs,differing,threaded_jobs:pool?.jobs??0});e.encoder_drop(handle);e.decoder_free(ip,256*1280*4);e.decoder_free(op,1280*512*4);if(differing)process.exitCode=1;
 if(decoder){e.decoder_drop(decoder);e.decoder_free(tokensOut,608*32);if(pages.some(p=>p.encoder.some(s=>s.differing_steps||s.extra_steps||s.missing_steps)))process.exitCode=1;}
+await pool?.close();
