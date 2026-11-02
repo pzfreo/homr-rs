@@ -60,6 +60,7 @@ fn main() {
                             position: st(5),
                             coordinates: s[6].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap()).collect()),
                             image_coordinates: None,
+                            extra: vec![],
                         }
                     })
                     .collect()

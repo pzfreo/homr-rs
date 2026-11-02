@@ -29,7 +29,7 @@ fn main() {
         let recorded: Vec<Vec<Symbol>> = dec["calls"].as_array().unwrap().iter().map(|c| c.as_array().unwrap().iter().map(|s| {
             let s = s.as_array().unwrap();
             let t = |i: usize| s[i].as_str().unwrap().to_string();
-            Symbol { rhythm: t(0), pitch: t(1), lift: t(2), articulation: t(3), slur: t(4), position: t(5), coordinates: s[6].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap()).collect()), image_coordinates: None }
+            Symbol { rhythm: t(0), pitch: t(1), lift: t(2), articulation: t(3), slur: t(4), position: t(5), coordinates: s[6].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap()).collect()), image_coordinates: None, extra: vec![] }
         }).collect()).collect();
         let mut last = None;
         for _ in 0..reps {

@@ -18,6 +18,9 @@ pub struct Symbol {
     pub coordinates: Option<Vec<f64>>,
     /// mapped back to the image homr was given
     pub image_coordinates: Option<(f64, f64)>,
+    /// An app's own data carried with the symbol (copied wherever homr copies
+    /// it); homr has none. See musicxml::XmlOptions::note_comments.
+    pub extra: Vec<String>,
 }
 
 impl Symbol {
@@ -31,6 +34,7 @@ impl Symbol {
             position: NONOTE.into(),
             coordinates: None,
             image_coordinates: None,
+            extra: Vec::new(),
         }
     }
     /// str(symbol)
@@ -421,6 +425,7 @@ impl Vocab {
             slur: tok(&self.slur, t[5]),
             coordinates,
             image_coordinates: None,
+            extra: Vec::new(),
         })
     }
 }

@@ -26,6 +26,9 @@ pub struct Staff {
     pub max_x: f64,
     pub min_y: f64,
     pub max_y: f64,
+    /// For a grand staff: the two staffs merged into it (homr drops them;
+    /// apps that second-guess the pairing, like Partsong, need them).
+    pub halves: Option<Box<(Staff, Staff)>>,
 }
 
 impl Staff {
@@ -38,7 +41,7 @@ impl Staff {
         }
         let min_y = grid.iter().map(|p| p.y.iter().cloned().fold(f64::INFINITY, f64::min)).fold(f64::INFINITY, f64::min);
         let max_y = grid.iter().map(|p| p.y.iter().cloned().fold(f64::NEG_INFINITY, f64::max)).fold(f64::NEG_INFINITY, f64::max);
-        Ok(Staff { min_x: grid[0].x, max_x: grid[grid.len() - 1].x, min_y, max_y, grid })
+        Ok(Staff { min_x: grid[0].x, max_x: grid[grid.len() - 1].x, min_y, max_y, grid, halves: None })
     }
 }
 

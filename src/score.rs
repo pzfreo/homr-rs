@@ -18,7 +18,7 @@ pub struct PageMapping {
 }
 
 impl PageMapping {
-    fn apply(&self, p: (f64, f64)) -> (f64, f64) {
+    pub fn apply(&self, p: (f64, f64)) -> (f64, f64) {
         let sx = self.preprocessed.1 as f64 / self.cropped.1 as f64;
         let sy = self.preprocessed.0 as f64 / self.cropped.0 as f64;
         let p = (p.0 / sx, p.1 / sy);
@@ -27,17 +27,17 @@ impl PageMapping {
 }
 
 #[derive(Clone)]
-struct Row {
-    staffs: Vec<(Staff, bool)>,
+pub struct Row {
+    pub staffs: Vec<(Staff, bool)>,
 }
 
-fn sorted_row(mut staffs: Vec<(Staff, bool)>) -> Row {
+pub fn sorted_row(mut staffs: Vec<(Staff, bool)>) -> Row {
     staffs.sort_by(|a, b| a.0.min_y.partial_cmp(&b.0.min_y).unwrap());
     Row { staffs }
 }
 
 /// _find_periodic_core
-fn find_periodic_core(layout: &[bool]) -> Option<(usize, usize, usize)> {
+pub fn find_periodic_core(layout: &[bool]) -> Option<(usize, usize, usize)> {
     let n = layout.len();
     let mut best: Option<(usize, usize, usize, usize)> = None;
     for period in 1..=n / 2 {
@@ -65,7 +65,7 @@ fn find_periodic_core(layout: &[bool]) -> Option<(usize, usize, usize)> {
 }
 
 /// _ensure_same_number_of_staffs
-fn ensure_same_number_of_staffs(rows: Vec<Row>) -> Vec<Row> {
+pub fn ensure_same_number_of_staffs(rows: Vec<Row>) -> Vec<Row> {
     let lens: std::collections::BTreeSet<usize> = rows.iter().map(|r| r.staffs.len()).collect();
     if lens.len() == 1 && *lens.iter().next().unwrap() > 1 {
         return rows;
@@ -81,7 +81,7 @@ fn ensure_same_number_of_staffs(rows: Vec<Row>) -> Vec<Row> {
     out
 }
 
-fn symbol_center(s: &Symbol) -> Option<(f64, f64)> {
+pub fn symbol_center(s: &Symbol) -> Option<(f64, f64)> {
     if s.rhythm.starts_with("chord") {
         return None;
     }

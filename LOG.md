@@ -171,3 +171,22 @@ and contour, clefs, bar lines) and 151/151 for staff detection.
   its own patch; under "homr-rs follows homr" the fix belongs upstream.
 - So on our corpus the port matches homr at every stage, apart from the
   models, which stay in onnxruntime.
+
+## Extension points for apps (for Partsong)
+homr's behaviour is unchanged (stage 4 still 75 identical + 13 failing alike).
+These let an app make the changes it used to make by patching homr's Python:
+- `Staff.halves`: a grand staff keeps the two staffs merged into it.
+- `Symbol.extra`: an app's own data, carried wherever the symbol is copied.
+- `musicxml::generate_xml_with(voices, title, XmlOptions)`: `drop_zero_rests`
+  (leave pitchless zero-length symbols out of a chord instead of homr's
+  assertion) and `note_comments` (extra comments after each note's image
+  position).
+- `score::{Row, sorted_row, find_periodic_core, ensure_same_number_of_staffs,
+  symbol_center}` and `PageMapping::apply` are public.
+
+## Possible follow-ups (not started)
+- Run the models from Rust as well with `ort` (pykeio/ort; retto uses it in
+  WASM): would let the browser worker shrink to message passing, if it can
+  use WebGPU and gives onnxruntime-web's results.
+- Python bindings (PyO3) with a homr-shaped API: homr's results, faster, for
+  existing Python users.

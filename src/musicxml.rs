@@ -137,6 +137,17 @@ struct State {
     tremolo_start: bool,
     volta_number: i64,
     last_volta_measure: i64,
+    opts: XmlOptions,
+}
+
+/// Departures from homr's writer an app can ask for (all off: homr's output).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct XmlOptions {
+    /// Leave out pitchless symbols of zero duration (grace "rests") from a
+    /// chord instead of failing homr's assertion on them.
+    pub drop_zero_rests: bool,
+    /// Comments to write in each note after its image position.
+    pub note_comments: Option<fn(&Symbol) -> Vec<String>>,
 }
 
 impl State {
@@ -366,6 +377,11 @@ fn build_note_or_rest(t: &mut Tree, s: &Symbol, layer: i64, is_chord: bool, st: 
     if let Some((x, y)) = s.image_coordinates {
         t.els[note].children.push(Child::Comment(format!(" imgpos: {}, {} ", py_round_int(x), py_round_int(y))));
     }
+    if let Some(f) = st.opts.note_comments {
+        for c in f(s) {
+            t.els[note].children.push(Child::Comment(c));
+        }
+    }
     Ok(note)
 }
 
@@ -390,6 +406,22 @@ fn group_notes(notes: &[Symbol]) -> BTreeMap<Frac, Vec<Symbol>> {
 }
 
 fn build_note_chord(t: &mut Tree, chord: &Chord, st: &mut State, chord_duration: Frac) -> XmlResult<Vec<usize>> {
+    if st.opts.drop_zero_rests {
+        let groups = group_notes(&chord.symbols);
+        let zero: Vec<Symbol> = groups.get(&Frac::ZERO).map(|g| g.iter().filter(|s| s.pitch == EMPTY || s.pitch == NONOTE).cloned().collect()).unwrap_or_default();
+        if !zero.is_empty() {
+            let kept: Vec<Symbol> = chord.symbols.iter().filter(|s| !zero.iter().any(|z| z.key() == s.key())).cloned().collect();
+            if kept.is_empty() {
+                return Ok(vec![]);
+            }
+            let chord = Chord { symbols: kept, tuplet_mark: chord.tuplet_mark.clone() };
+            let mut st2 = XmlOptions { drop_zero_rests: false, ..st.opts };
+            std::mem::swap(&mut st.opts, &mut st2);
+            let r = build_note_chord(t, &chord, st, chord_duration);
+            std::mem::swap(&mut st.opts, &mut st2);
+            return r;
+        }
+    }
     let by = group_notes(&chord.symbols);
     let count = by.len();
     let mut out = Vec::new();
@@ -666,14 +698,14 @@ fn convert_ties(t: &mut Tree, part: usize) {
     }
 }
 
-fn build_measures(t: &mut Tree, voice: &[Symbol], has_two_staves: bool) -> XmlResult<Vec<usize>> {
+fn build_measures(t: &mut Tree, voice: &[Symbol], has_two_staves: bool, opts: XmlOptions) -> XmlResult<Vec<usize>> {
     let mut clock = Frac::ZERO;
     let mut sounding: Vec<Frac> = Vec::new();
     let mut measure_number = 1i64;
     let mut groups: Vec<Chord> = sort_token_chords(voice).into_iter().map(|s| Chord { symbols: s, tuplet_mark: String::new() }).collect();
     tuplet_parse(&mut groups);
     let (division, nominator) = division_and_nominator(&groups);
-    let mut st = State { beats: 4 * 16, division, nominator, tremolo_start: false, volta_number: 1, last_volta_measure: -10 };
+    let mut st = State { beats: 4 * 16, division, nominator, tremolo_start: false, volta_number: 1, last_volta_measure: -10, opts };
     let mut measures: Vec<usize> = Vec::new();
     let mut current = t.el("measure", &[("number", &measure_number.to_string())]);
     let first_attributes = t.sub(current, "attributes", &[]);
@@ -831,6 +863,10 @@ fn repeat(t: &mut Tree, barline: usize, rhythm: &str) {
 
 /// generate_xml(XmlGeneratorArguments(), voices, title) as homr writes it to a file.
 pub fn generate_xml(voices: &[Vec<Symbol>], title: &str) -> XmlResult<String> {
+    generate_xml_with(voices, title, XmlOptions::default())
+}
+
+pub fn generate_xml_with(voices: &[Vec<Symbol>], title: &str, opts: XmlOptions) -> XmlResult<String> {
     let mut t = Tree::default();
     let root = t.el("score-partwise", &[("version", "4.0")]);
     let work = t.sub(root, "work", &[]);
@@ -857,7 +893,7 @@ pub fn generate_xml(voices: &[Vec<Symbol>], title: &str) -> XmlResult<String> {
     }
     for (i, v) in voices.iter().enumerate() {
         let part = t.sub(root, "part", &[("id", &format!("P{}", i + 1))]);
-        for m in build_measures(&mut t, v, two[i])? {
+        for m in build_measures(&mut t, v, two[i], opts)? {
             t.append(part, m);
         }
         convert_ties(&mut t, part);

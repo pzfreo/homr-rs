@@ -150,7 +150,9 @@ pub fn merge_staffs(a: &Staff, b: &Staff) -> Result<Staff, String> {
             StaffPoint { x: pa.x, y, angle: (pa.angle + pb.angle) / 2.0 }
         }))
         .collect();
-    Staff::from_grid(grid)
+    let mut s = Staff::from_grid(grid)?;
+    s.halves = Some(Box::new((a.clone(), b.clone())));
+    Ok(s)
 }
 
 /// find_braces_brackets_and_grand_staff_lines: staffs (top to bottom) into MultiStaffs.
