@@ -8,6 +8,7 @@ Full audits are deliberately expensive CPU/GPU validation, not performance runs.
 import argparse
 import http.server
 import json
+import os
 import subprocess
 from pathlib import Path
 import time
@@ -96,8 +97,10 @@ def main():
             root = roots.get(prefix)
             if not root:
                 return "/nonexistent"
-            result = (Path(root) / rest).resolve()
-            return str(result) if result.is_relative_to(Path(root).resolve()) else "/nonexistent"
+            # Check the path lexically: scratch model files are symlinks
+            # that resolve outside their root (Chrome's harness serves them).
+            result = Path(os.path.normpath(Path(root) / rest))
+            return str(result) if result.is_relative_to(Path(root)) else "/nonexistent"
 
         def do_POST(self):
             size = int(self.headers.get("Content-Length", "0"))
