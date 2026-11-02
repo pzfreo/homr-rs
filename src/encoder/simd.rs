@@ -368,6 +368,56 @@ unsafe fn product_strict(
         product_strict_inner::<false>(a, b, out, m, k, n, bias);
     }
 }
+
+// The dynamic scheduler scans immutable weights once per job. Each chunk still
+// checks its own A values, so it uses exactly the same proven arithmetic guard.
+#[cfg(all(target_arch = "wasm32", feature = "encoder-threads"))]
+pub(super) fn bounded_weights(b: &[f32], k: usize, bias: Option<&[f32]>) -> bool {
+    #[cfg(not(target_feature = "relaxed-simd"))]
+    {
+        k <= 65536 && bounded_values(b) && bias.is_none_or(bounded_values)
+    }
+    #[cfg(target_feature = "relaxed-simd")]
+    {
+        let _ = (b, k, bias);
+        false
+    }
+}
+
+#[cfg(all(
+    target_arch = "wasm32",
+    feature = "encoder-threads",
+    not(target_feature = "relaxed-simd")
+))]
+fn bounded_values(x: &[f32]) -> bool {
+    x.iter()
+        .all(|v| *v == 0.0 || (v.abs() >= 2.0f32.powi(-40) && v.abs() <= 2.0f32.powi(40)))
+}
+
+/// `weights_bounded` may only be true after bounded_weights on these B/bias/K.
+#[cfg(all(target_arch = "wasm32", feature = "encoder-threads"))]
+pub(super) unsafe fn product_prechecked(
+    a: &[f32],
+    b: &[f32],
+    out: &mut [f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    bias: Option<&[f32]>,
+    weights_bounded: bool,
+) {
+    #[cfg(not(target_feature = "relaxed-simd"))]
+    if weights_bounded && bounded_values(a) {
+        product_normal_batched(a, b, out, m, k, n, bias);
+    } else {
+        product_strict_inner::<false>(a, b, out, m, k, n, bias);
+    }
+    #[cfg(target_feature = "relaxed-simd")]
+    {
+        let _ = weights_bounded;
+        product(a, b, out, m, k, n, bias);
+    }
+}
 #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
 #[inline(always)]
 fn round_normal(sum: v128, a: v128, b: v128, c: v128) -> v128 {

@@ -13,6 +13,7 @@ p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('output', type=Path)
 p.add_argument('--toolchain', default='nightly')
 p.add_argument('--probes', action='store_true', help='include isolated-operator diagnostic exports')
+p.add_argument('--chunk-bench', action='store_true', help='include scheduler tuning and sleeping-rank diagnostics, never ship')
 a = p.parse_args()
 a.output.mkdir(parents=True, exist_ok=True)
 for name, simd in [('strict', '+simd128'), ('fused', '+simd128,+relaxed-simd')]:
@@ -24,8 +25,8 @@ for name, simd in [('strict', '+simd128'), ('fused', '+simd128,+relaxed-simd')]:
         flags += ' -C link-arg=' + arg
     subprocess.run(['cargo', '+' + a.toolchain, 'build', '-Z', 'build-std=std,panic_abort',
                     '--release', '--lib', '--target', 'wasm32-unknown-unknown',
-                    '--features', 'encoder-threads' + (',encoder-probes' if a.probes else ''), '-j2'],
+                    '--features', 'encoder-threads' + (',encoder-probes' if a.probes else '') + (',encoder-chunk-bench' if a.chunk_bench else ''), '-j2'],
                    env=dict(os.environ, CARGO_TARGET_DIR=str(target), RUSTFLAGS=flags), check=True)
-    artifact = a.output / ('encoder-threads-' + name + ('-probes' if a.probes else '') + '.wasm')
+    artifact = a.output / ('encoder-threads-' + name + ('-probes' if a.probes else '') + ('-chunk-bench' if a.chunk_bench else '') + '.wasm')
     artifact.write_bytes((target / 'wasm32-unknown-unknown/release/homr_rs.wasm').read_bytes())
     print(artifact, flush=True)

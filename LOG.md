@@ -1709,3 +1709,110 @@ the subnormal 2 (Metal flushes subnormal results to zero), and schedule cell 51
 subnormals, so the outputs agree, but bit-identity is not guaranteed on Metal for
 inputs that reach the subnormal range. An exact GPU encoder would need either
 proof that no subnormals arise, or detection and CPU fallback for affected tiles.
+
+## Dynamic encoder chunks for heterogeneous cores (cx/chunks)
+
+The maintainer supplied real Android 10 / Chrome 156 combined encoder+decoder
+observations: about **2.8 s/staff with one thread**, **2.1–3.1 s with four**.
+The eight-core phone is likely heterogeneous, but slow-rank dominance is an
+inference, not a measured cause. The supplied iPhone *simulator* observation is
+**111 -> 30 s per six-staff page**, strict/four threads, with MusicXML identical
+to Chrome. This is not a physical iPhone measurement. No device timings are
+invented or inferred from those observations in this round.
+
+### Verified implementation stage
+
+Every job now owns an atomic, saturating next-unit cursor. Every rank, including
+the coordinator, claims another chunk until exhausted. The CAS loop prevents
+wrap at exhaustion, including usize::MAX in its numeric regression test. The
+cursor is 128-byte padded away from immutable metadata. Relaxed ordering is
+sufficient for ownership; existing host publication/join atomics still provide
+the input/output happens-before edges. The descriptor stays on the coordinator
+stack until all ranks join. Workers construct mutable slices only for the
+range they claimed; inputs and weights remain immutable.
+
+GEMM chunks contain whole four-row tiles. Depthwise chunks contain whole
+pixels, activations whole SIMD vectors, and LayerNorm whole rows. No K/channel
+reduction is split or reassociated. Downsample's independent 128-term sums and
+their ordered combination, bias schedules and all floating-point kernels are
+unchanged. The strict guard now checks immutable B/bias/K once per job and A
+once per claimed slice. This avoids rescanning a full weight matrix for every
+small chunk; the same proven bounded-arithmetic conditions are enforced.
+Slices failing the guard still execute general correctly rounded arithmetic.
+
+The C ABI, dispatch signature and existing two host files are unchanged:
+tools/encoder_pool.mjs and encoder_worker.mjs have **no changes**. Jobs are
+opaque to JS and every worker receives the same compiled module. Hosts only
+need to replace the WASM artifact; existing thread options continue to work.
+Ordinary nonshared builds keep their previous implementation and exports.
+
+The selected-source isolated Conv, depthwise, LayerNorm, MatMul/Gemm, Div, Erf
+and Gelu checks pass at **1/2/4/6 threads** on both builds, with zero differing
+bits. Native release library tests pass **13 tests**, including concurrent
+exactly-once ticket coverage/tails and overflow-safe exhaustion. All-target,
+all-feature native Clippy -D warnings passes. Full corpus follows final timing.
+
+### Chunk-size evidence and selected geometry
+
+The scratch diagnostic feature encoder-chunk-bench supports static scheduling,
+chunk overrides, per-rank work statistics and WASM atomic-wait *sleeping*.
+None of these hooks, delays, statistics or static scheduling paths is compiled
+into production modules. There are no new imports. The normal shipped host
+files also contain no slowdown option. The benchmark overrides only dispatch
+in its own process, using diagnostic exports before publication/after joining.
+
+A single-rank calibration warms once and records three full encodes. The
+median of each job's elapsed time per unit sets an additional sleeping budget
+of **3x calibrated work time** on ranks 2 and 3. This models slower service
+without burning dummy instructions on the loaded machine. It is not a CPU
+clock throttle or a claim that those ranks run at exactly one-quarter speed:
+OS wait granularity and descheduling can increase the effective delay. Static
+and dynamic use the same calibration, input, arithmetic and sleeping rule.
+Dynamic sleepers release the remaining tickets for faster ranks to claim.
+
+Sweep: four threads; one warm-up and three interleaved measured trials for
+static, quarter/base/four-times-base dynamic chunks, separately per build.
+Each run bit-compares the full context and verifies **33 native decoder steps**
+using the same context pointer. Encoder-only and combined wall times are kept
+separately because the decoder remains serial. This differs from comparing
+phone combined times with an encoder-only Mac speedup. Process counters include
+all case workers; different cases reside in separate idle processes. Only one
+case executes at a time. Raw samples and work shares stay in scratch.
+
+| diagnostic schedule / size | fused encoder seconds | fused combined seconds | strict encoder seconds | strict combined seconds |
+|---|---:|---:|---:|---:|
+| static equal shares | 1.8173 | 2.1218 | 27.3558 | 28.2057 |
+| dynamic quarter size | 0.6200 | 1.0782 | 16.4161 | 17.1818 |
+| dynamic base size | 0.7153 | 1.3004 | 14.8857 | 15.9238 |
+| dynamic four-times size | 1.0812 | 1.3789 | 17.5724 | 18.6186 |
+
+The op-group medians (GEMM, activation, depthwise, norm) agree with the whole
+encode choice: quarter wins each fused group; base wins each strict group.
+For example fused GEMM drops from 1262.69 ms static to 431.87 ms at quarter,
+versus 473.15 ms base and 714.08 ms coarse. Strict GEMM is 12172.71/11108.32/
+13211.65 ms for quarter/base/coarse. These are diagnostic elapsed intervals,
+not claimed production instruction overhead or universal phone optima.
+
+Selected base units: GEMM floor(1,000,000 / (4*K*N)), clamped to 1..64
+four-row tiles; activation 2048 four-float vectors; depthwise floor(250,000 /
+(C*kernel^2)) pixels, at least one; norm floor(4096/C) rows, at least one.
+Strict uses these base sizes. Fused quarters the resulting integer unit count,
+with a minimum of one. In the actual graph this gives:
+
+| operation | fused chunk | strict chunk |
+|---|---|---|
+| MLP GEMM / projection | 4 rows | 4 or 24 MLP rows; projection 4 |
+| stem Conv lowered GEMM | 64 rows | 256 rows |
+| downsample partial GEMM, stages 1/2 | 8 / 4 rows | 40 / 20 rows |
+| GELU/Erf | 2048 float32 values | 8192 float32 values |
+| depthwise C=96/192/384 | 13 / 6 / 3 pixels | 53 / 26 / 13 pixels |
+| LayerNorm C=96/192/384 | 10 / 5 / 2 rows | 42 / 21 / 10 rows |
+
+There are many chunks per rank even in late stages (e.g. 320 four-row MLP
+tiles), while expensive reductions stay intact. Frozen PR #4 production
+artifacts in chunks_static are the independent instruction baseline. The new
+static diagnostic schedule shares the hoisted guard with dynamic, isolating
+scheduling for the slowdown experiment. Production instruction comparisons
+use uninstrumented original-static versus uninstrumented selected-dynamic
+modules, not the diagnostic feature. Counter overhead, balancing and 8-rank
+recommendation measurements are still running at this stage.
