@@ -339,6 +339,15 @@ pub fn erf_exp(x: f32) -> f32 {
     p * scale
 }
 
+/// Operand of the inner exponential, including SIMD's unselected large branch.
+#[allow(clippy::excessive_precision)]
+pub fn erf_exp_input(v:f32)->f32 {
+    let a=v.abs().min(3.925);
+    let mut p=1.72948930e-5;
+    for b in [-3.83208680e-4,3.88393435e-3,-2.42545605e-2,1.06777847e-1,6.34846687e-1,1.28717512e-1] {p=kernels::fma(p,a,b);}
+    -kernels::fma(p,a,a)
+}
+
 fn bits(x: &[f32]) -> Vec<u32> {
     x.iter().map(|x| x.to_bits()).collect()
 }
@@ -448,6 +457,13 @@ fn self_tests() -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn exponential_oracle_reconstructs_the_actual_cpu_erf_large_branch() {
+        for i in 0..100_000 {
+            let x=0.921875+(4.25-0.921875)*(i as f32+0.5)/100_000.0;
+            assert_eq!((1.0-erf_exp(erf_exp_input(x))).to_bits(),kernels::erf(x).to_bits());
+        }
+    }
     #[test]
     fn load_time_probes_cover_every_kernel_with_finite_normal_data() {
         let probes = self_tests();

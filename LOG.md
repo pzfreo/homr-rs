@@ -2055,3 +2055,66 @@ If any flag fires, discard the GPU context and recompute the whole staff on
 the existing CPU encoder. Input/immutable-weight bit checks happen before
 upload, preserving detection even if a GPU flushes floating loads. No guard
 frequency or cost has been measured yet; the runners will report both.
+
+### Whole-model plan, host and CPU validation
+
+The GPU plan's 113 operations match every observed CPU intermediate on
+angelus_0 staff 0; its 655,360-value final context has zero differing bits
+against decoder_native_ref. The plan contains 13,197,408 packed float32
+weights (52,789,632 bytes, 50.34 MiB). Largest activation binding: 7,864,320
+values / 30 MiB. Seven activation slots total 66,846,720 bytes. There are five
+storage bindings, a 64-byte uniform, 64 invocations/workgroup and 1,568 padded
+bytes of workgroup storage. No fp16, subgroups, dot products, reduction trees
+or optional arithmetic features. Every binding is below the default 128 MiB;
+all dispatch dimensions stay below 65,535. Timestamp queries are optional
+measurement features, not required to encode.
+
+Norm cooperatively loads a row, then invocation zero alone performs ascending
+Welford; all invocations apply independent affine outputs after a barrier.
+Stem bias is the initial accumulator. Downsampling forms separate ascending
+128-term sums, adds them in order, then adds bias. Depthwise executes all 49
+ky/kx terms, including padded-zero FMAs. GEMM adds bias after ascending K.
+Layer scale, residual and position each retain their own rounding boundary.
+The encoder's own Erf/inner-exp coefficients are literal float32 bit patterns.
+An extra native test reconstructs the actual CPU Erf large branch from the
+exported exp oracle on 100,000 values; all bits match. Native tests: 17 pass.
+
+Additional guard hardening: integer storage/constructed scale bits are checked
+**before** creating floats. GPU input and immutable weights are scanned as u32
+on the CPU. Arithmetic values outside +/-2^60 are conservatively flagged and
+replaced by zero internally; the whole staff is subsequently recomputed. With
+all ordinary arithmetic operands within that bound, products are <=2^120 and
+fused sums <2^121, so no overflow can invoke WGSL's indeterminate nonfinite
+rules before detection. Integer-certified div/sqrt can cover the full normal
+range in probes; their outputs are inspected before use in the model. Epsilon
+is validated finite, positive and bounded. Guard bits: 1 subnormal/possible
+FTZ, 2 nonfinite, 4 failed certificate/domain, 8 conservative magnitude domain.
+This extends the earlier FTZ argument; no observed frequency is implied.
+
+The no-bundler EncoderGPU host uploads weights once, reuses seven GPU buffers,
+and copies mapped context bytes directly into the caller's WASM context for
+decoder_run. It accepts ordinary exports and EncoderPool.exports. By default
+it drops the temporary packed CPU plan after upload/self-test; diagnostic
+runners retain it for their CPU oracle. Existing CPU encoder/decoder kernels,
+exports and both pool files remain unchanged. No ONNX parser in JS.
+
+Load test: nine small schedule cases (including stem versus segmented Conv),
+plus fused/double-rounding/signed-zero, division/sqrt, Erf/GELU/exp and FTZ
+known answers. It uses the actual production pipelines and Rust CPU oracles.
+Any mismatch, missing requirement, validation/internal/OOM error or device loss
+selects CPU. Error scopes are awaited before copying any GPU context, avoiding
+a stale readback if asynchronous validation fails. Both full initialization
+(including compile/upload) and probe-only milliseconds are reported; the
+100 ms load budget is **unmeasured**, not assumed to pass.
+
+Host-only tests cover normal/SAB context copies, discarding flagged raw GPU
+bytes, validation failure, mapping/device-loss failure, serialization, closed
+handles and single CPU-rejection propagation. These use explicit control mocks
+and are not GPU arithmetic evidence. An ordinary fused WASM ABI smoke test
+loads the runtime plan and executes actual CPU fallback: 655,360/655,360 native
+context values match. More build/compatibility checks follow below.
+
+Chrome launch was attempted once with the new single-staff runner: SIGABRT
+before CDP (scratch gpu_chrome_smoke.json). There was no GPU execution. The
+sandbox blocker persists; no alternate launch/permission bypass was attempted.
+Safari is likewise delegated to the maintainer's local runner, as requested.

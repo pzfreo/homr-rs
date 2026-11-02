@@ -183,6 +183,84 @@ pub unsafe extern "C" fn encoder_gpu_math_reference(
     }
 }
 
+/// Stream every division/sqrt operand in CPU Welford/affine, or every
+/// GELU/Erf/inner-exp operand. Benchmark oracle, not an encoder alternative.
+/// kind=0: count floats in complete c-channel rows, (2*c+2)*count/c records.
+/// kind=1: count activation floats, 3*count records. Each record has four u32
+/// words (opcode,a,b,c); expected has one u32 IEEE result per record.
+/// # Safety
+/// Input has count readable floats; records/expected have the sizes above,
+/// are writable, and alias neither input nor each other. Coordinator only.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_audit_records(
+    kind: u32,
+    input: *const f32,
+    count: usize,
+    c: usize,
+    epsilon: f32,
+    records: *mut u32,
+    expected: *mut u32,
+) -> usize {
+    use super::kernels;
+    if kind > 1 || (kind == 0 && (c == 0 || !count.is_multiple_of(c))) {
+        return 0;
+    }
+    let n = if kind == 0 {
+        (2 * c + 2) * (count / c)
+    } else {
+        3 * count
+    };
+    let x = std::slice::from_raw_parts(input, count);
+    let records = std::slice::from_raw_parts_mut(records, n * 4);
+    let expected = std::slice::from_raw_parts_mut(expected, n);
+    let mut index = 0;
+    let mut record = |op: u32, a: f32, b: f32, v: f32| {
+        records[index * 4..index * 4 + 4].copy_from_slice(&[op, a.to_bits(), b.to_bits(), 0]);
+        expected[index] = v.to_bits();
+        index += 1;
+    };
+    if kind == 0 {
+        for row in x.chunks_exact(c) {
+            let (mut mean, mut m2) = (0.0, 0.0);
+            for (j, &v) in row.iter().enumerate() {
+                let delta = v - mean;
+                let divisor = (j + 1) as f32;
+                let quotient = delta / divisor;
+                record(1, delta, divisor, quotient);
+                mean += quotient;
+                m2 = kernels::fma(delta, v - mean, m2);
+            }
+            let var = m2 / c as f32;
+            record(1, m2, c as f32, var);
+            let var = var + epsilon;
+            let std = var.sqrt();
+            record(2, var, 0.0, std);
+            for &v in row {
+                let delta = v - mean;
+                record(1, delta, std, delta / std);
+            }
+        }
+    } else {
+        let mut gelu = x.to_vec();
+        gelu.resize(count.next_multiple_of(4), 0.0);
+        kernels::gelu_in_place(&mut gelu);
+        let mut erf: Vec<_> = x
+            .iter()
+            .map(|v| v * std::f32::consts::FRAC_1_SQRT_2)
+            .collect();
+        erf.resize(count.next_multiple_of(4), 0.0);
+        kernels::erf_in_place(&mut erf);
+        for (i, &v) in x.iter().enumerate() {
+            let z = v * std::f32::consts::FRAC_1_SQRT_2;
+            record(4, v, 0.0, gelu[i]);
+            record(3, z, 0.0, erf[i]);
+            let exp_input = super::gpu::erf_exp_input(z);
+            record(5, exp_input, 0.0, super::gpu::erf_exp(exp_input));
+        }
+    }
+    n
+}
+
 #[cfg(feature = "encoder-probes")]
 mod probes {
     use crate::{encoder::kernels, onnx::Graph};

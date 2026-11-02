@@ -7,7 +7,16 @@ export function shaderSource({diagnosticUnguarded = false} = {}) {
   let math = arithmetic;
   if (diagnosticUnguarded) {
     // Benchmark control only. The production host never selects this program.
-    math = math.replaceAll('faults |= SUBNORMAL;', '').replaceAll('faults |= NONFINITE;', '');
+    const replaceBody=(name,body)=>{
+      const start=math.indexOf('fn '+name+'('),open=math.indexOf('{',start);let end=open+1,depth=1;
+      while(depth){if(math[end]==='{')depth++;if(math[end]==='}')depth--;end++;}
+      math=math.slice(0,open+1)+body+math.slice(end-1);
+    };
+    replaceBody('inspect','return bitcast<f32>(bitcast<u32>(x)^p.round_mask);');
+    replaceBody('probe_word','return bitcast<f32>(word);');
+    for(const [name,expression]of [['plus','a+b'],['times','a*b'],['fused','fma(a,b,c)']])
+      replaceBody(name,`return inspect(${expression});`);
+    replaceBody('fused4','return bitcast<vec4<f32>>(bitcast<vec4<u32>>(fma(a,b,c))^vec4<u32>(p.round_mask));');
   }
   return `
 struct Params {
@@ -87,14 +96,14 @@ var<workgroup> row_std:f32;
    var mean=0.0;var m2=0.0;
    for(var j=0u;j<p.n;j++){
      let delta=minus(values[j],mean);
-     mean=plus(mean,divide(delta,f32(j+1u)));
+     mean=plus(mean,inspect(divide(delta,f32(j+1u))));
      m2=fused(delta,minus(values[j],mean),m2);
    }
-   row_mean=mean;row_std=square_root(plus(divide(m2,f32(p.n)),bitcast<f32>(p.epsilon)));
+   row_mean=mean;row_std=inspect(square_root(plus(inspect(divide(m2,f32(p.n))),bitcast<f32>(p.epsilon))));
  }
  workgroupBarrier();
  for(var j=local.x;j<p.n;j+=64u){
-   output[row*p.n+j]=bitcast<u32>(fused(divide(minus(values[j],row_mean),row_std),load_w(p.weights+j),load_w(p.bias+j)));
+   output[row*p.n+j]=bitcast<u32>(fused(inspect(divide(minus(values[j],row_mean),row_std)),load_w(p.weights+j),load_w(p.bias+j)));
  }
  finish();
 }
@@ -118,7 +127,9 @@ var<workgroup> row_std:f32;
 // returned beside the output, so a guard can never disguise a failed probe.
 @compute @workgroup_size(64) fn math_probe(@builtin(global_invocation_id) id:vec3<u32>){
  let i=id.x;if(i>=p.math_count){return;}
- let kind=a[i*4u];let x=inspect(bitcast<f32>(a[i*4u+1u]));let y=inspect(bitcast<f32>(a[i*4u+2u]));let z=inspect(bitcast<f32>(a[i*4u+3u]));
+ let kind=a[i*4u];
+ var x=probe_word(a[i*4u+1u]);var y=probe_word(a[i*4u+2u]);var z=probe_word(a[i*4u+3u]);
+ if(kind!=1u && kind!=2u){x=inspect(x);y=inspect(y);z=inspect(z);}
  var value:f32;
  switch(kind){
   case 0u:{value=fused(x,y,z);}case 1u:{value=divide(x,y);}case 2u:{value=square_root(x);}

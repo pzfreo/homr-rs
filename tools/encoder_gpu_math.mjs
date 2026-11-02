@@ -8,11 +8,24 @@ var<private> faults: u32;
 const SUBNORMAL: u32 = 1u;
 const NONFINITE: u32 = 2u;
 const UNCERTIFIED: u32 = 4u;
+const DOMAIN: u32 = 8u;
 fn mag(x: f32) -> u32 { return bitcast<u32>(x) & 0x7fffffffu; }
+fn probe_word(word:u32)->f32 {
+  // Check storage bits *before* constructing a float (a backend may flush a
+  // subnormal at a floating expression, not just at arithmetic instructions).
+  let m=word&0x7fffffffu;
+  if(m>0u && m<0x800000u){faults|=SUBNORMAL;return 0.0;}
+  if(m>=0x7f800000u){faults|=NONFINITE;return 0.0;}
+  return bitcast<f32>(word);
+}
+fn constructed(word:u32)->f32 {return inspect(probe_word(word));}
 fn inspect(x: f32) -> f32 {
   let m = mag(x);
-  if (m > 0u && m < 0x00800000u) { faults |= SUBNORMAL; }
-  if (m >= 0x7f800000u) { faults |= NONFINITE; }
+  if (m > 0u && m < 0x00800000u) { faults |= SUBNORMAL; return 0.0; }
+  if (m >= 0x7f800000u) { faults |= NONFINITE; return 0.0; }
+  // With all operands <=2^60, add/mul/fma cannot overflow. Stop propagation
+  // before a later operation could invoke WGSL's indeterminate nonfinite rules.
+  if (m > 0x5d800000u) { faults |= DOMAIN; return 0.0; }
   return bitcast<f32>(bitcast<u32>(x) ^ p.round_mask);
 }
 fn wide(a: u32, b: u32) -> vec2<u32> {
@@ -75,7 +88,9 @@ fn fused4(a: vec4<f32>, b: vec4<f32>, c: vec4<f32>) -> vec4<f32> {
   }
   if (any((magnitude > vec4<u32>(0u)) & (magnitude < vec4<u32>(0x800000u)))) { faults |= SUBNORMAL; }
   if (any(magnitude >= vec4<u32>(0x7f800000u))) { faults |= NONFINITE; }
-  return bitcast<vec4<f32>>(bits ^ vec4<u32>(p.round_mask));
+  if (any(magnitude > vec4<u32>(0x5d800000u))) { faults |= DOMAIN; }
+  let invalid = ((magnitude > vec4<u32>(0u)) & (magnitude < vec4<u32>(0x800000u))) | (magnitude > vec4<u32>(0x5d800000u));
+  return bitcast<vec4<f32>>(select(bits,vec4<u32>(0u),invalid) ^ vec4<u32>(p.round_mask));
 }
 fn correction(exact_value: vec2<u32>, low: vec2<u32>, high: vec2<u32>, m: u32) -> i32 {
   let lo = cmp(exact_value,low); let hi = cmp(exact_value,high); let odd = (m & 1u) != 0u;
@@ -151,7 +166,7 @@ fn erf_exp(x0: f32) -> f32 {
   let m = minus(biased,12582912.0);
   let r0 = fused(m,bitcast<f32>(0xbf317200u),x);
   let r = fused(m,bitcast<f32>(0xb5bfbe8eu),r0);
-  let scale = inspect(bitcast<f32>((bitcast<u32>(biased)<<23u)+0x3f800000u));
+  let scale = constructed((bitcast<u32>(biased)<<23u)+0x3f800000u);
   var v = bitcast<f32>(0x3ab54c6du);
   v=fused(v,r,bitcast<f32>(0x3c093965u));
   v=fused(v,r,bitcast<f32>(0x3d2aad10u));

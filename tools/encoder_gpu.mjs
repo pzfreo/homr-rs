@@ -5,6 +5,12 @@ import {bindings, dispatchCount, entries, shaderSource} from './encoder_gpu_kern
 
 const bytes = value => new Uint8Array(value.buffer || value, value.byteOffset || 0, value.byteLength);
 const inPlace = kind => kind === 4 || kind === 5 || kind === 7;
+function pushErrors(d){d.pushErrorScope('validation');d.pushErrorScope('out-of-memory');d.pushErrorScope('internal');}
+async function popErrors(d){
+  const internal=d.popErrorScope(),oom=d.popErrorScope(),validation=d.popErrorScope();
+  const results=await Promise.allSettled([internal,oom,validation]);
+  for(const r of results){if(r.status==='rejected')throw r.reason;if(r.value)throw Error(r.value.message);}
+}
 export function bitDifference(got, expected) {
   const a = got instanceof Uint32Array ? got : new Uint32Array(got);
   const b = expected instanceof Uint32Array ? expected : new Uint32Array(expected);
@@ -15,7 +21,7 @@ export function bitDifference(got, expected) {
 }
 export function specialBits(value) {
   let flags=0;
-  for(const word of value) {const m=word&0x7fffffff;if(m && m<0x800000) flags|=1;if(m>=0x7f800000) flags|=2;}
+  for(const word of value) {const m=word&0x7fffffff;if(m && m<0x800000) flags|=1;if(m>=0x7f800000) flags|=2;if(m>0x5d800000)flags|=8;}
   return flags;
 }
 function storage(device, valueOrSize, usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST) {
@@ -74,9 +80,10 @@ export function mathKnownAnswers() {
 }
 
 export class EncoderGPU {
-  static async create({exports:e,encoder,gpu=globalThis.navigator?.gpu,onReport=()=>{},timestamps=false}={}) {
+  static async create({exports:e,encoder,gpu=globalThis.navigator?.gpu,onReport=()=>{},timestamps=false,retainPlan=false}={}) {
     const self=Object.assign(new EncoderGPU(),{e,encoder,onReport,enabled:false,busy:false,resources:[],status:{backend:'cpu',self_test:null}});
     const start=performance.now();
+    let scoped=false;
     try {
       if(!gpu) throw Error('WebGPU unavailable');
       const adapter=await gpu.requestAdapter({powerPreference:'high-performance'});if(!adapter) throw Error('No WebGPU adapter');
@@ -84,16 +91,17 @@ export class EncoderGPU {
       if(adapter.isFallbackAdapter || /swiftshader|llvmpipe|software/i.test(JSON.stringify(self.status.adapter))) throw Error('Software/fallback adapter');
       const features=timestamps&&adapter.features.has('timestamp-query')?['timestamp-query']:[];
       self.device=await adapter.requestDevice({requiredFeatures:features});self.timestamp=features.length>0;
-      self.device.lost.then(info=>self.disable(`Device lost: ${info.reason}: ${info.message}`));
-      self.device.addEventListener('uncapturederror',event=>self.disable(`WebGPU error: ${event.error.message}`));
-      for(const name of ['encoder_gpu_plan_create','encoder_gpu_plan_json','encoder_gpu_math_reference']) if(!e[name]) throw Error(`Missing ABI export ${name}`);
+      pushErrors(self.device);scoped=true;
+      self.device.lost.then(info=>{if(!self.closed&&!self.retiredDevice)self.disable(`Device lost: ${info.reason}: ${info.message}`);});
+      self.device.addEventListener('uncapturederror',event=>{if(!self.closed&&!self.retiredDevice)self.disable(`WebGPU error: ${event.error.message}`);});
+      for(const name of ['encoder_gpu_plan_create','encoder_gpu_plan_drop','encoder_gpu_plan_json','encoder_gpu_plan_json_len','encoder_gpu_plan_weights','encoder_gpu_plan_weights_len','encoder_gpu_math_reference']) if(!e[name]) throw Error(`Missing ABI export ${name}`);
       self.plan=e.encoder_gpu_plan_create(encoder);if(!self.plan) throw Error('GPU plan rejected');
       const pointer=e.encoder_gpu_plan_json(self.plan),length=e.encoder_gpu_plan_json_len(self.plan);
-      self.meta=JSON.parse(new TextDecoder().decode(new Uint8Array(e.memory.buffer,pointer,length)));
+      self.meta=JSON.parse(new TextDecoder().decode(new Uint8Array(e.memory.buffer,pointer,length).slice()));
       self.validateLimits();
       const wp=e.encoder_gpu_plan_weights(self.plan),wn=e.encoder_gpu_plan_weights_len(self.plan);
       const weights=new Uint32Array(e.memory.buffer,wp,wn);
-      const flags=specialBits(weights);if(flags) throw Error(`Model weights require CPU: flags ${flags}`);
+      const check=performance.now(),flags=specialBits(weights);self.status.weights_guard_ms=performance.now()-check;if(flags) throw Error(`Model weights require CPU: flags ${flags}`);
       self.weights=storage(self.device,weights);self.resources.push(self.weights);
       const compile=performance.now();self.program=await Program.create(self.device);self.status.compile_ms=performance.now()-compile;
       self.status.self_test=await self.selfTest();
@@ -104,37 +112,46 @@ export class EncoderGPU {
       self.contextBytes=self.meta.buffers[self.meta.output]*4;
       self.readback=storage(self.device,self.contextBytes+24,GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ);self.resources.push(self.readback);
       if(self.timestamp){self.queries=self.device.createQuerySet({type:'timestamp',count:2});self.resolve=storage(self.device,16,GPUBufferUsage.QUERY_RESOLVE|GPUBufferUsage.COPY_SRC);self.resources.push(self.resolve);}
-      if(self.broken) throw Error(self.status.reason);self.enabled=true;self.status.backend='gpu';
-    } catch(error) {self.disable(String(error.stack||error));}
+      scoped=false;await popErrors(self.device);
+      if(self.broken) throw Error(self.status.reason);
+      if(!retainPlan){e.encoder_gpu_plan_drop(self.plan);self.plan=0;}
+      self.status.retained_cpu_plan=retainPlan;self.enabled=true;self.status.backend='gpu';
+    } catch(error) {if(scoped){try{await popErrors(self.device);}catch{}}self.disable(String(error.stack||error));self.releaseGPU();}
     self.status.initialization_ms=performance.now()-start;
-    self.onReport({...self.status});return self;
+    self.status.initialization_within_100ms=self.status.initialization_ms<100;
+    self.emitStatus();return self;
   }
   validateLimits() {
     const m=this.meta,l=this.device.limits;
     if(m.abi!==1||m.buffers.length!==7||m.max_channels>384) throw Error('Unsupported GPU plan ABI');
     if(l.maxStorageBuffersPerShaderStage<5||l.maxComputeInvocationsPerWorkgroup<64||l.maxComputeWorkgroupSizeX<64||l.maxComputeWorkgroupStorageSize<1568) throw Error('Missing default compute limits');
     for(const n of [...m.buffers,m.weights]) if(n*4>l.maxStorageBufferBindingSize||n*4>l.maxBufferSize) throw Error(`Buffer exceeds device limit: ${n*4}`);
-    for(const op of m.ops) {const q=op.params;if(q.length!==16||q[15]!==0||q[0]>7||q[3]%4||dispatchCount(q)>l.maxComputeWorkgroupsPerDimension) throw Error(`Unsupported op ${op.name}`);}
+    for(const op of m.ops) {const q=op.params;if(q.length!==16||q[15]!==0||q[0]>7||!q[1]||!q[3]||q[3]%4||(q[0]===3&&q[3]>384)||dispatchCount(q)>l.maxComputeWorkgroupsPerDimension) throw Error(`Unsupported op ${op.name}`);
+      if(q[0]===3&&(specialBits(new Uint32Array([q[6]]))||!(new Float32Array(new Uint32Array([q[6]]).buffer)[0]>0)))throw Error('GPU norm requires finite positive bounded epsilon');}
   }
-  disable(reason) {this.broken=true;this.enabled=false;this.status.backend='cpu';this.status.reason=reason;this.onReport({...this.status});}
+  emitStatus(){try{this.onReport({...this.status});}catch(error){this.status.report_error=String(error);}}
+  disable(reason) {this.broken=true;this.enabled=false;this.status.backend='cpu';this.status.reason=reason;this.emitStatus();}
   mathReference(records) {
     const e=this.e,ip=e.decoder_alloc(records.byteLength),op=e.decoder_alloc(records.length);
     try {new Uint32Array(e.memory.buffer,ip,records.length).set(records);e.encoder_gpu_math_reference(ip,op,records.length/4);return new Uint32Array(e.memory.buffer,op,records.length/4).slice();}
     finally {e.decoder_free(ip,records.byteLength);e.decoder_free(op,records.length);}
   }
-  async probeMath(records,expected=this.mathReference(records),requiredGuards=null) {
+  async probeMath(records,expected=this.mathReference(records),requiredGuards=null,{allowGuards=false}={}) {
     const d=this.device,count=records.length/4,q=new Uint32Array(16);q[14]=count;
-    const input=storage(d,records),output=storage(d,count*8),params=uniform(d,q),guard=storage(d,4);
+    pushErrors(d);let scoped=true;const resources=[];
     try {
+      const input=storage(d,records),output=storage(d,count*8),params=uniform(d,q),guard=storage(d,4);resources.push(input,output,params,guard);
       const cmd=d.createCommandEncoder();this.program.dispatch(cmd,8,q,this.program.group(8,[input,null,null,output,params,guard]));d.queue.submit([cmd.finish()]);
-      const actual=new Uint32Array(await readBuffer(d,output,count*8));let differences=0,guards=0,missingGuards=0,first=null;
+      const actual=new Uint32Array(await readBuffer(d,output,count*8));let differences=0,guards=0,rawDifferences=0,missingGuards=0,first=null;
       for(let i=0;i<count;i++) {const f=actual[i*2+1];if(f) guards++;
+        if(actual[i*2]!==expected[i])rawDifferences++;
         const required=requiredGuards?.[i]??false;
         if(required){if(!(f&1)){missingGuards++;first??={index:i,reason:'missing subnormal guard'};}}
-        else if(f||actual[i*2]!==expected[i]) {differences++;first??={index:i,got:actual[i*2],expected:expected[i],flags:f};}
+        else if(!(allowGuards&&f)&&(f||actual[i*2]!==expected[i])) {differences++;first??={index:i,got:actual[i*2],expected:expected[i],flags:f};}
       }
-      return {cases:count,differences,guards,missing_guards:missingGuards,first,passed:!differences&&!missingGuards};
-    } finally {for(const b of [input,output,params,guard]) b.destroy();}
+      scoped=false;await popErrors(d);
+      return {cases:count,differences,raw_differences:rawDifferences,guards,missing_guards:missingGuards,first,passed:!differences&&!missingGuards};
+    } finally {if(scoped){try{await popErrors(d);}catch{}}for(const b of resources) b.destroy();}
   }
   async selfTest() {
     const start=performance.now(),d=this.device,cases=this.meta.self_tests,live=[],rows=[];
@@ -160,25 +177,31 @@ export class EncoderGPU {
     } finally {for(const b of live)b.destroy();}
   }
   cpu(image,context,reason,extra={}) {
+    const start=performance.now();
     if(this.e.encoder_run(this.encoder,image,context)!==1) throw Error('CPU encoder rejected image');
-    return {backend:'cpu',reason,...extra};
+    const cpu_ms=performance.now()-start;
+    return {backend:'cpu',reason,...extra,cpu_ms,wall_ms:(extra.wall_ms??0)+cpu_ms};
   }
   async encode(image,context,{captureRaw=false,observe=null}={}) {
+    if(this.closed)throw Error('EncoderGPU is closed');
     if(this.busy) throw Error('Serialize encoder calls and WASM memory access');this.busy=true;
-    const start=performance.now();
+    const start=performance.now();let fallingBack=false,scoped=false;
+    const fallback=(...args)=>{fallingBack=true;return this.cpu(...args);};
     try {
-      if(!this.enabled) return this.cpu(image,context,this.status.reason);
-      const input=new Uint32Array(this.e.memory.buffer,image,256*1280),inputFlags=specialBits(input);
-      if(inputFlags) return this.cpu(image,context,'Input requires CPU',{guard:inputFlags});
+      if(!this.enabled) return fallback(image,context,this.status.reason);
+      const input=new Uint32Array(this.e.memory.buffer,image,256*1280),check=performance.now(),inputFlags=specialBits(input),input_guard_ms=performance.now()-check;
+      if(inputFlags) return fallback(image,context,'Input requires CPU',{guard:inputFlags,input_guard_ms,wall_ms:performance.now()-start});
+      pushErrors(this.device);scoped=true;
       // Fresh ordinary ArrayBuffer: works even where writeBuffer rejects SAB views.
       this.device.queue.writeBuffer(this.buffers[0],0,input.slice());this.device.queue.writeBuffer(this.guard,0,new Uint32Array(1));
       let command=this.device.createCommandEncoder();
       for(let i=0;i<this.ops.length;i++) {
         const op=this.ops[i],q=op.params;
+        if(observe) await observe(this,op,i,'before');
         const stamp=this.timestamp&&!observe?{querySet:this.queries,...(i===0?{beginningOfPassWriteIndex:0}:{}),...(i===this.ops.length-1?{endOfPassWriteIndex:1}:{})}:null;
         // No empty timestampWrites descriptors on intermediate passes.
         this.program.dispatch(command,q[0],q,op.group,stamp&&(stamp.beginningOfPassWriteIndex!==undefined||stamp.endOfPassWriteIndex!==undefined)?stamp:null);
-        if(observe){this.device.queue.submit([command.finish()]);await observe(this,op,i);command=this.device.createCommandEncoder();}
+        if(observe){this.device.queue.submit([command.finish()]);await observe(this,op,i,'after');command=this.device.createCommandEncoder();}
       }
       command.copyBufferToBuffer(this.buffers[this.meta.output],0,this.readback,0,this.contextBytes);
       command.copyBufferToBuffer(this.guard,0,this.readback,this.contextBytes,4);
@@ -186,22 +209,25 @@ export class EncoderGPU {
       this.device.queue.submit([command.finish()]);await this.readback.mapAsync(GPUMapMode.READ);
       let raw,guard,gpu_ms;
       try {
+        scoped=false;await popErrors(this.device);
         const data=this.readback.getMappedRange();guard=new Uint32Array(data,this.contextBytes,1)[0];
         raw=captureRaw?new Uint32Array(data,0,this.contextBytes/4).slice():undefined;
         gpu_ms=this.timestamp&&!observe?Number(new BigUint64Array(data,this.contextBytes+8,2)[1]-new BigUint64Array(data,this.contextBytes+8,2)[0])/1e6:null;
         if(!guard&&this.enabled) new Uint8Array(this.e.memory.buffer,context,this.contextBytes).set(new Uint8Array(data,0,this.contextBytes));
       } finally {this.readback.unmap();}
-      const stats={guard,gpu_ms,wall_ms:performance.now()-start,raw};
-      if(guard||!this.enabled) return this.cpu(image,context,guard?'GPU arithmetic guard':this.status.reason,stats);
+      const stats={guard,gpu_ms,input_guard_ms,wall_ms:performance.now()-start,raw};
+      if(guard||!this.enabled) return fallback(image,context,guard?'GPU arithmetic guard':this.status.reason,stats);
       return {backend:'gpu',...stats};
-    } catch(error) {this.disable(String(error.stack||error));return this.cpu(image,context,this.status.reason,{wall_ms:performance.now()-start});}
+    } catch(error) {if(scoped){scoped=false;try{await popErrors(this.device);}catch{}}if(fallingBack)throw error;this.disable(String(error.stack||error));return fallback(image,context,this.status.reason,{wall_ms:performance.now()-start});}
     finally {this.busy=false;}
   }
   // Diagnostic timing control only; never writes a context or affects fallback.
   async measureGuardCost(image,{trials=3}={}) {
     if(!this.enabled||!this.timestamp||this.busy) return {available:false,reason:'Need idle qualified GPU with timestamp-query'};
     this.busy=true;
+    let scoped=false;
     try {
+      pushErrors(this.device);scoped=true;
       const unguarded=await Program.create(this.device,true);
       const groups=this.ops.map(op=>unguarded.group(op.params[0],[this.buffers[op.input],this.weights,this.buffers[op.residual],this.buffers[op.output],op.q,this.guard]));
       const rows=[];this.device.queue.writeBuffer(this.buffers[0],0,new Uint32Array(this.e.memory.buffer,image,256*1280).slice());
@@ -217,12 +243,17 @@ export class EncoderGPU {
       }
       const median=xs=>xs.toSorted((a,b)=>a-b)[Math.floor(xs.length/2)];
       const on=median(rows.filter(r=>r.guarded).map(r=>r.gpu_ms)),off=median(rows.filter(r=>!r.guarded).map(r=>r.gpu_ms));
-      return {available:true,rows,guarded_gpu_ms:on,unguarded_gpu_ms:off,overhead_percent:(on/off-1)*100,policy:'Unguarded control is never used as an encoder result.'};
-    } finally {this.busy=false;}
+      const valid=rows.every(r=>!r.flags);
+      scoped=false;await popErrors(this.device);
+      return {available:true,valid,rows,guarded_gpu_ms:on,unguarded_gpu_ms:off,overhead_percent:valid?(on/off-1)*100:null,policy:'Unguarded control is never used as an encoder result; finite-domain and FTZ checks removed, rounding barriers and certificates retained.'};
+    } finally {if(scoped){try{await popErrors(this.device);}catch{}}this.busy=false;}
   }
   destroy() {
     if(this.busy) throw Error('Wait for encode before destroy');
-    this.enabled=false;for(const b of this.resources)b.destroy();this.resources=[];this.queries?.destroy();this.device?.destroy();
+    this.closed=true;this.releaseGPU();
+  }
+  releaseGPU(){
+    this.enabled=false;this.retiredDevice=true;for(const b of this.resources)b.destroy();this.resources=[];this.queries?.destroy();this.device?.destroy();
     if(this.plan){this.e.encoder_gpu_plan_drop(this.plan);this.plan=0;}
   }
 }
