@@ -1,7 +1,8 @@
 // Shared Node WASM / Chrome WebGPU model comparison. All fixtures are scratch.
 // IO uses relative paths, allowing the exact same loop in both runtimes.
 export async function compareModels({ort, pages, models, read, write, log = console.log,
-  threads = 1, ep = 'wasm', optimization = 'all', instructions = () => null}) {
+  threads = 1, ep = 'wasm', optimization = 'all', instructions = () => null,
+  gpuSubmissions = () => null}) {
   ort.env.wasm.numThreads = threads;
   const report = {ort: ort.env.versions, models, ep, threads, optimization, pages: [],
     counter: ep === 'wasm' ? 'proc_pid_rusage RUSAGE_INFO_V4 (when supplied)' : 'GPU speed not measured'};
@@ -13,6 +14,7 @@ export async function compareModels({ort, pages, models, read, write, log = cons
       executionProviders: ep === 'webgpu' ? ['webgpu', 'wasm'] : ['wasm'], graphOptimizationLevel: optimization,
     });
     for (const page of pages) {
+      const gpuBefore = gpuSubmissions();
       const meta = await json(`native/${page}/models.json`);
       let row = report.pages.find(p => p.page === page);
       if (!row) { row = {page, segnet: {different: 0, pixels: 0, instructions: 0}, encoder: []}; report.pages.push(row); }
@@ -66,6 +68,10 @@ export async function compareModels({ort, pages, models, read, write, log = cons
           await write(`output/${page}/${staff}/context.bin`, new Uint8Array(got.buffer, got.byteOffset, got.byteLength));
           output.dispose(); input.dispose();
         }
+      }
+      if (ep === 'webgpu') {
+        row[`${kind}_gpu_submissions`] = gpuSubmissions() - gpuBefore;
+        if (!row[`${kind}_gpu_submissions`]) throw Error(`${kind}/${page}: no GPU inference submissions`);
       }
       await save(`output/${page}/metrics.json`, row);
       log(kind, page, kind === 'segnet' ? row.segnet.fraction : row.encoder.at(-1)?.max_abs);

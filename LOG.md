@@ -804,3 +804,28 @@ permits fused or unfused relaxed multiply-add. Its availability alone proves
 no model parity. No decoder-style 4x speedup is promised for these already
 optimized dense float32 models. GPU work is not measured by host retired
 instructions and cannot be ranked by this CPU counter.
+
+### Reproducing the WebGPU part outside this sandbox
+
+From this checkout, with the supplied sibling scratch directories, run:
+
+```sh
+node bench/models_chrome.mjs ../models_native ../models_files ../models_webgpu ../music_files.txt ../ortbench/node_modules/onnxruntime-web/dist
+```
+
+This uses --headless=new --enable-unsafe-webgpu, a fresh profile and local
+HTTP serving; all data stays local. It requires an adapter and actual GPU
+queue submissions during **each model/page**, recording adapter and Chrome
+identity. The EP list is WebGPU+WASM as in Partsong: unsupported nodes may run
+on WASM, but a whole-model CPU fallback is rejected. It does not fabricate a
+GPU speed estimate from CPU submission instructions. Then run:
+
+```sh
+python3 bench/decode_models.py ../plain/src/homr/transformer/decoder_pytorch_model_465-597144cab54c8f6d0f6c9619df5c5312694eadd6.onnx ../decoder_native_ref ../models_webgpu ../models_webgpu_tokens ../music_files.txt
+python3 bench/compare_model_xml.py ../p411b ../models_webgpu_tokens ../replay_all ../models_webgpu_xml
+```
+
+The WebGPU harness could only be syntax-checked here; the two real Chrome
+launch attempts both aborted before an adapter/session existed. No WebGPU
+class/context/token/XML numbers are available, and no Chrome GPU parity is
+claimed.

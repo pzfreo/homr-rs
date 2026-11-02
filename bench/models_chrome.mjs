@@ -19,7 +19,8 @@ import {compareModels} from '/bench/models_core.mjs';
 try {
  const adapter = await navigator.gpu?.requestAdapter();
  if (!adapter) throw Error('No WebGPU adapter');
- const adapterInfo = adapter.info;
+ const info = adapter.info;
+ const adapterInfo = Object.fromEntries(['vendor','architecture','device','description','subgroupMinSize','subgroupMaxSize'].map(k=>[k,info[k]]));
  // Keep ORT's default device creation, but record actual GPU submissions so
  // an adapter plus an entirely CPU-fallback session cannot masquerade as GPU.
  ort.env.webgpu.adapter = adapter;
@@ -27,7 +28,7 @@ try {
  let gpuSubmissions = 0;
  GPUQueue.prototype.submit = function(...args) { gpuSubmissions++; return originalSubmit.apply(this,args); };
  ort.env.wasm.wasmPaths = '/ort/';
- const summary = await compareModels({ort, ep:'webgpu', threads:1,
+ const summary = await compareModels({ort, ep:'webgpu', threads:1, gpuSubmissions:()=>gpuSubmissions,
   pages:${JSON.stringify(pages)}, models:${JSON.stringify(modelPaths)},
   read: async name => { const r=await fetch('/'+name); if(!r.ok)throw Error(name+': '+r.status);return new Uint8Array(await r.arrayBuffer()); },
   write: async (name,data) => { const r=await fetch('/'+name,{method:'POST',body:data});if(!r.ok)throw Error('write '+name); },
