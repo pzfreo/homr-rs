@@ -28,6 +28,10 @@ path = "bench/encoder_corpus.rs"
 name = "encoder_bench"
 path = "bench/encoder_bench.rs"
 
+[[bin]]
+name = "gpu_plan_check"
+path = "bench/gpu_plan_check.rs"
+
 [dependencies]
 libm = "0.2"
 serde_json = { version = "1", features = ["float_roundtrip"] }

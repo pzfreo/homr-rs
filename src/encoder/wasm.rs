@@ -57,6 +57,210 @@ pub extern "C" fn encoder_fused_simd_supported() -> u32 {
     crate::decoder::fused_simd_supported() as u32
 }
 
+/// Pack a GPU plan from a live, already validated encoder. Read-only to model.
+/// # Safety
+/// `model` is a live encoder_load handle; release the result once with plan_drop.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_plan_create(model: *const Encoder) -> *mut super::gpu::Plan {
+    Box::into_raw(Box::new(super::gpu::Plan::new(&*model)))
+}
+/// # Safety
+/// A live encoder_gpu_plan_create handle, released exactly once.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_plan_drop(plan: *mut super::gpu::Plan) {
+    drop(Box::from_raw(plan));
+}
+/// # Safety
+/// Live plan. Borrowed immutable bytes remain valid until plan_drop.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_plan_json(plan: *const super::gpu::Plan) -> *const u8 {
+    (*plan).json.as_ptr()
+}
+/// # Safety
+/// Live plan.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_plan_json_len(plan: *const super::gpu::Plan) -> usize {
+    (*plan).json.len()
+}
+/// # Safety
+/// Live plan. Borrowed immutable floats remain valid until plan_drop.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_plan_weights(plan: *const super::gpu::Plan) -> *const f32 {
+    (*plan).weights.as_ptr()
+}
+/// # Safety
+/// Live plan. Number of float32 values (not bytes).
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_plan_weights_len(plan: *const super::gpu::Plan) -> usize {
+    (*plan).weights.len()
+}
+/// Diagnostic per-node CPU oracle, deliberately using the existing CPU kernels.
+/// # Safety
+/// Live plan, valid op index, inputs/output have the shapes in its metadata.
+/// Output must not alias the plan or inputs. Call only on the coordinator.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_reference(
+    plan: *const super::gpu::Plan,
+    op: usize,
+    input: *const f32,
+    residual: *const f32,
+    output: *mut f32,
+) -> usize {
+    let plan = &*plan;
+    let Some(op) = plan.ops.get(op) else {
+        return 0;
+    };
+    let q = &op.params;
+    let n = match q[0] {
+        super::gpu::MATMUL => (q[1] * q[2]) as usize,
+        super::gpu::CONV | super::gpu::DEPTHWISE => (q[7] * q[8] * q[9]) as usize,
+        _ => op.values(),
+    };
+    let r = if q[0] == super::gpu::ADD {
+        std::slice::from_raw_parts(residual, op.values())
+    } else {
+        &[]
+    };
+    let values = plan.reference(op, std::slice::from_raw_parts(input, n), r);
+    std::ptr::copy_nonoverlapping(values.as_ptr(), output, values.len());
+    values.len()
+}
+/// Independent scalar/activation oracle for math probes. Records are four u32
+/// words: opcode, a bits, b bits, c bits. Outputs are one u32 bit pattern each.
+/// # Safety
+/// Input has count*4 words, output count writable words, with no aliasing.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_math_reference(
+    input: *const u32,
+    output: *mut u32,
+    count: usize,
+) {
+    use super::kernels;
+    let records = std::slice::from_raw_parts(input, count * 4);
+    let out = std::slice::from_raw_parts_mut(output, count);
+    // Use the encoder's actual SIMD activation, including its strict fused
+    // emulation, rather than the decoder scalar's f64 approximation to fma.
+    let mut erfs = Vec::new();
+    let mut gelus = Vec::new();
+    for r in records.as_chunks::<4>().0 {
+        match r[0] {
+            3 => erfs.push(f32::from_bits(r[1])),
+            4 => gelus.push(f32::from_bits(r[1])),
+            _ => {}
+        }
+    }
+    // Pad to SIMD width so the scalar tail cannot use a different fma helper.
+    erfs.resize(erfs.len().next_multiple_of(4), 0.0);
+    gelus.resize(gelus.len().next_multiple_of(4), 0.0);
+    kernels::erf_in_place(&mut erfs);
+    kernels::gelu_in_place(&mut gelus);
+    let (mut ei, mut gi) = (0, 0);
+    for (r, out) in records.as_chunks::<4>().0.iter().zip(out) {
+        let a = f32::from_bits(r[1]);
+        let b = f32::from_bits(r[2]);
+        let c = f32::from_bits(r[3]);
+        *out = match r[0] {
+            0 => kernels::fma(a, b, c),
+            1 => a / b,
+            2 => a.sqrt(),
+            3 => {
+                let v = erfs[ei];
+                ei += 1;
+                v
+            }
+            4 => {
+                let v = gelus[gi];
+                gi += 1;
+                v
+            }
+            5 => super::gpu::erf_exp(a),
+            6 => a + b,
+            7 => a * b,
+            8 => a - b,
+            _ => f32::NAN,
+        }
+        .to_bits();
+    }
+}
+
+/// Stream every division/sqrt operand in CPU Welford/affine, or every
+/// GELU/Erf/inner-exp operand. Benchmark oracle, not an encoder alternative.
+/// kind=0: count floats in complete c-channel rows, (2*c+2)*count/c records.
+/// kind=1: count activation floats, 3*count records. Each record has four u32
+/// words (opcode,a,b,c); expected has one u32 IEEE result per record.
+/// # Safety
+/// Input has count readable floats; records/expected have the sizes above,
+/// are writable, and alias neither input nor each other. Coordinator only.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_audit_records(
+    kind: u32,
+    input: *const f32,
+    count: usize,
+    c: usize,
+    epsilon: f32,
+    records: *mut u32,
+    expected: *mut u32,
+) -> usize {
+    use super::kernels;
+    if kind > 1 || (kind == 0 && (c == 0 || !count.is_multiple_of(c))) {
+        return 0;
+    }
+    let n = if kind == 0 {
+        (2 * c + 2) * (count / c)
+    } else {
+        3 * count
+    };
+    let x = std::slice::from_raw_parts(input, count);
+    let records = std::slice::from_raw_parts_mut(records, n * 4);
+    let expected = std::slice::from_raw_parts_mut(expected, n);
+    let mut index = 0;
+    let mut record = |op: u32, a: f32, b: f32, v: f32| {
+        records[index * 4..index * 4 + 4].copy_from_slice(&[op, a.to_bits(), b.to_bits(), 0]);
+        expected[index] = v.to_bits();
+        index += 1;
+    };
+    if kind == 0 {
+        for row in x.chunks_exact(c) {
+            let (mut mean, mut m2) = (0.0, 0.0);
+            for (j, &v) in row.iter().enumerate() {
+                let delta = v - mean;
+                let divisor = (j + 1) as f32;
+                let quotient = delta / divisor;
+                record(1, delta, divisor, quotient);
+                mean += quotient;
+                m2 = kernels::fma(delta, v - mean, m2);
+            }
+            let var = m2 / c as f32;
+            record(1, m2, c as f32, var);
+            let var = var + epsilon;
+            let std = var.sqrt();
+            record(2, var, 0.0, std);
+            for &v in row {
+                let delta = v - mean;
+                record(1, delta, std, delta / std);
+            }
+        }
+    } else {
+        let mut gelu = x.to_vec();
+        gelu.resize(count.next_multiple_of(4), 0.0);
+        kernels::gelu_in_place(&mut gelu);
+        let mut erf: Vec<_> = x
+            .iter()
+            .map(|v| v * std::f32::consts::FRAC_1_SQRT_2)
+            .collect();
+        erf.resize(count.next_multiple_of(4), 0.0);
+        kernels::erf_in_place(&mut erf);
+        for (i, &v) in x.iter().enumerate() {
+            let z = v * std::f32::consts::FRAC_1_SQRT_2;
+            record(4, v, 0.0, gelu[i]);
+            record(3, z, 0.0, erf[i]);
+            let exp_input = super::gpu::erf_exp_input(z);
+            record(5, exp_input, 0.0, super::gpu::erf_exp(exp_input));
+        }
+    }
+    n
+}
+
 #[cfg(feature = "encoder-probes")]
 mod probes {
     use crate::{encoder::kernels, onnx::Graph};

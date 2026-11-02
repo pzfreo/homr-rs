@@ -1,0 +1,31 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Exact encoder qualification</title>
+<style>body{font:15px system-ui;margin:2rem;max-width:65rem}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style>
+<h1>Exact encoder qualification</h1><p id="summary" style="font-size:1.3rem;font-weight:600">Loading…</p><pre id="status"></pre>
+<script type="module">
+const status=document.querySelector('#status');let config;
+const started=performance.now(),tally={staffs:0,gpu:0,exact:0,guards:0,ms:[]};let lastSent=0;
+function progress(value){
+ const v=value??{},mins=((performance.now()-started)/60000).toFixed(1);
+ if(v.stage==='corpus'){tally.staffs=v.completed;if(v.backend==='gpu')tally.gpu++;if(!v.raw_differences)tally.exact++;if(v.guard)tally.guards++;if(v.gpu_ms)tally.ms.push(v.gpu_ms);
+  const ms=tally.ms.slice().sort((a,b)=>a-b)[Math.floor(tally.ms.length/2)];
+  summary.textContent=`Staff ${v.completed} of ${v.total} (${v.page} #${v.staff}) · ${tally.exact} exact, ${tally.staffs-tally.exact} different · ${tally.guards} on CPU after checks · median GPU ${ms?ms.toFixed(1):'?'} ms · ${mins} min`;}
+ else summary.textContent=`Checking the arithmetic first (${v.stage??'starting'}${v.kind!=null?' '+v.kind:''}) · ${mins} min`;
+ status.textContent=JSON.stringify(value);console.log(JSON.stringify(value));
+ if(performance.now()-lastSent>5000){lastSent=performance.now();fetch('/progress',{method:'POST',body:summary.textContent}).catch(()=>{});}
+}
+const summary=document.querySelector('#summary');
+async function finish(result){
+ window.result=result;
+ const p=result.profile;
+ status.textContent=JSON.stringify(result.summary?{summary:result.summary,initialization:result.gpu_status,
+   profile:p&&{available:p.available,reason:p.reason,valid:p.valid,trials:p.trials,guarded_ms:p.guarded_ms,legacy_guarded_ms:p.legacy_guarded_ms,speedup:p.speedup,
+     image_scan_ms:p.image_scan_ms,weight_scan_once_ms:p.weight_scan_once_ms,guard_and_image_fraction:p.guard_and_image_fraction,by_kind:p.by_kind,kernels:p.kernels}}:result,null,2);
+ if(config?.post_report){const r=await fetch('/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(result)});if(!r.ok)status.textContent+='\nReport POST failed: '+r.status;}
+}
+try{
+ config=await(await fetch('/config/manifest.json')).json();
+ if(config.main_thread){const{runGPUEncoder}=await import('/bench/gpu_encoder_run.mjs');await finish(await runGPUEncoder(config,progress));}
+ else{const worker=new Worker('/bench/gpu_encoder_worker.mjs',{type:'module'});worker.onmessage=async({data})=>{if(data.result){await finish(data.result);worker.terminate();}else progress(data.progress);};worker.onerror=event=>finish({error:event.message,complete:false});worker.postMessage(config);}
+}catch(error){await finish({error:`${error}\n${error.stack||""}`,complete:false});}
+</script>

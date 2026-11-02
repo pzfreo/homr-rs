@@ -1983,3 +1983,430 @@ per-op work budgets and a diagnostic-only sleeping-rank simulation; retain
 all raw data/modules in scratch. No source changed after the passing final
 build checks. No edits to Partsong/homr, data/report dumps in Git, pushes or
 posts. Work is committed locally on cx/chunks.
+
+## WebGPU encoder (cx/gpu): ordered arithmetic foundation
+
+Maintainer evidence (external, not remeasured in this sandbox): the original
+fc1 probe has zero / 7,864,320 differing values in Chrome 156 Apple Metal
+(0.40 ms) and Mac Safari 26.6 Metal (1.9 ms). Both fail only subnormal known
+answers through flush-to-zero. The iOS simulator has no WebGPU adapter. These
+are fc1 results, not whole-encoder qualification or physical-iPhone timings.
+
+Unattended choices: implement WGSL using full float32, explicit fused fma,
+ascending reductions, separate rounding boundaries, and a fail-closed CPU
+fallback. Export a plan/packed weights from the loaded Rust model instead of
+parsing ONNX again in JS. Keep CPU encode/decode arithmetic and existing
+exports/host pool unchanged. Device qualification is not inferred from fc1.
+
+### Division and sqrt: refinement with exact certificates
+
+Normalize float32 inputs by their integer significands/exponents. Division
+uses four reciprocal Newton steps and one fma residual correction on operands
+in [1,2); sqrt uses four reciprocal-root steps and one residual correction on
+[1,4). The approximate seed is never the correctness argument. For division,
+let Ma/Mb be the normalized exact quotient, choose exponent e=0 or -1, and
+let candidate integer significand be M. Compare the exact 64-bit integer
+Ma*2^(24-e) against (2M-1)*Mb and (2M+1)*Mb. For sqrt, compare
+Ma*2^(25+parity) with (2M-1)^2 and (2M+1)^2. Adjust M by one if necessary,
+then repeat the midpoint test. Equality accepts only even M. A failed
+certificate sets a flag; it cannot silently accept an approximate answer.
+
+WGSL implements these <=51-bit products with exact u32 limbs, not f64 or
+GPU approximate division/sqrt. Exponents are restored by constructing bits.
+A special exact threshold handles rounding up to minimum normal from below
+(the CPU random/bin-edge tests caught this case during development). A result
+that would be subnormal, an unsupported operand, or overflow triggers CPU
+fallback. Normal-input sqrt always has a normal result. Refinement intermediates
+are bounded near one, with nonzero residuals on a >=2^-48 grid, so FTZ cannot
+affect a certified result. The integer certificate also tolerates an inaccurate
+seed, without requiring a universal Newton-convergence claim.
+
+Native oracle verification: one million randomized normal operand pairs and
+one million positive-normal square roots, plus all normal exponent bin edges
+and Welford denominators, pass against native IEEE / and sqrt for normal
+results. A separate million full-u32 wide multiplications match u64 exactly.
+These are CPU algorithm checks, **not GPU measurements**. Guarded and
+diagnostic-unguarded WGSL pass Naga 27.0.3 parsing/validation and Metal output
+generation, using a scratch-only validator (no application dependency added).
+
+### Rounding and FTZ policy
+
+A runtime uniform integer XOR mask (always zero) observes each arithmetic
+result's bits before its next use. This prevents contraction across separate
+mul/add operations: the compiler cannot algebraically pass through an unknown
+integer transformation. Explicit fma is still hardware-dependent. WGSL does
+not guarantee RN-even arithmetic or fused fma and permits reassociation; see
+https://www.w3.org/TR/WGSL/#floating-point-accuracy and
+https://www.w3.org/TR/WGSL/#reassociation-and-fusion . Therefore the normal
+add/mul/fma part is conditional on qualifying the actual implementation with
+known answers and corpus runs; a finite self-test is not a mathematical proof
+for every conforming GPU/compiler. No claim of universal WGSL exactness.
+
+The guard checks stored/input bits, all arithmetic results, and constructed
+exp scales. Every nonzero subnormal or nonfinite result is flagged. If a
+result is zero, mul is safe only with a zero operand, add only for exact
+cancellation/zeros, and fma only for zero terms or an **integer-verified** exact
+product/c cancellation. All other zero results conservatively flag possible
+FTZ. Thus in a flag-free execution every operand and observable result remains
+normal or an exact zero: by induction there is no unobserved flushed value
+that could contaminate a later normal result. Normalized refinement is covered
+by its integer certificate rather than a false-positive residual-zero test.
+If any flag fires, discard the GPU context and recompute the whole staff on
+the existing CPU encoder. Input/immutable-weight bit checks happen before
+upload, preserving detection even if a GPU flushes floating loads. No guard
+frequency or cost has been measured yet; the runners will report both.
+
+### Whole-model plan, host and CPU validation
+
+The GPU plan's 113 operations match every observed CPU intermediate on
+angelus_0 staff 0; its 655,360-value final context has zero differing bits
+against decoder_native_ref. The plan contains 13,197,408 packed float32
+weights (52,789,632 bytes, 50.34 MiB). Largest activation binding: 7,864,320
+values / 30 MiB. Seven activation slots total 66,846,720 bytes. There are four
+storage bindings per pipeline (five module declarations), a 64-byte uniform, 64 invocations/workgroup and 1,568 padded
+bytes of workgroup storage. No fp16, subgroups, dot products, reduction trees
+or optional arithmetic features. Every binding is below the default 128 MiB;
+all dispatch dimensions stay below 65,535. Timestamp queries are optional
+measurement features, not required to encode.
+
+Norm cooperatively loads a row, then invocation zero alone performs ascending
+Welford; all invocations apply independent affine outputs after a barrier.
+Stem bias is the initial accumulator. Downsampling forms separate ascending
+128-term sums, adds them in order, then adds bias. Depthwise executes all 49
+ky/kx terms, including padded-zero FMAs. GEMM adds bias after ascending K.
+Layer scale, residual and position each retain their own rounding boundary.
+The encoder's own Erf/inner-exp coefficients are literal float32 bit patterns.
+An extra native test reconstructs the actual CPU Erf large branch from the
+exported exp oracle on 100,000 values; all bits match. Native tests: 17 pass.
+
+Additional guard hardening: integer storage/constructed scale bits are checked
+**before** creating floats. GPU input and immutable weights are scanned as u32
+on the CPU. Arithmetic values outside +/-2^60 are conservatively flagged and
+replaced by zero internally; the whole staff is subsequently recomputed. With
+all ordinary arithmetic operands within that bound, products are <=2^120 and
+fused sums <2^121, so no overflow can invoke WGSL's indeterminate nonfinite
+rules before detection. Integer-certified div/sqrt can cover the full normal
+range in probes; their outputs are inspected before use in the model. Epsilon
+is validated finite, positive and bounded. Guard bits: 1 subnormal/possible
+FTZ, 2 nonfinite, 4 failed certificate/domain, 8 conservative magnitude domain.
+This extends the earlier FTZ argument; no observed frequency is implied.
+
+The no-bundler EncoderGPU host uploads weights once, reuses seven GPU buffers,
+and copies mapped context bytes directly into the caller's WASM context for
+decoder_run. It accepts ordinary exports and EncoderPool.exports. By default
+it drops the temporary packed CPU plan after upload/self-test; diagnostic
+runners retain it for their CPU oracle. Existing CPU encoder/decoder kernels,
+exports and both pool files remain unchanged. No ONNX parser in JS.
+
+Load test: nine small schedule cases (including stem versus segmented Conv),
+plus fused/double-rounding/signed-zero, division/sqrt, Erf/GELU/exp and FTZ
+known answers. It uses the actual production pipelines and Rust CPU oracles.
+Any mismatch, missing requirement, validation/internal/OOM error or device loss
+selects CPU. Error scopes are awaited before copying any GPU context, avoiding
+a stale readback if asynchronous validation fails. Both full initialization
+(including compile/upload) and probe-only milliseconds are reported; the
+100 ms load budget is **unmeasured**, not assumed to pass.
+
+Host-only tests cover normal/SAB context copies, discarding flagged raw GPU
+bytes, validation failure, mapping/device-loss failure, serialization, closed
+handles and single CPU-rejection propagation. These use explicit control mocks
+and are not GPU arithmetic evidence. An ordinary fused WASM ABI smoke test
+loads the runtime plan and executes actual CPU fallback: 655,360/655,360 native
+context values match. More build/compatibility checks follow below.
+
+Chrome launch was attempted once with the new single-staff runner: SIGABRT
+before CDP (scratch gpu_chrome_smoke.json). There was no GPU execution. The
+sandbox blocker persists; no alternate launch/permission bypass was attempted.
+Safari is likewise delegated to the maintainer's local runner, as requested.
+
+### Final guard fast path and validation runners
+
+Final numeric domain decision: stored activations/weights are bounded by
++/-2^32 (tightened from the earlier conservative prototype's 2^60). The host
+checks K<=1536. Therefore vector GEMM/Conv/depthwise prefix sums stay below
+2^76 even including accumulated rounding. No overflow is possible, and the
+hot vector FMA loop can check only zero/subnormal magnitudes. Complete outputs
+are checked/clipped before storage for the next op. Scalar arithmetic remains
+checked at each operation. No canonical weight was rejected by the native
+bit-domain scan; all 13,197,408 packed weights have flags zero. This is a
+data-independent safety bound, not an input/corpus shortcut. Its speed benefit
+is unmeasured until the external guarded/control timestamps run.
+
+Operand checks now run in **integer GPU scan passes**, not per-FMA weight
+loads or CPU image loops: all model weights once at load, and a sanitizing
+image-copy scan once per staff. Both check raw u32 storage bits before any
+float expression, so FTZ at float construction/load cannot conceal an input.
+The image scan zeros unsafe GPU words while latching flags; the original WASM
+image remains unchanged for whole-staff CPU recomputation. Arithmetic-result
+guards ensure all subsequent operands are normal/zero; constructed exp scales
+and epsilon are raw-bit checked too. Weight scanning uses a two-dimensional
+grid to stay within default workgroup-count limits even for a 128 MiB binding.
+The image scan is inside the measured staff timestamp interval.
+
+Self-test now also checks weight/image scanners and vector FMA cases with
+normal results despite subnormal unrounded products. Pipeline layouts are
+explicit, including the guard binding even in diagnostic controls. Full
+load/probe timing budgets remain unmeasured. The exact midpoint arithmetic
+uses at most 51 bits (the upper sqrt midpoint squared can exceed 2^50); the
+limb implementation handles full 64-bit products and passed the million-case
+independent u64 comparison.
+
+The single-staff native CPU-plan test also passes on pdf-1 staff 8: all 113
+operation outputs and the final native context have zero differing bits.
+This remains CPU/plan evidence, not a GPU result. Ordinary fused and shared
+strict/fused ABI/fallback tests pass on angelus_0 staff 0; final checks below
+repeat all ordinary/shared variants after the final source freeze.
+
+Runners: gpu_encoder_chrome.mjs and the static gpu_encoder.html page with
+gpu_encoder_server.py. The manifest verifies all 88 pages / 627 staffs /
+38,076 native steps, using staff inputs from models_native and context/step
+references from decoder_native_ref. First: production-kernel load tests and
+1,048,576 random/edge cases **per primitive**; then one whole staff with
+all 113 op comparisons; then every staff. Default audit=full maintains a
+separate CPU state and streams **all** CPU div/sqrt and GELU/Erf/inner-exp
+operands through GPU probes, plus compares every op output. CPU audit state
+never repairs GPU state, including after guards/drift. It validates each
+CPU-plan final context against native too. This expensive audit is separate
+from the unobserved production timing pass; audit=first/none explicitly
+report partial primitive coverage. No hashes or input deduplication.
+
+Reports keep raw GPU context/token differences, effective results after CPU
+fallback, exact guard reasons/frequency, timestamp GPU ms and end-to-end
+encode wall ms. Guard-cost controls use one warm-up and three interleaved
+trials; both guarded and unguarded outputs must match the native context or
+no overhead percentage is accepted. Controls never provide an encoder result.
+Their timestamps retain rounding barriers/certificates and omit FTZ/domain
+checks and the input scan. Missing timestamp-query reports null timing rather
+than inventing GPU milliseconds.
+
+Local server transport is verified by GET/HEAD: static page, manifest, JS,
+WASM, image and native context all serve correctly with COOP/COEP and MIME
+types. Full manifest counts are correct. No browser execution or report POST
+was part of that transport check. The Chrome launch blocker is SIGABRT before
+CDP; Safari execution is unavailable here. Thus **GPU primitive/corpus parity,
+guard frequency/cost and the 100 ms load target are still unmeasured**.
+
+The final scanner implementation removes the CPU image/weight loops from the
+production host. The GPU scans actual uploaded model words as part of load
+qualification, then scans/sanitizes each image before the float kernels.
+The CPU u32 scan remains a diagnostic test only. GPU scan load tests include
+intentional subnormal/nonfinite/domain words and verify both flags and zeroed
+GPU data while preserving signed zero. There are now eleven shader entry
+points, four storage bindings maximum per pipeline, and twelve small schedule/
+scanner cases plus scalar known answers. The self-test's real weights scan
+covers all 13,197,408 words. No GPU result from those tests is available locally.
+
+The native audit oracle also preserves SIMD's +0-minus-p sign convention in
+its unselected Erf large branch (rather than unary minus at a=0). New native
+assertions cover both zero signs. Primitive and per-op audit data come from
+independent CPU buffers, never repaired GPU buffers. The two complete native
+plan checks (angelus_0/0 and pdf-1/8) each match every operation and context.
+
+Source freeze for final checks: all host-control tests pass; both guarded and
+diagnostic-unguarded shader modules pass offline validation/Metal translation
+after the scanner and vector-load changes. GPU arithmetic remains pending
+the external runs. No Partsong/homr modifications, pushes or external posts.
+
+Final validation and unattended decisions (cx/gpu):
+
+- `cargo fmt --check`, native all-target/all-feature Clippy with `-D warnings`,
+  and `cargo test --release -j 1` pass (17 library tests, all binary/doc tests).
+- Ordinary strict/fused WASM builds and all eight shared artifacts from
+  `bench/build_encoder_threads.py` pass, including probe/chunk combinations.
+  Ordinary and shared strict/fused WASM Clippy passes with `-D warnings`;
+  shared Clippy includes all features. WASI strict and fused tests each pass
+  15 tests, with one existing panic-abort test ignored.
+- Current guarded and diagnostic-unguarded WGSL modules pass offline Naga
+  validation with no optional capabilities, and Metal translation; this is
+  shader validation, not GPU execution. All new JS/Python syntax checks pass.
+- The ordinary strict, ordinary fused, shared strict (4 threads), and shared
+  fused (4 threads) ABI/CPU-fallback runs each match all 655,360 context words
+  and all 33 native decoder steps on angelus_0/0. Audit-record marshalling
+  also passes. Production imports and the existing encoder/decoder exports
+  remain compatible; pool and worker files require no changes.
+- Final host-only tests cover shared/ordinary memory, guard-result discard,
+  device loss/validation/map failures, serialization and closed handles.
+  Permanent GPU failure frees GPU resources before CPU recomputation. Reports
+  count only complete per-op audits, including after device loss. The load
+  gate now includes both tie parities among 81 scalar known answers, plus
+  the twelve kernel/scanner cases. Final JS checks and host-control tests
+  were repeated after those changes.
+
+The CPU encoder arithmetic is unchanged. The two complete native plan checks
+prove wiring on angelus_0/0 and pdf-1/8; no new CPU or GPU 627-staff corpus
+result is claimed. The Chrome launch attempt terminated with SIGABRT before
+CDP, and Safari cannot execute in this sandbox. Therefore per-op GPU random
+tests, whole-model GPU bit identity, 627-staff contexts/tokens, guard frequency
+and cost, GPU timing and the 100 ms load budget remain external qualification
+work. Decision: retain the fail-closed CPU path and supply reproducible full
+audits rather than qualify this GPU implementation from the old fc1 probe.
+No phone speed estimate is substituted for an unmeasured result.
+
+Run from this clone (the parent directory is the supplied scratchpad):
+
+```
+node bench/gpu_encoder_chrome.mjs .. ../threads_build/encoder-threads-fused.wasm ../gpu-chrome.json
+python3 bench/gpu_encoder_server.py .. ../threads_build/encoder-threads-strict.wasm ../gpu-safari
+```
+
+Open the server's printed URL in Safari; it saves the same-origin `/report`
+JSON locally. Both commands default to all 627 staffs, full independent CPU
+per-op/primitive audits and native decoder-step comparisons. These are
+instructions for the maintainer; no report was posted during this work.
+
+## GPU mobile scheduling round (cx/gpu, after 67769a7)
+
+Maintainer-supplied qualification of the previous shaders: Chrome 156 / Apple
+Metal, 627/627 exact contexts, 0/38,076 token-step differences, zero guards,
+about 123 billion audited primitives with zero differences, median 64 ms GPU
+per staff. Partsong Mac: three pages' MusicXML agrees, 54 ms self-test and
+about 70 ms/staff. Android 10 / Chrome 156 (GPU unknown): self-test passes in
+955 ms, no fallbacks, about 1.55 s/staff, versus about 1.1 s for three-thread
+fused CPU and 0.35 s for non-exact ORT WebGPU. These are supplied results for
+the previous revision, not measurements or qualification of the new shaders.
+Safari qualification remains in progress externally.
+
+First stage: added per-pass timestamps for every model operation, separate
+per-staff image and one-time weight scans, and interleaved guarded/arithmetic
+controls. Each control final context is bit-compared to native; guard overhead
+is withheld on any mismatch/flag. Differential timings are explicitly noisy,
+not additive hardware counters, and never feed production encoding. One warm
+up plus three measured trials is the default profiling command. Production
+encode still submits the entire staff without intermediate CPU readbacks.
+Added optional trusted TLS/LAN binding to the local Safari/phone server.
+
+Tried actual GPU execution before kernel changes: installed Dawn's `webgpu`
+0.6.2 into scratch. Both explicit Metal and default requestAdapter returned
+null in this sandbox. The reusable `bench/gpu_encoder_node.mjs` saves this
+blocker and can run the exact same browser qualification/profiling harness
+where Metal is accessible. No software/null backend is substituted as GPU
+evidence. Host-control and JS syntax checks pass at this stage.
+
+Second stage: production scheduling changes, with the previous guarded
+schedule retained only as a diagnostic timing control:
+
+- GEMM/ordinary Conv: workgroup tile 16 rows x 32 columns, staged K=16.
+  Each of 64 invocations owns two independent vec4 accumulators. Shared
+  A/B loads replace repeated global reads; per full tile the source-level
+  A word reads drop 8x, B word reads 16x. These are data-movement counts,
+  not measured instruction counts or speedups. Shared staging uses 3 KiB.
+- Stem Conv still initializes each sum with bias. Downsample Conv still
+  computes independent ascending 128-term sums, adds them in order, then
+  adds bias. K tiling introduces barriers/data reuse, no extra rounding.
+- Depthwise: output tile 4x4 pixels x 16 channels, shared 10x10 halo and
+  49 weights (9,536 bytes). All 49 ky/kx FMAs, including padded zeros, stay
+  in native order. A full tile uses 400 input vec4 loads instead of 3,136
+  and 196 weight vec4 loads instead of 3,136; again logical loads only.
+- LayerNorm: each invocation owns one complete row. Previously one lane
+  performed Welford and 63 lanes waited in each workgroup; now the 64 lanes
+  process 64 independent rows. It rereads input for affine output instead
+  of staging a row, with identical sequential Welford/div/sqrt/affine ops.
+- GELU, scale, residual and position kernels, image/weight scans and all
+  numerical/guard functions are unchanged. No new fused/unfused arithmetic,
+  guard exemption, split reduction, precision change or CPU mid-staff trip.
+
+Default limits still suffice: 64 invocations, four storage bindings and
+12,608 bytes even summing all tiled workgroup arrays (below 16 KiB); largest
+storage binding remains 50.34 MiB. Host ABI/API and pool files are unchanged.
+
+Added an independent CPU simulation of the actual lane/tile load/index and
+accumulation schedules to gpu_plan_check (--simulate). All 113 outputs and
+final 655,360 context words match the CPU/native references on angelus_0/0
+and pdf-1/8, zero bit differences. GELU is unchanged and uses the established
+CPU activation oracle; other simulated arithmetic uses native f32 fma/div/sqrt.
+Thirteen load-test cases now include M/N/K tails, multiple tiles/workgroups,
+partial 128-term blocks, depthwise halos and LayerNorm row-group boundaries.
+The extra GEMM case has M=19, N=36, K=47. All thirteen simulations match their
+CPU known answers. The load gate additionally retains the 81 scalar cases
+and three raw-word scanner cases. This validates CPU schedules, not GPU math.
+
+Both tiled and legacy shaders, guarded and diagnostic-unguarded, pass offline
+Naga validation (all eleven entry points, no optional capabilities) and Metal
+translation. Offline validation caught a reserved WGSL identifier during
+development; corrected before the successful four-program check. Native
+release tests (17 library tests and all binaries/doctests) and all-target/
+all-feature Clippy -D warnings pass. Full final builds/checks are running.
+
+Per-kernel profiling now rotates three variants over one warm-up and three
+measured trials: tiled guarded, tiled arithmetic control, and legacy guarded.
+Every final context must equal native and every flag must be zero before
+speedup/guard deltas are accepted. It reports all 113 pass medians, totals by
+kind, image scan, one-time weight scan and dispatch spans. Profile passes have
+no intermediate readbacks; differential guard deltas remain explicitly noisy.
+
+Final data-movement refinement: the tiled path uses vec4<u32> input storage
+with explicit vec4 loads for aligned dense A tiles and depthwise halos. The
+K=47 case exercises misaligned rows/tails via scalar-word access. Integer
+loads/bitcasts change no arithmetic. Legacy controls retain scalar input
+storage so their benchmark stays comparable to the previous implementation.
+All four shaders again pass Naga/Metal translation; thirteen CPU schedule
+known answers pass after the vector load refinement. Host-only profiling
+tests verify timestamp resolve/index alignment, legacy/tiled dispatch sizes,
+medians and withholding speedup/guard estimates when a control drifts. These
+mock timestamps are never logged as measured GPU times.
+
+A fresh Chrome attempt also failed with SIGABRT before CDP. The local server
+was checked via GET/HEAD for the page, manifest, modules, symlinked model,
+WASM, input and native context, with COOP/COEP headers and profile=3 preserved.
+An occupied fixed test port was avoided using an OS-assigned ephemeral port;
+no existing listener was touched. No report POST or browser run was performed.
+
+Final checks: fmt, all-target/all-feature Clippy -D warnings and release tests
+pass; 17 library tests, all binary/doc tests. Ordinary strict/fused WASM and
+all eight shared artifacts (production, probes, chunk diagnostics, combined)
+build successfully, including `bench/build_encoder_threads.py`. Ordinary and
+shared strict/fused WASM Clippy passes; WASI strict/fused each pass 15 tests
+with the existing one panic-abort test ignored. All four real ABI/CPU-fallback
+runs (ordinary/shared strict/fused) match the native context and all 33 decoder
+steps on angelus_0/0. All four shader variants pass Naga/Metal translation;
+host-control/profiling tests and new JS/Python syntax checks pass. Native
+fmt/Clippy/tests were repeated after the final CPU-simulator edit. No CPU
+encoder arithmetic, decoder, pool/worker, Partsong or homr files were changed.
+
+Final review caught a storage-layout tail issue before GPU qualification:
+19x47 contains 893 words, so vec4 input storage needs zero padding for the
+last vector. GPU allocations are now rounded to sixteen bytes; readBuffer
+still returns exactly the requested bytes. Host profiling tests enforce
+allocation alignment and exercise short readbacks. Repeated JS syntax and
+host-control/profiling checks pass after this fix. Production model buffers
+were already aligned; this is important for the expanded load gate.
+
+Timing definitions: `weight_scan_once_ms` is the median of warm scans of
+resident weights, a separate one-time cost, not cold-load GPU time. The full
+initialization wall time remains separate. The guard delta removes wrapper
+FTZ/domain checks, while certified div/sqrt (including their flags) stay in
+arithmetic. No purported additive guard counter or hardware speedup is
+inferred from the CPU simulation, mock timestamps or logical load counts.
+
+Unattended decision: ship a fixed conservative tile design fitting default
+limits, preserve the old schedule solely for measured comparison, and leave
+actual speed selection to Partsong's existing speed test. No adapter/vendor
+guess, approximation, guard relaxation or unmeasured speed estimate is used.
+New GPU speed, guard frequency/self-test time and 627-staff GPU parity still
+require external execution. Dawn 0.6.2 returns no Metal/default adapter here;
+Chrome aborts before CDP and Safari cannot be executed in this sandbox. The
+maintainer-supplied previous-revision corpus result does not qualify these
+new shader schedules. No pushes, external posts, or committed data/reports.
+
+Run from this clone, Chrome first (one staff/per-kernel, then full corpus):
+
+```
+node bench/gpu_encoder_chrome.mjs .. ../threads_build/encoder-threads-fused.wasm ../gpu-fast-one.json --limit 1 --profile 3 --audit none --math-cases 65536
+node bench/gpu_encoder_chrome.mjs .. ../threads_build/encoder-threads-fused.wasm ../gpu-fast-full.json
+```
+
+Then Safari, opening each printed URL (stop the first server before the second):
+
+```
+python3 bench/gpu_encoder_server.py .. ../threads_build/encoder-threads-strict.wasm ../gpu-fast-safari-one --limit 1 --profile 3 --audit none --math-cases 65536
+python3 bench/gpu_encoder_server.py .. ../threads_build/encoder-threads-strict.wasm ../gpu-fast-safari-full
+```
+
+Profiling omits corpus primitive streams but still checks all op outputs on
+one staff and 65,536 random/edge cases per primitive. Full runs default to all
+627 staffs / 38,076 steps and all recorded primitive operands. Same phone
+page: Android `adb reverse tcp:8796 tcp:8796`, open localhost:8796; alternatively
+use server --bind/--cert/--key with HTTPS trusted by the phone. README gives
+the scratch-only Dawn install/run and independent CPU simulation commands.
+Copy all three host JS files together and rebuild WASM for the thirteen-case
+load gate; ABI version and EncoderGPU API usage remain unchanged.
