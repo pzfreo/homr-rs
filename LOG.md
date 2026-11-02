@@ -436,3 +436,57 @@ Three paired load-subtracted runs, the same four staffs / 123 steps:
 The first page's native and WASM checks retain all 123 exact token steps and
 exactly the previous attention error statistics. Next, the measured attention
 bottleneck is addressed without changing each dot product's addition order.
+
+### Pipeline neutrality of f00d474
+
+Detached main and HEAD used independent native/WASI release builds. Every
+correctness line agrees; instruction counters were the only fields removed
+when comparing output text (they necessarily vary from run to run).
+
+| check | main | HEAD |
+|---|---|---|
+| check_page p411 ref411 | 158 same, 0 different | same |
+| check_symbols p411 ref411 | 151 same, 0 different | same |
+| check_staffs p411b sref_all | 627 same, 0 different | same |
+| check_contours p411 | 948 same, 0 different | same |
+| EXTERNAL=1 check_contours p411 | 641 same, 307 different | same |
+| check_pre seg_all preref_all | 88 same, 0 different | same |
+| check_xml p411b dec_all replay_all | 75 identical + 13 matching failures | same |
+| compare ref411 | 151 same, 0 different | same |
+
+The EXTERNAL differences are the existing mismatch between RETR_EXTERNAL and
+these RETR_TREE references, identical down to each diagnostic on both builds.
+No correctness expectation or reference changed, and no lint fix required
+reversion on this corpus.
+
+`bench/compare_pipeline.py` runs the original `rs_page.mjs` and `rs_pre.mjs`
+on angelus_0 through angelus_5. Three paired (3-repetitions minus 1-repetition)/2
+runs, measured by the same macOS instruction counter through Node N-API:
+
+| six-page pass | main median | HEAD median | HEAD/main |
+|---|---:|---:|---:|
+| rs_page | 15.947835 G | 15.953024 G | 1.000325 |
+| rs_pre | 27.081108 G | 26.800900 G | 0.989653 |
+
+Page run ranges were 15.943–15.975 G main and 15.937–15.970 G HEAD; the +0.033%
+median change is inside that spread. Stage 2 decreased by 1.035%. There is no
+measured regression beyond noise.
+
+### Attention layout, first exact-precision change
+
+Keys are now channel-major with fixed stride, allowing four independent dot
+products in SIMD lanes without changing the order of any accumulation. V stays
+position-major; eight weighted output channels are held in registers while
+visiting positions in their original order. WASM still performs its float64
+multiply/add followed by float32 rounding for every FMA. Native uses NEON FMA.
+
+Full corpus rerun on the frozen native and WASM artifacts after this change:
+88 pages / 627 staffs / 38,076 steps / 228,456 choices per build, zero token or
+length differences. Attention max/mean remain 0.0003662109375 /
+0.0000035342254462343814 pixels. Both native and WASM-generated decoder.json
+pass check_xml: 75 byte-identical + 13 failing alike, zero different.
+
+Three paired runs: Rust native 56.128 M/step (1.726 G/staff), Rust WASM
+200.912 M/step (6.178 G/staff); ORT native 46.347 M/step and ORT-web
+480.219 M/step. This change is correct but only a modest further improvement.
+The remaining WASM FMA promotion/narrowing overhead is being measured next.

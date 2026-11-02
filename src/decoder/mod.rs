@@ -84,89 +84,181 @@ impl Step {
         )
     }
 }
-#[derive(Default)]
 struct Cache {
+    // Channel-major K permits four independent scores in SIMD lanes. V stays
+    // position-major, contiguous across output channels. Neither grows in stride.
     k: Vec<f32>,
     v: Vec<f32>,
+    len: usize,
+    capacity: usize,
 }
 impl Cache {
-    // Position-major storage lets append preserve all previous positions in place.
+    fn new(capacity: usize) -> Self {
+        Self {
+            k: vec![0.0; DIM * capacity],
+            v: Vec::with_capacity(DIM * capacity),
+            len: 0,
+            capacity,
+        }
+    }
     fn append(&mut self, k: &[f32], v: &[f32]) {
         let _g = profile::enter(profile::Phase::Copy);
-        self.k.extend_from_slice(k);
+        let rows = k.len() / DIM;
+        assert_eq!(k.len(), v.len());
+        assert!(self.len + rows <= self.capacity);
+        for d in 0..DIM {
+            for r in 0..rows {
+                self.k[d * self.capacity + self.len + r] = k[r * DIM + d];
+            }
+        }
         self.v.extend_from_slice(v);
+        self.len += rows;
     }
     fn attend(&self, q: &[f32], mut map: Option<&mut [f32]>) -> Vec<f32> {
         let mut out = vec![0.0; DIM];
-        let len = self.k.len() / DIM;
-        let mut scores = vec![0.0; len];
+        let mut scores = vec![0.0; self.len];
         for h in 0..HEADS {
-            let start = h * HD;
             {
                 let _g = profile::enter(profile::Phase::Scores);
-                for (p, s) in scores.iter_mut().enumerate() {
-                    *s = dot_float(
-                        &q[start..start + HD],
-                        &self.k[p * DIM + start..p * DIM + start + HD],
-                    ) * 0.125;
-                }
+                self.scores(q, h, &mut scores);
             }
             softmax(&mut scores);
             if let Some(map) = map.as_deref_mut() {
                 let _g = profile::enter(profile::Phase::Copy);
-                map[h * len..(h + 1) * len].copy_from_slice(&scores);
+                map[h * self.len..(h + 1) * self.len].copy_from_slice(&scores);
             }
-            let _g = profile::enter(profile::Phase::WeightedV);
-            for (p, &s) in scores.iter().enumerate() {
-                weighted_add(
-                    &mut out[start..start + HD],
-                    &self.v[p * DIM + start..p * DIM + start + HD],
-                    s,
-                );
+            {
+                let _g = profile::enter(profile::Phase::WeightedV);
+                // SAFETY: the cache contains len complete rows, q/out have DIM
+                // elements, and h indexes a complete 64-channel head.
+                #[cfg(any(
+                    target_arch = "aarch64",
+                    all(target_arch = "wasm32", target_feature = "simd128")
+                ))]
+                unsafe {
+                    weighted_sum(&self.v, &scores, h, &mut out);
+                }
+                #[cfg(not(any(
+                    target_arch = "aarch64",
+                    all(target_arch = "wasm32", target_feature = "simd128")
+                )))]
+                for (p, &s) in scores.iter().enumerate() {
+                    for d in 0..HD {
+                        let j = h * HD + d;
+                        out[j] = activation::fma(s, self.v[p * DIM + j], out[j]);
+                    }
+                }
             }
         }
         out
     }
-}
-#[inline]
-fn weighted_add(out: &mut [f32], values: &[f32], scale: f32) {
-    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-    // SAFETY: both slices are HD (64) floats, a multiple of four.
-    unsafe {
-        weighted_add_simd(out, values, scale);
-    }
-    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
-    for (o, &v) in out.iter_mut().zip(values) {
-        *o = activation::fma(scale, v, *o);
+    fn scores(&self, q: &[f32], h: usize, out: &mut [f32]) {
+        let bulk = self.len / 4 * 4;
+        // SAFETY: each transposed channel has capacity >= len elements and
+        // the complete query/head dimensions are validated by the model loader.
+        #[cfg(any(
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128")
+        ))]
+        unsafe {
+            score_simd(q, &self.k, self.capacity, h, &mut out[..bulk]);
+        }
+        #[cfg(not(any(
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128")
+        )))]
+        let bulk = 0;
+        for (p, s) in out.iter_mut().enumerate().skip(bulk) {
+            let mut sum = 0.0;
+            for d in 0..HD {
+                sum = activation::fma(q[h * HD + d], self.k[(h * HD + d) * self.capacity + p], sum);
+            }
+            *s = sum * 0.125;
+        }
     }
 }
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-unsafe fn weighted_add_simd(out: &mut [f32], values: &[f32], scale: f32) {
+#[inline(always)]
+unsafe fn fma4(
+    a: core::arch::wasm32::v128,
+    b: core::arch::wasm32::v128,
+    c: core::arch::wasm32::v128,
+) -> core::arch::wasm32::v128 {
     use core::arch::wasm32::*;
-    let scale = f64x2_splat(scale as f64);
-    for i in (0..out.len()).step_by(4) {
-        let v = v128_load(values.as_ptr().add(i).cast());
-        let o = v128_load(out.as_ptr().add(i).cast());
-        let lo = f64x2_add(
-            f64x2_mul(f64x2_promote_low_f32x4(v), scale),
-            f64x2_promote_low_f32x4(o),
+    let lo = f64x2_add(
+        f64x2_mul(f64x2_promote_low_f32x4(a), b),
+        f64x2_promote_low_f32x4(c),
+    );
+    let hi = f64x2_add(
+        f64x2_mul(
+            f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(a, a)),
+            b,
+        ),
+        f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(c, c)),
+    );
+    i32x4_shuffle::<0, 1, 4, 5>(f32x4_demote_f64x2_zero(lo), f32x4_demote_f64x2_zero(hi))
+}
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+unsafe fn score_simd(q: &[f32], keys: &[f32], stride: usize, h: usize, out: &mut [f32]) {
+    use core::arch::wasm32::*;
+    for p in (0..out.len()).step_by(4) {
+        let mut sum = f32x4_splat(0.0);
+        for d in 0..HD {
+            let v = v128_load(keys.as_ptr().add((h * HD + d) * stride + p).cast());
+            let query = f64x2_splat(*q.get_unchecked(h * HD + d) as f64);
+            sum = fma4(v, query, sum);
+        }
+        v128_store(
+            out.as_mut_ptr().add(p).cast(),
+            f32x4_mul(sum, f32x4_splat(0.125)),
         );
-        let hi = f64x2_add(
-            f64x2_mul(
-                f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(v, v)),
-                scale,
-            ),
-            f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(o, o)),
-        );
-        let result =
-            i32x4_shuffle::<0, 1, 4, 5>(f32x4_demote_f64x2_zero(lo), f32x4_demote_f64x2_zero(hi));
-        v128_store(out.as_mut_ptr().add(i).cast(), result);
     }
 }
-fn dot_float(a: &[f32], b: &[f32]) -> f32 {
-    a.iter()
-        .zip(b)
-        .fold(0.0, |s, (&a, &b)| activation::fma(a, b, s))
+#[cfg(target_arch = "aarch64")]
+unsafe fn score_simd(q: &[f32], keys: &[f32], stride: usize, h: usize, out: &mut [f32]) {
+    use core::arch::aarch64::*;
+    for p in (0..out.len()).step_by(4) {
+        let mut sum = vdupq_n_f32(0.0);
+        for d in 0..HD {
+            sum = vfmaq_n_f32(
+                sum,
+                vld1q_f32(keys.as_ptr().add((h * HD + d) * stride + p)),
+                *q.get_unchecked(h * HD + d),
+            );
+        }
+        vst1q_f32(out.as_mut_ptr().add(p), vmulq_n_f32(sum, 0.125));
+    }
+}
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+unsafe fn weighted_sum(values: &[f32], scores: &[f32], h: usize, out: &mut [f32]) {
+    use core::arch::wasm32::*;
+    for d in (0..HD).step_by(8) {
+        let mut lo = f32x4_splat(0.0);
+        let mut hi = f32x4_splat(0.0);
+        for (p, &s) in scores.iter().enumerate() {
+            let scale = f64x2_splat(s as f64);
+            let v = values.as_ptr().add(p * DIM + h * HD + d);
+            lo = fma4(v128_load(v.cast()), scale, lo);
+            hi = fma4(v128_load(v.add(4).cast()), scale, hi);
+        }
+        v128_store(out.as_mut_ptr().add(h * HD + d).cast(), lo);
+        v128_store(out.as_mut_ptr().add(h * HD + d + 4).cast(), hi);
+    }
+}
+#[cfg(target_arch = "aarch64")]
+unsafe fn weighted_sum(values: &[f32], scores: &[f32], h: usize, out: &mut [f32]) {
+    use core::arch::aarch64::*;
+    for d in (0..HD).step_by(8) {
+        let mut lo = vdupq_n_f32(0.0);
+        let mut hi = vdupq_n_f32(0.0);
+        for (p, &s) in scores.iter().enumerate() {
+            let v = values.as_ptr().add(p * DIM + h * HD + d);
+            lo = vfmaq_n_f32(lo, vld1q_f32(v), s);
+            hi = vfmaq_n_f32(hi, vld1q_f32(v.add(4)), s);
+        }
+        vst1q_f32(out.as_mut_ptr().add(h * HD + d), lo);
+        vst1q_f32(out.as_mut_ptr().add(h * HD + d + 4), hi);
+    }
 }
 struct BlockState {
     self_cache: Cache,
@@ -312,15 +404,9 @@ impl Decoder {
             .blocks
             .iter()
             .map(|b| BlockState {
-                self_cache: Cache {
-                    k: Vec::with_capacity(MAX_STEPS * DIM),
-                    v: Vec::with_capacity(MAX_STEPS * DIM),
-                },
+                self_cache: Cache::new(MAX_STEPS),
                 cross_cache: {
-                    let mut c = Cache {
-                        k: Vec::with_capacity((CONTEXT_POSITIONS + MAX_STEPS) * DIM),
-                        v: Vec::with_capacity((CONTEXT_POSITIONS + MAX_STEPS) * DIM),
-                    };
+                    let mut c = Cache::new(CONTEXT_POSITIONS + MAX_STEPS);
                     c.append(&b.k.quantized(&full), &b.v.quantized(&full));
                     c
                 },
@@ -463,5 +549,50 @@ impl Session<'_> {
             logits,
             attention: [sx / sum * 16.0, sy / sum * 16.0],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn attention_tiles_and_tails_match_scalar_order() {
+        for n in [1, 3, 4, 5, 17] {
+            let keys: Vec<f32> = (0..n * DIM)
+                .map(|i| ((i * 71 % 511) as f32 - 255.0) / 513.0)
+                .collect();
+            let values: Vec<f32> = (0..n * DIM)
+                .map(|i| ((i * 43 % 509) as f32 - 254.0) / 517.0)
+                .collect();
+            let query: Vec<f32> = (0..DIM)
+                .map(|i| ((i * 131 % 503) as f32 - 251.0) / 519.0)
+                .collect();
+            let mut cache = Cache::new(n + 3);
+            cache.append(&keys, &values);
+            let actual = cache.attend(&query, None);
+            let mut expected = vec![0.0; DIM];
+            for h in 0..HEADS {
+                let mut scores: Vec<f32> = (0..n)
+                    .map(|p| {
+                        let mut s = 0.0;
+                        for d in 0..HD {
+                            s = activation::fma(query[h * HD + d], keys[p * DIM + h * HD + d], s);
+                        }
+                        s * 0.125
+                    })
+                    .collect();
+                softmax(&mut scores);
+                for (p, &s) in scores.iter().enumerate() {
+                    for d in 0..HD {
+                        let j = h * HD + d;
+                        expected[j] = activation::fma(s, values[p * DIM + j], expected[j]);
+                    }
+                }
+            }
+            assert_eq!(
+                actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+            );
+        }
     }
 }

@@ -5,13 +5,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-const [engine,mode,model,root,...staffs]=process.argv.slice(2);
+const [engine,mode,model,root,...requested]=process.argv.slice(2);
+const corpus=requested.length===1&&requested[0]==='@all';
+const staffs=corpus?fs.readdirSync(root).sort().flatMap(page=>{const p=path.join(root,page,'decoder.json');if(!fs.existsSync(p))throw Error(`missing page ${page}`);const n=JSON.parse(fs.readFileSync(p)).calls.length;return Array.from({length:n},(_,i)=>`${page}/${i}`);}):requested;
 if (!['rust','ort'].includes(engine)||!['load','decode','check'].includes(mode)||!staffs.length)
   throw Error('decoder.mjs rust|ort load|decode|check MODEL REF PAGE/STAFF ...');
-const data=staffs.map(name=>{
+const readStaff=name=>{
   const d=path.join(root,name), bytes=fs.readFileSync(path.join(d,'context.bin'));
   return {name,context:new Float32Array(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength)),reference:JSON.parse(fs.readFileSync(path.join(d,'steps.json')))};
-});
+};
+const data=corpus?staffs.map(name=>({name})):staffs.map(readStaff);
 const weights=fs.readFileSync(model);
 let run;
 if(engine==='rust') {
@@ -60,8 +63,20 @@ if(engine==='rust') {
 if(mode!=='load') {
 let steps=0,differingSteps=0,lengthDifferences=0,maxAbs=0,totalAbs=0,count=0;
 const differences=[];
-for(const staff of data) {
-  const results=await run(staff);steps+=results.length;
+const saved=new Map();
+const vocab=process.env.SAVE_DECODER?JSON.parse(fs.readFileSync(process.env.VOCAB)):null;
+for(const source of data) {
+  const staff=corpus?readStaff(source.name):source;
+  const results=await run(staff);
+  if(vocab) {
+    const [page,index]=staff.name.split('/');
+    if(!saved.has(page)) {const meta=JSON.parse(fs.readFileSync(path.join(root,page,'decoder.json')));meta.calls=new Array(meta.calls.length).fill(null);saved.set(page,meta);}
+    const meta=saved.get(page);
+    meta.calls[+index]=results.filter(r=>r.tokens[0]>2).map(r=>{const t=r.tokens;return [vocab.rhythm[t[0]],vocab.pitch[t[1]],vocab.lift[t[2]],vocab.articulation[t[4]],vocab.slur[t[5]],vocab.position[t[3]],r.attention];});
+    if(meta.calls.every(c=>c!==null)) {const dir=path.join(process.env.SAVE_DECODER,page);fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,'decoder.json'),JSON.stringify(meta));saved.delete(page);}
+  }
+  if(corpus) console.error('checked',staff.name,results.length);
+steps+=results.length;
   if(mode==='check') {
     if(results.length!==staff.reference.length)lengthDifferences++;
     results.forEach((r,i)=>{

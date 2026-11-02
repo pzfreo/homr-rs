@@ -403,9 +403,9 @@ unsafe fn wasm_mat1<const SAFE: bool>(a: &[u8], b: &[i8]) -> [i32; 4] {
     let mut c2 = i32x4_splat(0);
     let mut c3 = i32x4_splat(0);
     for t in (0..k).step_by(16) {
-        let a0 = v128_xor(v128_load(a.as_ptr().add(0 * k + t).cast()), shift);
-        let b0 = v128_load(b.as_ptr().add(0 * k + t).cast());
-        let b1 = v128_load(b.as_ptr().add(1 * k + t).cast());
+        let a0 = v128_xor(v128_load(a.as_ptr().add(t).cast()), shift);
+        let b0 = v128_load(b.as_ptr().add(t).cast());
+        let b1 = v128_load(b.as_ptr().add(k + t).cast());
         let b2 = v128_load(b.as_ptr().add(2 * k + t).cast());
         let b3 = v128_load(b.as_ptr().add(3 * k + t).cast());
         c0 = i32x4_add(c0, wasm_product::<SAFE>(a0, b0));
@@ -441,12 +441,12 @@ unsafe fn wasm_mat4<const SAFE: bool>(a: &[u8], b: &[i8], k: usize) -> [i32; 16]
     let mut c14 = i32x4_splat(0);
     let mut c15 = i32x4_splat(0);
     for t in (0..k).step_by(16) {
-        let a0 = v128_xor(v128_load(a.as_ptr().add(0 * k + t).cast()), shift);
-        let a1 = v128_xor(v128_load(a.as_ptr().add(1 * k + t).cast()), shift);
+        let a0 = v128_xor(v128_load(a.as_ptr().add(t).cast()), shift);
+        let a1 = v128_xor(v128_load(a.as_ptr().add(k + t).cast()), shift);
         let a2 = v128_xor(v128_load(a.as_ptr().add(2 * k + t).cast()), shift);
         let a3 = v128_xor(v128_load(a.as_ptr().add(3 * k + t).cast()), shift);
-        let b0 = v128_load(b.as_ptr().add(0 * k + t).cast());
-        let b1 = v128_load(b.as_ptr().add(1 * k + t).cast());
+        let b0 = v128_load(b.as_ptr().add(t).cast());
+        let b1 = v128_load(b.as_ptr().add(k + t).cast());
         let b2 = v128_load(b.as_ptr().add(2 * k + t).cast());
         let b3 = v128_load(b.as_ptr().add(3 * k + t).cast());
         c0 = i32x4_add(c0, wasm_product::<SAFE>(a0, b0));
@@ -498,12 +498,12 @@ unsafe fn neon_mat4(a: &[u8], b: &[i8], k: usize) -> [i32; 16] {
     let mut c14 = vdupq_n_s32(0);
     let mut c15 = vdupq_n_s32(0);
     for t in (0..k).step_by(16) {
-        let a0 = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(a.as_ptr().add(0 * k + t)), shift));
-        let a1 = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(a.as_ptr().add(1 * k + t)), shift));
+        let a0 = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(a.as_ptr().add(t)), shift));
+        let a1 = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(a.as_ptr().add(k + t)), shift));
         let a2 = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(a.as_ptr().add(2 * k + t)), shift));
         let a3 = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(a.as_ptr().add(3 * k + t)), shift));
-        let b0 = vld1q_s8(b.as_ptr().add(0 * k + t));
-        let b1 = vld1q_s8(b.as_ptr().add(1 * k + t));
+        let b0 = vld1q_s8(b.as_ptr().add(t));
+        let b1 = vld1q_s8(b.as_ptr().add(k + t));
         let b2 = vld1q_s8(b.as_ptr().add(2 * k + t));
         let b3 = vld1q_s8(b.as_ptr().add(3 * k + t));
         c0 = vdotq_s32(c0, a0, b0);
