@@ -1,6 +1,6 @@
 //! Exact integer dot products. Weights are transposed once at model load.
-use super::onnx::Graph;
 use super::profile::{enter, Phase};
+use crate::onnx::Graph;
 
 pub(super) struct Quantized {
     pub data: Vec<u8>,

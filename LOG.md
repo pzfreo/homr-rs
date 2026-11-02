@@ -941,7 +941,12 @@ recorded per page.
 | backend | segnet differing tile pixels | worst-page fraction | encoder max abs | encoder mean abs |
 |---|---:|---:|---:|---:|
 | WASM 1.30.0, 4 threads | 14 / 826,982,400 | 3.487723214e-7 (fix-six-1) | 1.192092896e-5 | 4.360817261e-7 |
-| Chrome WebGPU + WASM fallback | not measured (SIGABRT before CDP) | unavailable | unavailable | unavailable |
+| Chrome WebGPU + WASM fallback (external Chrome 156 / Apple Metal) | 24 / 826,982,400 (16 pages) | 2.325148810e-7 (fix-six-1, 2 pixels) | 1.86e-5 | 1.32e-6 |
+
+The WebGPU row was supplied by the maintainer after the original sandbox
+survey, measured outside this sandbox on all 88 pages / 627 staffs. Worst
+encoder case is pdf-1 staff 8. Its downstream token/XML results were not
+supplied; the original local Chrome SIGABRT limitation remains.
 
 The exact Rust decoder follows its own greedy trajectory on every context,
 including EOS, all six heads, and each error-page staff. It never stops at the
@@ -1116,3 +1121,320 @@ and call-count checks; they are labelled as boundary replays rather than live
 browser runs. No user answers were needed. All work is committed on cx/models;
 Partsong and the plain homr checkout were not edited. Nothing was pushed or
 posted, and generated data/reports remain only in scratch.
+
+## Exact Rust encoder port (cx/encoder)
+
+The maintainer supplied external Chrome 156 / Apple Metal measurements for all
+88 pages / 627 staffs: WebGPU segnet differs at **24 / 826,982,400 pixels on
+16 pages**, worst fix-six-1 with **2 pixels**; encoder max absolute difference
+**1.86e-5**, mean **1.32e-6**, worst pdf-1 staff 8. These supplement the WASM
+measurements above; downstream GPU tokens/XML have not been supplied and are
+not inferred. The encoder port targets native default arm64 ORT 1.31.0.
+Segnet remains in ORT-web as requested. No large segmentation port is planned.
+
+### Stage 1: native scalar operator checks
+
+Shared the ONNX protobuf reader at src/onnx.rs, retaining decoder parsing and
+adding typed node attributes. Factored the existing MLAS erf polynomial out of
+the decoder GELU without changing its arithmetic. Initial native single-node
+checks (angelus_0 staff 0) are bit-identical for stem Conv (1,966,080 outputs),
+LayerNorm (1,966,080), depthwise 7x7 Conv (1,966,080), MatMul (7,864,320), Div
+(7,864,320), and Erf (7,864,320). The stem Conv must initialize accumulators
+with bias; summing from zero and adding bias later differed at 1,423,236
+outputs. Depthwise uses the opposite schedule: zero accumulation, bias after.
+No fixture hashes or approximate tolerances are used for these checks.
+Seven release library tests and all existing binary/doc test targets pass.
+
+### Stage 2: optimized native subgraphs and first whole-model agreement
+
+Added NEON/SIMD128 ordered 4x16 float GEMM. All previous single-node outputs
+remain bit-identical; native optimized Gemm+bias and Gelu each match all
+7,864,320 probe values. A diagnostic graph retains native optimized fusions
+and disables re-optimization; its final context is byte-identical to the
+ordinary default native session before its 114 intermediate outputs are used.
+
+The first assembled model initially diverged at the first downsample Conv.
+Native MLAS segments its contraction into **independent 128-term fused sums**,
+then adds those partials and finally bias. Replaying one uninterrupted FMA
+chain or initializing bias early is wrong for these two convolutions. The
+stem instead initializes bias early. With the segmented schedule, every
+observed intermediate and all **655,360 output float32 bits** on angelus_0
+staff 0 match native exactly. This is whole-model sample agreement, not yet a
+corpus claim. Runtime weight loading uses homr's original encoder ONNX.
+
+### Stage 3: vector activations and depthwise
+
+Vectorized MLAS erf/GELU and padded NHWC depthwise convolution. All native
+single-node checks, optimized Gemm/Gelu probes and observed whole-model
+intermediates remain bit-identical on angelus_0 staff 0. The native corpus
+runner now executes every staff, compares float32 bits directly, and records
+retired instructions plus an operation breakdown. The first full native
+corpus run is underway; no corpus result is claimed yet.
+
+### Stage 4: WASM ABI and double-rounding correction
+
+Added encoder_load/drop/run and encoder_decode exports beside the unchanged
+decoder ABI. encoder_run writes to caller linear memory which decoder_run can
+read directly; encoder_decode passes its internal context Vec to the decoder
+without a context copy. Optional probe/trace/profile features are benchmark
+only and absent from the normal artifacts.
+
+All initial isolated operators and optimized Gemm/Gelu probes pass on both
+WASM variants. The first fused four-staff sample has 4/4 bit-identical contexts,
+using roughly 20.57G retired instructions per warmed staff versus the prior
+28.41G ORT-web single-thread baseline. Full-corpus results are still pending.
+
+The original widened strict recurrence passed simple probes but failed the
+whole model. Trace showed its first observed one-bit discrepancy late at
+stage 2/block 4's activation, followed by 161,290 changed context values.
+Float64 multiply/add followed by float32 conversion is not always a correctly
+rounded fused float32 operation. Added a halfway/subnormal/special-value
+check in SIMD recurrence, calling libm's correctly-rounded fmaf only on rare
+lanes; scalar strict Welford also uses fmaf. A numeric regression case uses
+(1+2^-23)*(1-2^-23)+16777218: naive double rounding gives 16777220 instead of
+16777218. With correction, every observed first-staff stage and context bit
+matches native. Decoder arithmetic was not changed by this fix.
+
+### Stage 5: native corpus and strict fallback engineering
+
+The native NEON encoder completed **627/627 bit-identical contexts**, followed
+by the rebuilt Rust decoder: **38,076 steps, zero token/step/length changes**.
+Native encoder+decoder XML remains **75 byte-identical + 13 matching failures**.
+
+Strict SIMD's fully general corrected recurrence was accurate but expensive:
+the initial explicit halfway/special checks used approximately 729G retired
+instructions/staff; outlining its rare scalar correction reduced this to
+roughly 669G. A branchless TwoSum + round-to-odd recurrence preserves exact
+fused rounding, including subnormal cases, and measured about 542G. These
+are superseded experiments, not the final strict performance claim.
+
+The retained strict GEMM adds a proven range fast path: if all nonzero
+operands/biases lie in [2^-40,2^40] and K<=65536, their products have a 2^-126
+grid. Every rounded partial sum remains on that grid, so it is zero or normal;
+K and the upper bound also prevent overflow. Only halfway double-rounding
+cases require scalar repair. Inputs outside these bounds execute the general
+round-to-odd path. No model input, staff or operation is skipped and this is
+not a fixture/hash gate. The native-like first full bounded-path staff
+(follow-3) matches every context bit and measures about **440G instructions**,
+still much more than ORT-web; this cost is not hidden.
+
+For the complete strict corpus use two independent, single-threaded Node
+workers over disjoint page lists (modest CPU parallelism), both executing
+normal, non-profile final artifacts and their own Rust decoder in the same
+linear memory. Fused and native runs are also complete/in progress as noted.
+
+Strict engineering update: the range fast path batches halfway checks over a
+2x8 tile and uses an inline vector round-to-odd repair, avoiding scalar calls
+inside GEMM. Its full follow-3 context is bit-identical, at approximately
+273.7G retired instructions including profiling, versus 440G for the earlier
+range-checked scalar repair. The final normal strict artifact is frozen at
+this implementation. The complete strict corpus will use four balanced,
+disjoint single-threaded Node shards, at most four CPU workers total (the
+fourth strict worker starts after the fused corpus exits). Previous slow
+prefix runs are not merged into the final corpus or final speed table.
+
+### Fused WASM corpus complete
+
+The normal fused artifact completed all **627 bit-identical encoder contexts**
+and its own WASM Rust decoder on the same context pointer: **38,076 steps,
+zero differing heads/steps/lengths**, including all native failure-page staffs.
+No JS context copy is required for the decoder. Full fused XML replay is being
+checked separately. Four balanced strict workers now execute the retained
+normal strict artifact; no diagnostic/profile imports are used in those runs.
+
+### API validation and final build checks
+
+Fused XML replay completed: **75 byte-identical results and 13 matching native
+AssertionErrors**, with zero byte-different pages. The single-call
+encoder_decode ABI also matches the native 121-step follow-3 staff, with a
+separately checked bit-identical context. Existing decoder exports remain
+present. No changes were made to decoder arithmetic or its stopping rules.
+
+Added checked dimension products before unsafe encoder SIMD entry points,
+including a release-mode overflow regression test. These integer guards and
+a Clippy iterator rewrite leave valid-image arithmetic and accumulation order
+unchanged. Full strict corpus runs use the frozen normal batch-kernel artifact;
+fresh guarded-source artifacts are built separately for final checks and speed.
+The native optimized graph records 114 outputs; **70 named computational
+boundaries** are observed and compared by the Rust trace (the recording also
+contains reshape-shape constants and other fused-graph outputs). The trace
+harness now fails its process on any bit difference or an empty observation.
+
+Native release tests pass all **11** library tests and all binary/doc targets.
+Strict and fused WASI runs each pass **10** tests; WASI's aborting panic runtime
+ignores the should-panic dimension-overflow test, which passes natively.
+Native all-target/all-feature and both WASM all-feature Clippy checks pass
+with -D warnings. No user answers or new authorization were needed.
+
+### Threading assessment and scope
+
+The encoder currently executes one staff on one thread. Independent output
+rows/pixels, layer-normalization rows, and pointwise activations can be divided
+among workers without changing any contraction or Welford reduction order.
+Splitting K or reducing partial sums in a new order would break exactness.
+An intra-staff browser implementation needs shared WebAssembly.Memory,
+atomics/bulk-memory, a compatible thread-safe Rust std/allocator build,
+COOP/COEP isolation, worker stacks/initialization, and a persistent worker pool
+with stage barriers. The C ABI can be kept; wasm-bindgen is not required.
+
+Unmeasured planning estimate: two workers could provide approximately 1.5–1.8x
+parallel throughput, four approximately 2–3x. A 95%-parallel Amdahl model gives
+a four-worker ceiling near 3.48x before barriers, memory traffic and phone
+big/LITTLE effects. Total retired instructions would stay similar or increase
+(budget 5–20% for dispatch/synchronization; busy spinning could be worse).
+These are estimates, not phone or wall-time benchmark results. ORT-web's four
+threads and WebGPU can still have a latency advantage despite a smaller Rust
+single-thread instruction count. A worker pool is intentionally not built in
+this round: it requires a distinct shared-memory runtime and another exactness
+validation matrix. No Partsong integration or Android measurement was run.
+
+The final benchmark preflight found that the isolated optimized GELU fixture
+flattened its input to 2D while retaining a declared 4D output. Native ORT 1.31
+accepted this inconsistent rank, whereas ORT-web 1.30 rejected it. The recorder
+now follows the optimized graph's actual constant Reshape shape for both Gemm
+and Gelu. Correcting the scratch GELU input declaration to [1,64,320,384]
+preserves every native output byte and makes the browser probe load. This is
+a diagnostic-fixture correction, not an encoder arithmetic change.
+
+### Complete three-build encoder agreement
+
+All four retained strict shards exited successfully. Their disjoint merge
+contains exactly 88 pages and 627 staffs; every staff actually executes both
+models. Strict results are **627 bit-identical contexts, 38,076 steps, zero
+differing token heads/steps, zero extra or missing steps**. Its byte-exact XML
+replay gives **75 identical files and 13 matching native AssertionErrors**.
+No staff input, inference, decoder trajectory or failed native page was skipped.
+
+| encoder + Rust decoder | context bit-identical staffs | decoder steps | changed heads / steps / lengths | XML identical / matching failures |
+|---|---:|---:|---:|---:|
+| native NEON fused | 627/627 | 38,076 | 0 / 0 / 0 | 75 / 13 |
+| WASM SIMD128 + relaxed SIMD, fused probe passes | 627/627 | 38,076 | 0 / 0 / 0 | 75 / 13 |
+| WASM strict SIMD128, emulated fused | 627/627 | 38,076 | 0 / 0 / 0 | 75 / 13 |
+
+The scratch evidence is encoder_native/comparison.json,
+encoder_native_tokens/comparison.json, encoder_fused/comparison.json,
+encoder_strict_final/comparison.json and each corresponding *_xml/comparison.json.
+The strict merger rejects duplicate/missing pages and mixed artifact names.
+Whole contexts are compared as float32 bits, including signed zero, with no
+hashes or numeric tolerance. XML replay uses recorded native page/staff inputs
+and each build's newly generated symbols/attention; it is not a live browser
+segmentation/whole-page integration test. Segnet remains on ORT-web.
+
+Fresh guarded-source strict and fused artifacts also pass every isolated
+operator probe and the combined encoder_decode follow-3 check (121 matching
+native steps each, plus separate context-bit checks). Native guarded source
+passes the observed stage trace. The frozen corpus kernels and these final
+builds have identical floating arithmetic; late edits add dimension validation
+and an equivalent iterator spelling, as documented above. Sequential final
+benchmarks use the fresh normal artifacts, separately from profile artifacts.
+
+### Final encoder instructions (not wall time)
+
+Warmed angelus_0 staff 0, one warm-up then three measured executions per
+engine, median below. All models/inputs are loaded before the counter. Each
+Rust result is checked against native context bits; ORT-web repeats are checked
+for byte determinism, not falsely claimed exact against native. Every native
+ORT repeat matches the native reference. All measurement jobs run sequentially
+after the corpus workers exit. Counters are process-wide proc_pid_rusage
+RUSAGE_INFO_V4, including ORT worker threads. No elapsed times are used.
+
+| encoder engine/build | G retired instructions/staff |
+|---|---:|
+| native Rust NEON, fused, one thread | 12.341592 |
+| native ORT 1.31.0, homr default CPU options | 7.800154 |
+| native ORT 1.31.0, one thread | 3.790445 |
+| Rust WASM SIMD128 + relaxed SIMD, fused | 20.634634 |
+| Rust WASM strict SIMD128, emulated fused | 267.354596 |
+| ORT-web 1.30.0 WASM, one thread | 28.423430 |
+| ORT-web 1.30.0 WASM, four threads | 30.838291 |
+
+The requested fused target is met: **27.4027% fewer instructions** than
+ORT-web single-threaded (1.377x instruction ratio). Strict costs **12.9566x
+fused Rust**, or **9.4061x ORT-web one-thread**. Native NEON is 3.256x the
+controlled native one-thread ORT count; native ORT uses its SME2 kernels here.
+The native default-options count includes the default worker pool's extra
+work. Four-thread ORT-web uses 8.496% more process instructions than one-thread;
+this says nothing by itself about its elapsed latency, particularly on phones.
+
+Scratch reports: encoder_bench_final/*.json. The fresh normal WASM paths are
+encoder-fused-final.wasm and encoder-strict-final.wasm; profile variants have
+separate names. Normal WASM counts do not include profile imports. Native
+phase callbacks add a negligible amount of counter overhead to its total.
+Reproduce with bench/measure_encoder.py --help; the driver now includes both
+default and controlled one-thread native baselines (the default baseline above
+was invoked separately with that same models_native.py command).
+
+Whole Rust encoder phase medians, **G instructions per staff**. Profiling
+callbacks exclude their own counter reads from phase intervals; allocation,
+layout conversion and operation setup are charged to the following operation.
+The sum of component medians need not equal the median total. Profile totals
+are 12.341592G native, 20.646609G fused WASM and 267.270415G strict WASM,
+consistent with the separately measured normal artifacts.
+
+| operation | native NEON | WASM fused | WASM strict |
+|---|---:|---:|---:|
+| stem Conv | 0.023762 | 0.034486 | 0.319027 |
+| downsample Conv | 0.400796 | 0.637326 | 7.191821 |
+| depthwise 7x7 Conv | 1.203037 | 1.692840 | 17.397260 |
+| LayerNorm | 0.237912 | 0.584870 | 1.973784 |
+| MLP fc1 Gemm | 4.689187 | 7.815699 | 105.510139 |
+| GELU (including erf) | 0.889347 | 1.819010 | 26.469227 |
+| MLP fc2 Gemm | 4.623426 | 7.664214 | 105.830966 |
+| layer scale Mul | 0.159394 | 0.192838 | 0.192803 |
+| residual Add | 0.010104 | 0.028528 | 0.028569 |
+| projection Gemm | 0.103291 | 0.171635 | 2.345138 |
+| positional Add | 0.000498 | 0.001402 | 0.001402 |
+
+Representative **isolated ORT operator** medians below are M instructions per
+invocation, not a decomposition of the full ORT graph. Conv/LayerNorm/depthwise
+have 1,966,080 output values; MatMul/Gemm/Div/Erf/Gelu have 7,864,320. These
+use recorded native operands and the actual stem/first-block shapes, one warm
+and three measurements. Native columns use one thread. Optimized Gemm/Gelu
+probes and unfused nodes are deliberately distinguished. These numbers cannot
+be summed or multiplied by the op inventory to recover full-model totals.
+
+| isolated node | native ORT | ORT-web 1 thread | ORT-web 4 threads |
+|---|---:|---:|---:|
+| Conv | 8.625 | 48.909 | 78.853 |
+| LayerNormalization | 29.002 | 57.679 | 161.844 |
+| depthwise Conv | 259.708 | 304.023 | 301.305 |
+| MatMul | 6.772 | 807.303 | 999.894 |
+| Div | 11.872 | 89.518 | 378.447 |
+| Erf | 126.280 | 370.790 | 685.869 |
+| optimized Gemm+bias | 29.948 | 804.938 | 1078.184 |
+| optimized Gelu | 141.325 | 427.505 | 727.071 |
+
+ORT's public JS interface has no per-node retired-instruction callback. Its
+standard profiler reports elapsed time, which is not used here. A full
+in-session ORT instruction decomposition would need an instrumented runtime;
+that build was not made. The isolated-node comparisons and full Rust phase
+breakdown above are what actually ran.
+
+### Final outcome and remaining limits
+
+No encoder operator prevented bit identity. Conv/bias scheduling, segmented
+128-term downsample sums, ordered fused GEMM, Welford LayerNorm and MLAS
+erf/GELU all pass native and both WASM single-node/subgraph checks. The strict
+double-rounding failure was fixed rather than hidden behind a token-only
+tolerance. All three complete model/corpus checks then pass exactly. There
+are no new attention/softmax/int8 encoder kernels: this graph is float ConvNeXt.
+
+The fused artifact is the practical exact phone path on hosts that pass the
+load-time fused probe. Keep strict as an expensive compatibility fallback;
+it is not a speed improvement over ORT-web. Browser/Android device validation,
+live Partsong integration, GPU encoder execution, a shared-memory Rust worker
+pool and an instrumented ORT build were not run/implemented. Device access and
+the separate browser threading runtime are concrete remaining requirements,
+not unresolved numeric mismatches. Supplied external WebGPU figures are logged
+beside the prior WASM survey; segnet is unchanged.
+
+Final required checks pass again: cargo fmt --check; cargo clippy --all-targets
+--all-features -- -D warnings; cargo test --release (11 library tests, all
+binary/doc targets); both normal wasm32-unknown-unknown release builds.
+Earlier final-source strict/fused WASI tests and WASM Clippy checks also pass
+as detailed above. The existing decoder ABI and corpus agreement are preserved.
+All artifacts, raw counts, contexts and XML stay in scratch. Work is committed
+on cx/encoder; nothing was pushed or posted, and neither Partsong nor homr was
+edited. Unattended decisions were the fixed graph executor, the rigorously
+bounded strict fast path, four disjoint corpus workers, and deferring a browser
+threading runtime until its own validation round.

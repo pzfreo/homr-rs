@@ -12,6 +12,22 @@ crate-type = ["rlib", "cdylib"]
 name = "decode_contexts"
 path = "bench/decode_contexts.rs"
 
+[[bin]]
+name = "check_encoder_ops"
+path = "bench/check_encoder_ops.rs"
+
+[[bin]]
+name = "check_encoder"
+path = "bench/check_encoder.rs"
+
+[[bin]]
+name = "encoder_corpus"
+path = "bench/encoder_corpus.rs"
+
+[[bin]]
+name = "encoder_bench"
+path = "bench/encoder_bench.rs"
+
 [dependencies]
 libm = "0.2"
 serde_json = { version = "1", features = ["float_roundtrip"] }
@@ -23,5 +39,8 @@ debug = false
 [features]
 # Benchmark-only synchronous retired-instruction phase counters (macOS / Node host).
 decoder-profile = []
+encoder-profile = []
+encoder-probes = []
+encoder-trace = []
 # Follow OpenCV 5.0 where it differs from 4.11 (minAreaRect conventions).
 opencv5 = []
