@@ -32,8 +32,9 @@ export class EncoderPool {
         await new Promise((resolve, reject) => {
           const timeout = setTimeout(() => reject(Error(`encoder worker ${rank} startup timeout`)), 30000);
           const ready = value => {clearTimeout(timeout); value.error ? reject(Error(value.error)) : resolve();};
-          if (isNode) {worker.once('message', ready); worker.once('error', reject);}
-          else {worker.onmessage = event => ready(event.data); worker.onerror = reject;}
+          const failed = error => {clearTimeout(timeout); reject(error);};
+          if (isNode) {worker.once('message', ready); worker.once('error', failed);}
+          else {worker.onmessage = event => ready(event.data); worker.onerror = failed;}
           worker.postMessage({module, memory: pool.memory, control: pool.control.buffer, rank, threads, stackTop: stack + stackBytes, tlsBase});
         });
       }

@@ -15,9 +15,12 @@ const median = xs => xs.toSorted((a, b) => a - b)[1];
 async function startCase(config) {
   const worker = fork(new URL('./thread_scaling_case.mjs', import.meta.url), [JSON.stringify({...config, model, staff, ortModule})], {stdio: ['ignore', 'inherit', 'inherit', 'ipc']});
   const pending = new Map(); let next = 0;
-  await new Promise((resolve, reject) => {worker.once('error', reject); worker.once('message', m => m.error ? reject(Error(m.error)) : resolve());});
+  try {
+    await new Promise((resolve, reject) => {worker.once('error', reject); worker.once('message', m => m.error ? reject(Error(m.error)) : resolve()); worker.once('exit', code => reject(Error(`engine exited during startup: ${code}`)));});
+  } catch (error) {worker.kill(); throw error;}
   worker.on('message', m => {if (m.id) {const p = pending.get(m.id); pending.delete(m.id); m.error ? p.reject(Error(m.error)) : p.resolve(m);}});
   worker.on('error', error => {for (const p of pending.values()) p.reject(error); pending.clear();});
+  worker.on('exit', code => {for (const p of pending.values()) p.reject(Error(`engine exited: ${code}`)); pending.clear();});
   return {...config, worker, call(command) {return new Promise((resolve, reject) => {const id = ++next; pending.set(id, {resolve, reject}); worker.send({id, command});});}};
 }
 try {

@@ -1484,3 +1484,114 @@ that process, including all its kernel workers. Cases still run sequentially,
 with one warm-up and three interleaved measured rounds, preserving every raw
 sample and the predeclared rotation/reversal order. This corrects attribution,
 not arithmetic or the chosen workload. The machine remains shared and loaded.
+
+### Node scaling: final isolated-process measurements
+
+Host reports Apple M5 Max, 18 logical CPUs, ARM64 Node 26.9.0. Every case has
+one coordinator plus N-1 allocation-free kernel workers; only one case runs
+at once. Other resident cases are separate idle processes. One warm-up per
+case, then three interleaved rounds with predeclared rotation/reversal. Model
+loading, pool creation and input-file reads are outside the measurement.
+Each measured Rust call checks native context bits; ORT repeats check their
+own warmed bytes (ORT is not claimed exact). Host dispatch, the final WASM
+context copy, output checks and coordinator work are included. Instruction
+counts cover the case process and all its workers, not the benchmark driver's
+IPC. Wall times include the measured call's IPC round trip; engine-only values
+are retained separately. No sample is dropped or replaced by a fastest run.
+
+Median of three, G retired instructions and seconds per staff:
+
+| engine | total threads | G instructions | seconds |
+|---|---:|---:|---:|
+| Rust fused shared WASM | 1 | 20.975702 | 1.884906 |
+| Rust fused shared WASM | 2 | 20.976307 | 0.847230 |
+| Rust fused shared WASM | 4 | 20.988078 | 0.563445 |
+| Rust fused shared WASM | 6 | 20.996975 | 0.255151 |
+| Rust strict shared WASM | 1 | 267.678843 | 38.058830 |
+| Rust strict shared WASM | 2 | 267.877712 | 22.316589 |
+| Rust strict shared WASM | 4 | 268.276638 | 6.411590 |
+| Rust strict shared WASM | 6 | 268.666513 | 4.035695 |
+| ORT-web 1.30 WASM | 1 | 28.407107 | 1.456688 |
+| ORT-web 1.30 WASM | 4 | 30.753257 | 0.387993 |
+
+Raw wall samples in seconds (round order), to show the loaded machine's range:
+
+| engine / threads | trial 1 | trial 2 | trial 3 |
+|---|---:|---:|---:|
+| fused / 1 | 1.659992 | 2.285288 | 1.884906 |
+| fused / 2 | 0.661052 | 1.310578 | 0.847230 |
+| fused / 4 | 0.563445 | 0.429210 | 0.635169 |
+| fused / 6 | 0.243802 | 0.255151 | 0.347490 |
+| strict / 1 | 23.206173 | 44.961189 | 38.058830 |
+| strict / 2 | 12.103092 | 36.750369 | 22.316589 |
+| strict / 4 | 5.847406 | 6.411590 | 14.292391 |
+| strict / 6 | 4.035695 | 4.017108 | 6.816574 |
+| ORT / 1 | 1.456688 | 1.403349 | 2.316602 |
+| ORT / 4 | 0.386605 | 0.387993 | 0.769672 |
+
+Strict instruction overhead relative to its one-thread shared path is 0.223%
+at four threads and 0.369% at six; fused is 0.059% and 0.101%. Sleeping waits
+avoid spin amplification. Instruction counts remain stable except ORT's last
+four-thread sample (41.542313G, retained, versus 30.546214G/30.753257G), where
+runtime work/spinning is included rather than subtracted. Superlinear wall
+ratios reflect load/core-placement differences on this heterogeneous machine;
+they are not claims of algorithmic speedup or portable phone scaling.
+Raw final evidence is threads_scaling_final.json; the exploratory shared-PID
+run is archived separately. Four-thread corpus work starts after timing exits.
+
+### WebGPU prototype and Chrome launch blocker
+
+The prototype is fc1 [20480,96] x [96,384], **7,864,320 output values**. Each
+invocation owns four adjacent outputs, executes ascending K with explicit WGSL
+fma, then applies bias separately. No parallel K reduction, fp16 or dot/subgroup
+reassociation is used. Input/native tensors come from the original optimized
+native single-node probe. The Rust output is independently generated and
+matches every native bit before the fixture is accepted. No model data is
+committed; tools/prepare_gpu_fc1.py writes all operands/references to scratch.
+
+The load-time known-answer design tests six storage-fed fma triples (fusion,
+double-rounding, subnormals, signed zero and ties), then selected cells from
+the same fc1 shader generator to distinguish K order and bias-after behavior.
+All **10 known answers** were independently verified against native fmaf and
+ORT 1.31.0. Both generated shaders parse and validate with Naga 27.0.3 in a
+scratch validator. These are analytic numeric answers, not model-output hashes.
+Production must reject the GPU path on any failure/device loss, rerun tests
+after device recreation, and still validate every model operator/full corpus
+on the target engine. Fma tests alone cannot certify LayerNorm division/sqrt
+or GELU, nor every input permitted by WGSL's floating-point rules.
+
+The GPU harness records Apple adapter information, refuses software/other
+adapters, compares every output against both native and Rust, warms once and
+times three runs. It reports compute-pass GPU timestamps when available,
+input-upload + dispatch/wait wall time, and output readback separately. Even a
+failed self-test is followed by the diagnostic fc1 comparison, but exact=true
+requires both tests and every full-output bit comparison to pass.
+
+Both the GPU and CPU Chrome scripts were launch-attempted with headless=new
+and enable-unsafe-webgpu. Chrome exits **SIGABRT before CDP** in this sandbox;
+no GPU shader ran and no Chrome speed/bit comparison is claimed. The actual
+fc1 GPU differences and timings are **unmeasured**, not zero. The CPU browser
+harness includes COOP/COEP and runs one engine at a time, warming/setup outside
+counters. Its new instructionsForPid addon reads the renderer's total retired
+instructions via proc_pid_rusage; it refuses stale addons that could silently
+read the Node driver's PID. Renderer PID changes invalidate the measurement.
+
+One-line GPU command from this clone, using the prepared scratch fixtures:
+
+    node bench/gpu_fc1_chrome.mjs ../threads_gpu_fixture ../threads_gpu_chrome.json
+
+CPU browser command (after building current bench/counter.c as threads_counter.node):
+
+    COUNTER_ADDON=../threads_counter.node node bench/threads_chrome.mjs ../threads_build ../models_files/encoder_pytorch_model_465-597144cab54c8f6d0f6c9619df5c5312694eadd6.onnx ../models_native/angelus_0/0 ../ortbench/node_modules/onnxruntime-web/dist ../threads_cpu_chrome.json
+
+The shaders, harnesses and their launch-failure evidence are ready for a host
+where Chrome can start. No workaround changes the sandbox or substitutes a
+software GPU for Apple Metal.
+
+### Threaded fused corpus verified
+
+Four-thread fused WASM completed **627/627 bit-identical contexts**, **38,076
+native decoder steps**, zero differing heads/steps/lengths, and XML **75
+byte-identical files + 13 matching native failures**. Every staff records
+**[89,89,89,89]** completed jobs across coordinator and workers: 55,803 joined
+jobs, 223,212 rank executions. The strict four-thread corpus is now running.
