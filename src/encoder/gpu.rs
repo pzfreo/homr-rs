@@ -364,7 +364,8 @@ fn bits(x: &[f32]) -> Vec<u32> {
 fn self_tests() -> Vec<Value> {
     let mut tests = Vec::new();
     for (test_index, kind) in [
-        MATMUL, CONV, DEPTHWISE, NORM, GELU, SCALE, ADD, POSITION, CONV,
+        MATMUL, CONV, DEPTHWISE, NORM, GELU, SCALE, ADD, POSITION, CONV, MATMUL, CONV, DEPTHWISE,
+        NORM,
     ]
     .into_iter()
     .enumerate()
@@ -402,19 +403,41 @@ fn self_tests() -> Vec<Value> {
             q[12] = 3;
             q[13] = 2;
         }
+        // Cross workgroup/tile boundaries and exercise partially occupied
+        // output tiles in the production GPU schedules, using CPU oracles.
+        match test_index {
+            9 => {
+                q[1] = 19;
+                q[2] = 47;
+                q[3] = 36;
+            }
+            10 => {
+                q[1] = 25;
+                q[3] = 36;
+                q[7] = 10;
+                q[8] = 10;
+                q[13] = 5;
+            }
+            11 => {
+                q[1] = 35;
+                q[3] = 20;
+                q[7] = 5;
+                q[8] = 7;
+                q[9] = 20;
+                q[13] = 7;
+            }
+            12 => {
+                q[1] = 67;
+                q[3] = 96;
+            }
+            _ => {}
+        }
         q[6] = 1e-6f32.to_bits();
         let input_len = match kind {
-            MATMUL => 4 * 32,
-            CONV => {
-                if test_index == 8 {
-                    64
-                } else {
-                    4 * 4 * 48
-                }
-            }
-            DEPTHWISE => 2 * 2 * 16,
-            _ => 64,
-        };
+            MATMUL => q[1] * q[2],
+            CONV | DEPTHWISE => q[7] * q[8] * q[9],
+            _ => q[1] * q[3],
+        } as usize;
         let mut a: Vec<_> = (0..input_len)
             .map(|i| ((i * 17 % 71) as f32 - 35.0) * 0.03125)
             .collect();
@@ -422,7 +445,7 @@ fn self_tests() -> Vec<Value> {
             .map(|i| ((i * 13 % 59) as f32 - 29.0) * 0.015625)
             .collect();
         if kind == NORM {
-            weights = vec![0.75; 16];
+            weights = vec![0.75; q[3] as usize];
         }
         if kind == SCALE {
             weights = vec![f32::from_bits(0x3f7ffffe); 16];
@@ -432,8 +455,8 @@ fn self_tests() -> Vec<Value> {
             weights = vec![-1.0; 64];
         }
         q[5] = weights.len() as u32;
-        weights.extend((0..16).map(|i| i as f32 * 0.125));
-        let residual: Vec<_> = (0..64).map(|i| i as f32 * 0.0625 - 2.0).collect();
+        weights.extend((0..q[3]).map(|i| i as f32 * 0.125));
+        let residual: Vec<_> = (0..q[1] * q[3]).map(|i| i as f32 * 0.0625 - 2.0).collect();
         if test_index == 8 {
             a.fill(0.0);
             weights.fill(0.0);
@@ -444,7 +467,7 @@ fn self_tests() -> Vec<Value> {
             weights[16 + 2] = f32::from_bits(0x1c800000);
             weights[q[5] as usize + 2] = f32::MIN_POSITIVE;
         }
-        if kind == MATMUL {
+        if test_index == 0 {
             a.fill(0.0);
             weights.fill(0.0);
             a[0] = f32::from_bits(0x3f800001);
@@ -491,9 +514,16 @@ mod tests {
     #[test]
     fn load_time_probes_cover_every_kernel_with_finite_normal_data() {
         let probes = self_tests();
-        assert_eq!(probes.len(), 9);
+        assert_eq!(probes.len(), 13);
         for (kind, p) in probes.iter().enumerate() {
-            assert_eq!(p["params"][0], if kind == 8 { CONV } else { kind as u32 });
+            let expected_kind = match kind {
+                8 | 10 => CONV,
+                9 => MATMUL,
+                11 => DEPTHWISE,
+                12 => NORM,
+                _ => kind as u32,
+            };
+            assert_eq!(p["params"][0], expected_kind);
             for name in ["a", "r", "weights", "expected"] {
                 for b in p[name].as_array().unwrap() {
                     let v = f32::from_bits(b.as_u64().unwrap() as u32);

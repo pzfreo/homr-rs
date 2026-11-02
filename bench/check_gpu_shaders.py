@@ -17,7 +17,7 @@ repo = Path(__file__).resolve().parent.parent
 out.mkdir(parents=True, exist_ok=True)
 subprocess.run(["node", "--input-type=module", "-e", """
 import fs from 'node:fs';import {shaderSource} from './tools/encoder_gpu_kernels.mjs';
-for(const guarded of [true,false])fs.writeFileSync(process.argv[1]+'/encoder-'+guarded+'.wgsl',shaderSource({diagnosticUnguarded:!guarded}));
+for(const legacy of [false,true])for(const guarded of [true,false])fs.writeFileSync(process.argv[1]+'/encoder-'+(legacy?'legacy-':'')+guarded+'.wgsl',shaderSource({diagnosticUnguarded:!guarded,legacy}));
 """, str(out)], cwd=repo, check=True)
 project = out / "validator"
 (project / "src").mkdir(parents=True, exist_ok=True)
@@ -38,5 +38,7 @@ for path in std::env::args().skip(1) {
 }}
 ''')
 subprocess.run(["cargo", "run", "--release", "-j1", "--manifest-path", str(project / "Cargo.toml"),
-                *(["--offline"] if a.offline else []), "--", str(out / "encoder-true.wgsl"), str(out / "encoder-false.wgsl")],
+                *(["--offline"] if a.offline else []), "--",
+                *[str(out / ("encoder-" + legacy + guarded + ".wgsl"))
+                  for legacy in ["", "legacy-"] for guarded in ["true", "false"]]],
                env=dict(os.environ, CARGO_TARGET_DIR=str(out / "target"), RUSTC_WRAPPER=""), check=True)

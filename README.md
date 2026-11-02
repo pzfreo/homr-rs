@@ -179,7 +179,7 @@ CPU plan is freed after upload unless diagnostics request `retainPlan: true`.
 The final mapped context copies straight into WASM memory for the decoder.
 
 The GPU requires only default limits: four storage bindings per pipeline, one uniform,
-64 invocations/workgroup, less than 2 KiB workgroup memory, and bindings below
+64 invocations/workgroup, less than 13 KiB workgroup memory, and bindings below
 128 MiB. No fp16 or subgroup features. Timestamp queries are optional; reports
 say `null` when unavailable. The self-test covers each production kernel,
 fused rounding, division/sqrt, polynomial activations and underflow detection.
@@ -203,12 +203,14 @@ From this clone, with `S` set to the supplied scratchpad path:
 ```sh
 python3 bench/build_decoder_variants.py "$S/gpu_single"
 python3 bench/build_encoder_threads.py "$S/threads_build"
-# First run the op checks and a single staff:
-node bench/gpu_encoder_chrome.mjs "$S" "$S/threads_build/encoder-threads-fused.wasm" "$S/gpu-chrome-one.json" --limit 1
+# First run op checks and one staff with per-kernel timing (partial primitive audit):
+node bench/gpu_encoder_chrome.mjs "$S" "$S/threads_build/encoder-threads-fused.wasm" "$S/gpu-chrome-one.json" --limit 1 --profile 3 --audit none --math-cases 65536
 # Then the complete corpus, including every native arithmetic operand:
 node bench/gpu_encoder_chrome.mjs "$S" "$S/threads_build/encoder-threads-fused.wasm" "$S/gpu-chrome.json"
 # Open the printed local URL in Mac Safari; JSON is POSTed to this server's /report:
 python3 bench/gpu_encoder_server.py "$S" "$S/threads_build/encoder-threads-strict.wasm" "$S/gpu-safari"
+# Same page, one staff/per-kernel profiling in Safari (open the printed URL):
+python3 bench/gpu_encoder_server.py "$S" "$S/threads_build/encoder-threads-strict.wasm" "$S/gpu-safari-one" --limit 1 --profile 3 --audit none --math-cases 65536
 ```
 
 The static page runs the coordinator in a dedicated worker and supplies
@@ -230,6 +232,48 @@ timing controls. Unguarded controls never supply an encoder result. Only
 `bench/check_gpu_shaders.py` performs offline WGSL validation/Metal translation;
 it does not execute the GPU. `bench/check_gpu_host.mjs` tests fallback/control
 logic and optional real-WASM ABI compatibility, also without GPU claims.
+
+The production dense kernels cache 16x32 output tiles with 16 K values at a
+time; each invocation owns two vec4 outputs. Both sums retain ascending K.
+Conv preserves the stem's initial bias and downsampling's independent
+128-term sums and subsequent bias. Depthwise caches a 4x4 spatial tile and
+its halo, preserving all 49 FMAs including padded zeros. LayerNorm assigns
+one whole row to each invocation instead of leaving 63 lanes waiting for the
+Welford loop. Its divisions, sqrt and affine arithmetic are unchanged. GELU,
+scale, residual addition, position addition, guards and scalar math are
+unchanged. No cross-invocation float reduction or new arithmetic approximation.
+
+`--profile 3` adds per-pass timestamp medians, totals by op kind, separate
+image/weight scan timings, and a comparison with the previous guarded schedule.
+Tiled guarded, tiled arithmetic-control and legacy guarded runs are interleaved
+(one warm-up plus three trials each), and all final contexts are checked against
+native. `profile.valid` must be true before using speedup/guard deltas. These
+differential estimates can be negative under noise; they are not hardware
+counters. Controls retain certificates and rounding barriers and never supply
+an encoder result. The quick profiling commands omit the expensive corpus
+primitive streams and report that partial coverage; use the full command for
+qualification. Missing timestamp-query reports profiling unavailable.
+
+For a phone, the same server/page works via Android localhost forwarding
+(`adb reverse tcp:8796 tcp:8796`, then open `http://localhost:8796/`) or a trusted
+HTTPS LAN endpoint (`--bind 0.0.0.0 --cert CERT.pem --key KEY.pem`). Plain LAN
+HTTP is not a WebGPU secure context. Use a certificate trusted by the phone;
+the server does not install certificates or change system trust.
+
+Optional Node/Dawn path, installed entirely into scratch:
+
+```sh
+npm install --prefix "$S/gpu_node" --cache "$S/npm-cache" webgpu
+node bench/gpu_encoder_node.mjs "$S" "$S/gpu_single/decoder-fused.wasm" "$S/gpu-node.json" "$S/gpu_node/node_modules/webgpu/index.js" --limit 1 --profile 3 --audit none --math-cases 65536
+python3 bench/check_gpu_shaders.py "$S/gpu_mobile_validate" --offline
+RUSTC_WRAPPER='' cargo run --release --bin gpu_plan_check -- "$S"/models_files/encoder_pytorch_model_465-*.onnx "$S/models_native/angelus_0/0/input.f32" "$S/decoder_native_ref/angelus_0/0/context.bin" --simulate
+```
+
+The last command independently simulates tile/lane ownership and data movement
+against the CPU encoder at every operation, and checks partial-tile self-tests.
+It does not execute GPU instructions or measure GPU speed. The load-time
+self-test includes the same partial-tile cases. ABI version and `EncoderGPU`
+usage are unchanged; copy all three `tools/encoder_gpu*.mjs` files together.
 
 ## Rust decoder
 

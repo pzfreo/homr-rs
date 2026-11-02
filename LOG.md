@@ -2281,3 +2281,55 @@ null in this sandbox. The reusable `bench/gpu_encoder_node.mjs` saves this
 blocker and can run the exact same browser qualification/profiling harness
 where Metal is accessible. No software/null backend is substituted as GPU
 evidence. Host-control and JS syntax checks pass at this stage.
+
+Second stage: production scheduling changes, with the previous guarded
+schedule retained only as a diagnostic timing control:
+
+- GEMM/ordinary Conv: workgroup tile 16 rows x 32 columns, staged K=16.
+  Each of 64 invocations owns two independent vec4 accumulators. Shared
+  A/B loads replace repeated global reads; per full tile the source-level
+  A word reads drop 8x, B word reads 16x. These are data-movement counts,
+  not measured instruction counts or speedups. Shared staging uses 3 KiB.
+- Stem Conv still initializes each sum with bias. Downsample Conv still
+  computes independent ascending 128-term sums, adds them in order, then
+  adds bias. K tiling introduces barriers/data reuse, no extra rounding.
+- Depthwise: output tile 4x4 pixels x 16 channels, shared 10x10 halo and
+  49 weights (9,536 bytes). All 49 ky/kx FMAs, including padded zeros, stay
+  in native order. A full tile uses 400 input vec4 loads instead of 3,136
+  and 196 weight vec4 loads instead of 3,136; again logical loads only.
+- LayerNorm: each invocation owns one complete row. Previously one lane
+  performed Welford and 63 lanes waited in each workgroup; now the 64 lanes
+  process 64 independent rows. It rereads input for affine output instead
+  of staging a row, with identical sequential Welford/div/sqrt/affine ops.
+- GELU, scale, residual and position kernels, image/weight scans and all
+  numerical/guard functions are unchanged. No new fused/unfused arithmetic,
+  guard exemption, split reduction, precision change or CPU mid-staff trip.
+
+Default limits still suffice: 64 invocations, four storage bindings and
+12,608 bytes even summing all tiled workgroup arrays (below 16 KiB); largest
+storage binding remains 50.34 MiB. Host ABI/API and pool files are unchanged.
+
+Added an independent CPU simulation of the actual lane/tile load/index and
+accumulation schedules to gpu_plan_check (--simulate). All 113 outputs and
+final 655,360 context words match the CPU/native references on angelus_0/0
+and pdf-1/8, zero bit differences. GELU is unchanged and uses the established
+CPU activation oracle; other simulated arithmetic uses native f32 fma/div/sqrt.
+Thirteen load-test cases now include M/N/K tails, multiple tiles/workgroups,
+partial 128-term blocks, depthwise halos and LayerNorm row-group boundaries.
+The extra GEMM case has M=19, N=36, K=47. All thirteen simulations match their
+CPU known answers. The load gate additionally retains the 81 scalar cases
+and three raw-word scanner cases. This validates CPU schedules, not GPU math.
+
+Both tiled and legacy shaders, guarded and diagnostic-unguarded, pass offline
+Naga validation (all eleven entry points, no optional capabilities) and Metal
+translation. Offline validation caught a reserved WGSL identifier during
+development; corrected before the successful four-program check. Native
+release tests (17 library tests and all binaries/doctests) and all-target/
+all-feature Clippy -D warnings pass. Full final builds/checks are running.
+
+Per-kernel profiling now rotates three variants over one warm-up and three
+measured trials: tiled guarded, tiled arithmetic control, and legacy guarded.
+Every final context must equal native and every flag must be zero before
+speedup/guard deltas are accepted. It reports all 113 pass medians, totals by
+kind, image scan, one-time weight scan and dispatch spans. Profile passes have
+no intermediate readbacks; differential guard deltas remain explicitly noisy.

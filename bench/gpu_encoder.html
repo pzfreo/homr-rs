@@ -5,7 +5,14 @@
 <script type="module">
 const status=document.querySelector('#status');let config;
 function progress(value){status.textContent=JSON.stringify(value,null,2);console.log(JSON.stringify(value));}
-async function finish(result){window.result=result;status.textContent=JSON.stringify(result.summary??result,null,2);if(config?.post_report){const r=await fetch('/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(result)});if(!r.ok)status.textContent+='\nReport POST failed: '+r.status;}}
+async function finish(result){
+ window.result=result;
+ const p=result.profile;
+ status.textContent=JSON.stringify(result.summary?{summary:result.summary,initialization:result.gpu_status,
+   profile:p&&{available:p.available,reason:p.reason,valid:p.valid,trials:p.trials,guarded_ms:p.guarded_ms,legacy_guarded_ms:p.legacy_guarded_ms,speedup:p.speedup,
+     image_scan_ms:p.image_scan_ms,weight_scan_once_ms:p.weight_scan_once_ms,guard_and_image_fraction:p.guard_and_image_fraction,by_kind:p.by_kind,kernels:p.kernels}}:result,null,2);
+ if(config?.post_report){const r=await fetch('/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(result)});if(!r.ok)status.textContent+='\nReport POST failed: '+r.status;}
+}
 try{
  config=await(await fetch('/config/manifest.json')).json();
  if(config.main_thread){const{runGPUEncoder}=await import('/bench/gpu_encoder_run.mjs');await finish(await runGPUEncoder(config,progress));}
