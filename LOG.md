@@ -1232,3 +1232,12 @@ this implementation. The complete strict corpus will use four balanced,
 disjoint single-threaded Node shards, at most four CPU workers total (the
 fourth strict worker starts after the fused corpus exits). Previous slow
 prefix runs are not merged into the final corpus or final speed table.
+
+### Fused WASM corpus complete
+
+The normal fused artifact completed all **627 bit-identical encoder contexts**
+and its own WASM Rust decoder on the same context pointer: **38,076 steps,
+zero differing heads/steps/lengths**, including all native failure-page staffs.
+No JS context copy is required for the decoder. Full fused XML replay is being
+checked separately. Four balanced strict workers now execute the retained
+normal strict artifact; no diagnostic/profile imports are used in those runs.
