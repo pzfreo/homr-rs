@@ -13,11 +13,10 @@ A Rust port of [homr](https://github.com/liebharc/homr), Christian Liebhardt's
 optical music recognition, aimed at running in the browser as WebAssembly
 without Python. homr is AGPL-3.0, and so is this port (see `LICENSE`).
 
-**Status: the pipeline, encoder and transformer decoder are ported**, checked against homr as
-Partsong runs it (in Pyodide, with OpenCV 4.11): from the page image to the
-segmentation model's input, from its output to the staffs and systems, the
-staff images the transformer reads, and from the transformer's output to
-homr's MusicXML. Segmentation stays with onnxruntime-web. The encoder loads its original
+**Status: the pipeline, encoder and transformer decoder are ported.** Page,
+staff and MusicXML processing is checked against homr as Partsong runs it
+(Pyodide, OpenCV 4.11). Both Rust models target native arm64 ONNX Runtime
+1.31.0's default CPU results. Segmentation stays with onnxruntime-web. The encoder loads its original
 float32 ONNX weights and produces the context in Rust. The decoder
 loads homr's original quantized ONNX file at runtime and runs in Rust, including
 WebAssembly with SIMD128. Its caches stay inside Rust across symbols.
@@ -28,6 +27,7 @@ See LOG.md for numerical checks, reference versions, and measured limits.
 | 2 | page image | segnet tiles; masks from its output | 88/88 music pages identical |
 | 1 | masks | staffs, systems (MultiStaffs) | 158/158 pages identical |
 | 3 | page + staff | the transformer's canvas | 627/627 staff images identical |
+| encoder | staff image | context [1280,512] | native NEON, fused WASM and strict WASM: bit-identical across the corpus; see LOG.md |
 | decoder | encoder output | six tokens + coordinates per step | native + WASM: 627/627 staffs, 38,076 steps each, all six tokens identical; attention max error 0.000366 pixels |
 | 4 | transformer output | MusicXML | 88/88 music pages: 75 byte-identical, 13 fail in homr itself (assert) and in the port alike |
 
@@ -69,6 +69,10 @@ Native uses NEON fused arithmetic. The optional fused WASM artifact uses the
 same fused-host probe as the decoder. Strict SIMD128 emulates fused rounding,
 including halfway double-rounding and subnormal cases; it is substantially
 more expensive. LOG.md records actual corpus checks and instruction counts.
+Each encoder build followed by its Rust decoder also matches every native
+token step; XML replay preserves identical pages and matching native failures.
+The full corpus runs on recorded staff images, not a live browser
+segmentation integration. See LOG.md for artifact and final-build provenance.
 
 Both models are included in the same `homr_rs.wasm`. All existing decoder
 exports remain available. Allocate with `decoder_alloc`, then use:

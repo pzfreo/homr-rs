@@ -1327,3 +1327,114 @@ passes the observed stage trace. The frozen corpus kernels and these final
 builds have identical floating arithmetic; late edits add dimension validation
 and an equivalent iterator spelling, as documented above. Sequential final
 benchmarks use the fresh normal artifacts, separately from profile artifacts.
+
+### Final encoder instructions (not wall time)
+
+Warmed angelus_0 staff 0, one warm-up then three measured executions per
+engine, median below. All models/inputs are loaded before the counter. Each
+Rust result is checked against native context bits; ORT-web repeats are checked
+for byte determinism, not falsely claimed exact against native. Every native
+ORT repeat matches the native reference. All measurement jobs run sequentially
+after the corpus workers exit. Counters are process-wide proc_pid_rusage
+RUSAGE_INFO_V4, including ORT worker threads. No elapsed times are used.
+
+| encoder engine/build | G retired instructions/staff |
+|---|---:|
+| native Rust NEON, fused, one thread | 12.341592 |
+| native ORT 1.31.0, homr default CPU options | 7.800154 |
+| native ORT 1.31.0, one thread | 3.790445 |
+| Rust WASM SIMD128 + relaxed SIMD, fused | 20.634634 |
+| Rust WASM strict SIMD128, emulated fused | 267.354596 |
+| ORT-web 1.30.0 WASM, one thread | 28.423430 |
+| ORT-web 1.30.0 WASM, four threads | 30.838291 |
+
+The requested fused target is met: **27.4027% fewer instructions** than
+ORT-web single-threaded (1.377x instruction ratio). Strict costs **12.9566x
+fused Rust**, or **9.4061x ORT-web one-thread**. Native NEON is 3.256x the
+controlled native one-thread ORT count; native ORT uses its SME2 kernels here.
+The native default-options count includes the default worker pool's extra
+work. Four-thread ORT-web uses 8.496% more process instructions than one-thread;
+this says nothing by itself about its elapsed latency, particularly on phones.
+
+Scratch reports: encoder_bench_final/*.json. The fresh normal WASM paths are
+encoder-fused-final.wasm and encoder-strict-final.wasm; profile variants have
+separate names. Normal WASM counts do not include profile imports. Native
+phase callbacks add a negligible amount of counter overhead to its total.
+Reproduce with bench/measure_encoder.py --help; the driver now includes both
+default and controlled one-thread native baselines (the default baseline above
+was invoked separately with that same models_native.py command).
+
+Whole Rust encoder phase medians, **G instructions per staff**. Profiling
+callbacks exclude their own counter reads from phase intervals; allocation,
+layout conversion and operation setup are charged to the following operation.
+The sum of component medians need not equal the median total. Profile totals
+are 12.341592G native, 20.646609G fused WASM and 267.270415G strict WASM,
+consistent with the separately measured normal artifacts.
+
+| operation | native NEON | WASM fused | WASM strict |
+|---|---:|---:|---:|
+| stem Conv | 0.023762 | 0.034486 | 0.319027 |
+| downsample Conv | 0.400796 | 0.637326 | 7.191821 |
+| depthwise 7x7 Conv | 1.203037 | 1.692840 | 17.397260 |
+| LayerNorm | 0.237912 | 0.584870 | 1.973784 |
+| MLP fc1 Gemm | 4.689187 | 7.815699 | 105.510139 |
+| GELU (including erf) | 0.889347 | 1.819010 | 26.469227 |
+| MLP fc2 Gemm | 4.623426 | 7.664214 | 105.830966 |
+| layer scale Mul | 0.159394 | 0.192838 | 0.192803 |
+| residual Add | 0.010104 | 0.028528 | 0.028569 |
+| projection Gemm | 0.103291 | 0.171635 | 2.345138 |
+| positional Add | 0.000498 | 0.001402 | 0.001402 |
+
+Representative **isolated ORT operator** medians below are M instructions per
+invocation, not a decomposition of the full ORT graph. Conv/LayerNorm/depthwise
+have 1,966,080 output values; MatMul/Gemm/Div/Erf/Gelu have 7,864,320. These
+use recorded native operands and the actual stem/first-block shapes, one warm
+and three measurements. Native columns use one thread. Optimized Gemm/Gelu
+probes and unfused nodes are deliberately distinguished. These numbers cannot
+be summed or multiplied by the op inventory to recover full-model totals.
+
+| isolated node | native ORT | ORT-web 1 thread | ORT-web 4 threads |
+|---|---:|---:|---:|
+| Conv | 8.625 | 48.909 | 78.853 |
+| LayerNormalization | 29.002 | 57.679 | 161.844 |
+| depthwise Conv | 259.708 | 304.023 | 301.305 |
+| MatMul | 6.772 | 807.303 | 999.894 |
+| Div | 11.872 | 89.518 | 378.447 |
+| Erf | 126.280 | 370.790 | 685.869 |
+| optimized Gemm+bias | 29.948 | 804.938 | 1078.184 |
+| optimized Gelu | 141.325 | 427.505 | 727.071 |
+
+ORT's public JS interface has no per-node retired-instruction callback. Its
+standard profiler reports elapsed time, which is not used here. A full
+in-session ORT instruction decomposition would need an instrumented runtime;
+that build was not made. The isolated-node comparisons and full Rust phase
+breakdown above are what actually ran.
+
+### Final outcome and remaining limits
+
+No encoder operator prevented bit identity. Conv/bias scheduling, segmented
+128-term downsample sums, ordered fused GEMM, Welford LayerNorm and MLAS
+erf/GELU all pass native and both WASM single-node/subgraph checks. The strict
+double-rounding failure was fixed rather than hidden behind a token-only
+tolerance. All three complete model/corpus checks then pass exactly. There
+are no new attention/softmax/int8 encoder kernels: this graph is float ConvNeXt.
+
+The fused artifact is the practical exact phone path on hosts that pass the
+load-time fused probe. Keep strict as an expensive compatibility fallback;
+it is not a speed improvement over ORT-web. Browser/Android device validation,
+live Partsong integration, GPU encoder execution, a shared-memory Rust worker
+pool and an instrumented ORT build were not run/implemented. Device access and
+the separate browser threading runtime are concrete remaining requirements,
+not unresolved numeric mismatches. Supplied external WebGPU figures are logged
+beside the prior WASM survey; segnet is unchanged.
+
+Final required checks pass again: cargo fmt --check; cargo clippy --all-targets
+--all-features -- -D warnings; cargo test --release (11 library tests, all
+binary/doc targets); both normal wasm32-unknown-unknown release builds.
+Earlier final-source strict/fused WASI tests and WASM Clippy checks also pass
+as detailed above. The existing decoder ABI and corpus agreement are preserved.
+All artifacts, raw counts, contexts and XML stay in scratch. Work is committed
+on cx/encoder; nothing was pushed or posted, and neither Partsong nor homr was
+edited. Unattended decisions were the fixed graph executor, the rigorously
+bounded strict fast path, four disjoint corpus workers, and deferring a browser
+threading runtime until its own validation round.

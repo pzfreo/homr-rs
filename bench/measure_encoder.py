@@ -23,8 +23,12 @@ a=p.parse_args();out=Path(a.output);out.mkdir(parents=True,exist_ok=True)
 env=dict(os.environ,ORT_MODULE=str(Path(a.ort_module).resolve()),COUNTER_ADDON=str(Path(a.counter).resolve()))
 def run(name,cmd,extra=None):
     print(name,flush=True)
+    runenv=dict(env)
+    for key,value in (extra or {}).items():
+        if value is None:runenv.pop(key,None)
+        else:runenv[key]=value
     with (out/(name+'.log')).open('w') as log:
-        subprocess.run(cmd,env=dict(env,**(extra or {})),stdout=log,stderr=subprocess.STDOUT,check=True)
+        subprocess.run(cmd,env=runenv,stdout=log,stderr=subprocess.STDOUT,check=True)
     return str(out/(name+'.json'))
 reports={}
 reports['rust_native']=run('rust_native',[a.native_bin,a.model,a.staff,str(out/'rust_native.json')])
@@ -34,7 +38,8 @@ for threads in [1,4]:
     name=f'ort_wasm_{threads}t'
     reports[name]=run(name,['node','bench/model_instructions.mjs',a.model,str(Path(a.staff)/'input.f32'),'1,1,256,1280',str(out/(name+'.json')),str(threads)])
 staff=Path(a.staff)
-reports['ort_native']=run('ort_native',[a.native_python,'bench/models_native.py',a.model,str(staff.parent.parent),str(out/'ort_native.json'),str(Path(staff.parent.name)/staff.name)],{'NATIVE_THREADS':'1'})
+for name,threads in [('ort_native','1'),('ort_native_default',None)]:
+    reports[name]=run(name,[a.native_python,'bench/models_native.py',a.model,str(staff.parent.parent),str(out/(name+'.json')),str(Path(staff.parent.name)/staff.name)],{'NATIVE_THREADS':threads})
 for index,root in enumerate(a.probes):
     run(f'ops_native_{index}',[a.native_python,'bench/encoder_ops_native.py',root,str(out/f'ops_native_{index}.json')])
     for threads in [1,4]:
