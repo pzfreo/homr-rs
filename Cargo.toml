@@ -35,5 +35,8 @@ debug = false
 [features]
 # Benchmark-only synchronous retired-instruction phase counters (macOS / Node host).
 decoder-profile = []
+encoder-profile = []
+encoder-probes = []
+encoder-trace = []
 # Follow OpenCV 5.0 where it differs from 4.11 (minAreaRect conventions).
 opencv5 = []

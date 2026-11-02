@@ -7,7 +7,7 @@ pub(crate) mod activation;
 mod math;
 pub mod profile;
 #[cfg(target_arch = "wasm32")]
-mod wasm;
+pub(crate) mod wasm;
 use crate::onnx::Graph;
 use activation::{gelu, sigmoid, softmax};
 use math::{norm, Linear, Quantized};

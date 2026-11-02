@@ -40,6 +40,7 @@ unsafe fn store(p: *mut f32, v: V) {
         v128_store(p.cast(), v)
     }
 }
+#[cfg(not(all(target_arch = "wasm32", not(target_feature = "relaxed-simd"))))]
 #[inline(always)]
 unsafe fn madd(a: f32, b: V, c: V) -> V {
     #[cfg(target_arch = "aarch64")]
@@ -50,22 +51,46 @@ unsafe fn madd(a: f32, b: V, c: V) -> V {
     {
         f32x4_relaxed_madd(f32x4_splat(a), b, c)
     }
-    #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
-    {
-        let scale = f64x2_splat(a as f64);
-        let lo = f64x2_add(
-            f64x2_mul(scale, f64x2_promote_low_f32x4(b)),
-            f64x2_promote_low_f32x4(c),
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
+#[inline(always)]
+fn rounded_fma(sum: v128, a: v128, b: v128, c: v128) -> v128 {
+    // A double-rounded sum can lie exactly halfway between float32 values.
+    // Correct those rare lanes with libm's correctly-rounded fused operation.
+    let halfway = i64x2_eq(
+        v128_and(sum, i64x2_splat(0x1fffffff)),
+        i64x2_splat(0x10000000),
+    );
+    let magnitude = v128_and(sum, i64x2_splat(i64::MAX));
+    let tiny = v128_and(
+        i64x2_lt(magnitude, i64x2_splat(0x3810000000000000)),
+        i64x2_gt(magnitude, i64x2_splat(0)),
+    );
+    let special = i64x2_ge(magnitude, i64x2_splat(0x7ff0000000000000));
+    if v128_any_true(v128_or(halfway, v128_or(tiny, special))) {
+        let lo = libm::fmaf(
+            f64x2_extract_lane::<0>(a) as f32,
+            f64x2_extract_lane::<0>(b) as f32,
+            f64x2_extract_lane::<0>(c) as f32,
         );
-        let hi = f64x2_add(
-            f64x2_mul(
-                scale,
-                f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(b, b)),
-            ),
-            f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(c, c)),
+        let hi = libm::fmaf(
+            f64x2_extract_lane::<1>(a) as f32,
+            f64x2_extract_lane::<1>(b) as f32,
+            f64x2_extract_lane::<1>(c) as f32,
         );
-        i32x4_shuffle::<0, 1, 4, 5>(f32x4_demote_f64x2_zero(lo), f32x4_demote_f64x2_zero(hi))
+        f64x2(lo as f64, hi as f64)
+    } else {
+        f64x2_promote_low_f32x4(f32x4_demote_f64x2_zero(sum))
     }
+}
+#[cfg(test)]
+pub(super) fn test_fma(a: f32, b: f32, c: f32) -> [f32; 4] {
+    let mut out = [0.0; 4];
+    unsafe {
+        store(out.as_mut_ptr(), maddv(splat(a), splat(b), splat(c)));
+    }
+    out
 }
 #[inline(always)]
 unsafe fn splat(x: f32) -> V {
@@ -120,6 +145,18 @@ unsafe fn maddv(a: V, b: V, c: V) -> V {
                 f64x2_promote_low_f32x4(high(a)),
                 f64x2_promote_low_f32x4(high(b)),
             ),
+            f64x2_promote_low_f32x4(high(c)),
+        );
+        let lo = rounded_fma(
+            lo,
+            f64x2_promote_low_f32x4(a),
+            f64x2_promote_low_f32x4(b),
+            f64x2_promote_low_f32x4(c),
+        );
+        let hi = rounded_fma(
+            hi,
+            f64x2_promote_low_f32x4(high(a)),
+            f64x2_promote_low_f32x4(high(b)),
             f64x2_promote_low_f32x4(high(c)),
         );
         i32x4_shuffle::<0, 1, 4, 5>(f32x4_demote_f64x2_zero(lo), f32x4_demote_f64x2_zero(hi))
@@ -289,6 +326,12 @@ pub(super) unsafe fn product(
     n: usize,
     bias: Option<&[f32]>,
 ) {
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
+    {
+        product_strict(a, b, out, m, k, n, bias);
+        return;
+    }
+    #[cfg(not(all(target_arch = "wasm32", not(target_feature = "relaxed-simd"))))]
     for row in (0..m).step_by(4) {
         for col in (0..n).step_by(16) {
             let mut acc = [zero(); 16];
@@ -313,6 +356,71 @@ pub(super) unsafe fn product(
                     store(
                         out.as_mut_ptr().add((row + r) * n + col + j * 4),
                         *acc.get_unchecked(r * 4 + j),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
+unsafe fn product_strict(
+    a: &[f32],
+    b: &[f32],
+    out: &mut [f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    bias: Option<&[f32]>,
+) {
+    // Small tiles avoid register spills from the two doubles per float vector.
+    for row in (0..m).step_by(2) {
+        for col in (0..n).step_by(8) {
+            let mut acc = [[f64x2_splat(0.0); 2]; 4];
+            if let Some(bias) = bias {
+                for r in 0..2 {
+                    for j in 0..2 {
+                        let v = v128_load(bias.as_ptr().add(col + j * 4).cast());
+                        acc[r * 2 + j] = [
+                            f64x2_promote_low_f32x4(v),
+                            f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(v, v)),
+                        ];
+                    }
+                }
+            }
+            for p in 0..k {
+                let scalars = [
+                    f64x2_splat(*a.get_unchecked(row * k + p) as f64),
+                    f64x2_splat(*a.get_unchecked((row + 1) * k + p) as f64),
+                ];
+                for j in 0..2 {
+                    let v = v128_load(b.as_ptr().add(p * n + col + j * 4).cast());
+                    let b = [
+                        f64x2_promote_low_f32x4(v),
+                        f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(v, v)),
+                    ];
+                    for r in 0..2 {
+                        let dst = acc.get_unchecked_mut(r * 2 + j);
+                        for lane in 0..2 {
+                            dst[lane] = rounded_fma(
+                                f64x2_add(f64x2_mul(b[lane], scalars[r]), dst[lane]),
+                                b[lane],
+                                scalars[r],
+                                dst[lane],
+                            );
+                        }
+                    }
+                }
+            }
+            for r in 0..2 {
+                for j in 0..2 {
+                    let v = acc[r * 2 + j];
+                    v128_store(
+                        out.as_mut_ptr().add((row + r) * n + col + j * 4).cast(),
+                        i32x4_shuffle::<0, 1, 4, 5>(
+                            f32x4_demote_f64x2_zero(v[0]),
+                            f32x4_demote_f64x2_zero(v[1]),
+                        ),
                     );
                 }
             }

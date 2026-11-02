@@ -1165,3 +1165,27 @@ intermediates remain bit-identical on angelus_0 staff 0. The native corpus
 runner now executes every staff, compares float32 bits directly, and records
 retired instructions plus an operation breakdown. The first full native
 corpus run is underway; no corpus result is claimed yet.
+
+### Stage 4: WASM ABI and double-rounding correction
+
+Added encoder_load/drop/run and encoder_decode exports beside the unchanged
+decoder ABI. encoder_run writes to caller linear memory which decoder_run can
+read directly; encoder_decode passes its internal context Vec to the decoder
+without a context copy. Optional probe/trace/profile features are benchmark
+only and absent from the normal artifacts.
+
+All initial isolated operators and optimized Gemm/Gelu probes pass on both
+WASM variants. The first fused four-staff sample has 4/4 bit-identical contexts,
+using roughly 20.57G retired instructions per warmed staff versus the prior
+28.41G ORT-web single-thread baseline. Full-corpus results are still pending.
+
+The original widened strict recurrence passed simple probes but failed the
+whole model. Trace showed its first observed one-bit discrepancy late at
+stage 2/block 4's activation, followed by 161,290 changed context values.
+Float64 multiply/add followed by float32 conversion is not always a correctly
+rounded fused float32 operation. Added a halfway/subnormal/special-value
+check in SIMD recurrence, calling libm's correctly-rounded fmaf only on rare
+lanes; scalar strict Welford also uses fmaf. A numeric regression case uses
+(1+2^-23)*(1-2^-23)+16777218: naive double rounding gives 16777220 instead of
+16777218. With correction, every observed first-staff stage and context bit
+matches native. Decoder arithmetic was not changed by this fix.

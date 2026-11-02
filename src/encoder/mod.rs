@@ -2,6 +2,8 @@
 pub mod kernels;
 #[cfg(any(target_arch = "wasm32", target_arch = "aarch64"))]
 mod simd;
+#[cfg(target_arch = "wasm32")]
+mod wasm;
 
 use crate::onnx::Graph;
 pub const IMAGE_VALUES: usize = 256 * 1280;
@@ -238,7 +240,18 @@ impl Encoder {
         })
     }
     pub fn encode(&self, image: &[f32]) -> Result<Vec<f32>, String> {
-        self.encode_observed(image, |_, _, _, _| {})
+        self.encode_observed(image, |name, data, h, w| {
+            #[cfg(all(target_arch = "wasm32", feature = "encoder-trace"))]
+            unsafe {
+                trace(name.as_ptr(), name.len(), data.as_ptr(), data.len(), h, w);
+            }
+            let _ = (data, h, w);
+            #[cfg(all(target_arch = "wasm32", feature = "encoder-profile"))]
+            unsafe {
+                mark(phase(name) as u32);
+            }
+            let _ = name;
+        })
     }
     /// Diagnostics receive NHWC buffers without additional arithmetic or copies.
     pub fn encode_observed(
@@ -308,4 +321,55 @@ impl Encoder {
         observe("output", &result, h, w);
         Ok(result)
     }
+}
+
+/// Stable phase IDs used only by the optional instruction benchmark hook.
+pub fn phase(name: &str) -> usize {
+    if name == "output" {
+        10
+    } else if name.contains("/stem/stem.0") {
+        0
+    } else if name.contains("downsample.1") {
+        1
+    } else if name.contains("conv_dw") {
+        2
+    } else if name.contains("LayerNormalization") {
+        3
+    } else if name.contains("fc1") {
+        4
+    } else if name.contains("fc2") {
+        6
+    } else if name.contains("/act/") {
+        5
+    } else if name.contains("/proj/") {
+        9
+    } else if name.ends_with("/Mul") {
+        7
+    } else {
+        8
+    }
+}
+pub const PHASE_NAMES: [&str; 11] = [
+    "stem_conv",
+    "downsample_conv",
+    "depthwise",
+    "norm",
+    "fc1",
+    "gelu",
+    "fc2",
+    "scale",
+    "residual",
+    "projection",
+    "position",
+];
+#[cfg(all(target_arch = "wasm32", feature = "encoder-profile"))]
+#[link(wasm_import_module = "encoder_profile")]
+extern "C" {
+    fn mark(phase: u32);
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "encoder-trace"))]
+#[link(wasm_import_module = "encoder_trace")]
+extern "C" {
+    fn trace(name: *const u8, name_len: usize, data: *const f32, len: usize, h: usize, w: usize);
 }

@@ -3,6 +3,20 @@
 
 #[inline]
 pub fn fma(a: f32, b: f32, c: f32) -> f32 {
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
+    {
+        return libm::fmaf(a, b, c);
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
+    {
+        use std::arch::wasm32::*;
+        return f32x4_extract_lane::<0>(f32x4_relaxed_madd(
+            f32x4_splat(a),
+            f32x4_splat(b),
+            f32x4_splat(c),
+        ));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     crate::decoder::activation::fma(a, b, c)
 }
 pub fn gelu(x: f32) -> f32 {
@@ -247,4 +261,34 @@ pub fn depthwise(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn halfway_fma_is_not_double_rounded() {
+        let a = f32::from_bits(0x3f800001);
+        let b = f32::from_bits(0x3f7ffffe);
+        let c = 16777218.0f32;
+        assert_ne!(
+            ((a as f64 * b as f64 + c as f64) as f32).to_bits(),
+            c.to_bits()
+        );
+        assert_eq!(fma(a, b, c).to_bits(), c.to_bits());
+        #[cfg(any(target_arch = "aarch64", target_arch = "wasm32"))]
+        for v in super::super::simd::test_fma(a, b, c) {
+            assert_eq!(v.to_bits(), c.to_bits());
+        }
+    }
+    #[test]
+    fn convolution_and_gemm_have_different_bias_schedules() {
+        let a = f32::from_bits(0x3f800001);
+        let b = f32::from_bits(0x3f7ffffe);
+        let bias = [16777218.0f32; 16];
+        let conv = conv(&[a; 4], 1, 4, 1, &[b; 16], &bias, 16, 1, 1, 0);
+        assert!(conv.iter().all(|v| v.to_bits() == 16777218.0f32.to_bits()));
+        let mm = matmul(&[a; 4], &[b; 16], 4, 1, 16, Some(&bias));
+        assert!(mm.iter().all(|v| v.to_bits() == 16777220.0f32.to_bits()));
+    }
 }
