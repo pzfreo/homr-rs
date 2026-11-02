@@ -21,13 +21,16 @@ p.add_argument('model');p.add_argument('references');p.add_argument('staffs',nar
 p.add_argument('--python',default=sys.executable);p.add_argument('--ort-module',required=True)
 p.add_argument('--reps',type=int,default=3);p.add_argument('--libproc',action='store_true')
 p.add_argument('--output');p.add_argument('--commands',action='store_true')
+p.add_argument('--wasm',help='Explicit Rust WASM artifact (recorded in the report)')
+p.add_argument('--native-bin',default='target/release/bench_decoder')
 a=p.parse_args()
 commands={
- 'Rust native':['target/release/bench_decoder'],
+ 'Rust native':[a.native_bin],
  'ORT native':[a.python,'bench/decoder_native.py'],
  'Rust WASM':['node','bench/decoder.mjs','rust'],
  'ORT WASM':['node','bench/decoder.mjs','ort']}
 env=dict(os.environ,ORT_MODULE=str(Path(a.ort_module).resolve()))
+if a.wasm:env["DECODER_WASM"]=str(Path(a.wasm).resolve())
 counts={name:{'load':[],'decode':[]} for name in commands}
 for rep in range(a.reps):
  for name,base in commands.items():
@@ -58,6 +61,6 @@ if not a.commands:
  'net_instructions':statistics.median(d-l for d,l in zip(r['decode'],r['load'])),
  'instructions_per_staff':statistics.median(d-l for d,l in zip(r['decode'],r['load']))/len(a.staffs),
  'instructions_per_step':statistics.median(d-l for d,l in zip(r['decode'],r['load']))/steps} for name,r in counts.items()}
- report={'counter':'libproc RUSAGE_INFO_V4' if a.libproc else '/usr/bin/time -l','staffs':a.staffs,'steps':steps,'results':summary}
+ report={'counter':'libproc RUSAGE_INFO_V4' if a.libproc else '/usr/bin/time -l','staffs':a.staffs,'steps':steps,'native_artifact':a.native_bin,'wasm_artifact':env.get('DECODER_WASM','target/wasm32-unknown-unknown/release/homr_rs.wasm'),'results':summary}
  print(json.dumps(report,indent=2))
  if a.output:Path(a.output).write_text(json.dumps(report,indent=2))

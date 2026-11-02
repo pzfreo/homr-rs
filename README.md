@@ -77,6 +77,29 @@ Cross-target validation details and limitations are in LOG.md.
 RUSTFLAGS='-C target-feature=+simd128' cargo build --release --target wasm32-unknown-unknown
 ```
 
+An optional faster artifact uses `+simd128,+relaxed-simd`. It issues explicit
+fused float32 SIMD multiply-add, preserving the reference's accumulation order.
+The WebAssembly specification permits relaxed multiply-add to be unfused on
+some hosts: this artifact rejects model loading if its arithmetic probe is
+unfused. A passing probe is not a substitute for validating the target engine.
+It has passed the complete corpus on the supplied ARM64 Node/V8 host; other
+engines should use the strict artifact until checked.
+
+Build separately labelled artifacts in scratch (no weights are embedded):
+
+```sh
+python bench/build_decoder_variants.py <scratch-output-dir>
+```
+
+This produces `decoder-simd128.wasm` and `decoder-fused.wasm`. Hosts must first
+check that the engine accepts the module (for example `WebAssembly.validate`),
+then check `decoder_fused_simd_supported()` on the optional artifact before
+loading weights. Keep the strict artifact as the fallback. Strict SIMD128
+stores exact float32 K/V values widened to float64 to reduce inner-loop
+conversions: maximum reserved cache capacity is about 164 MB, versus 82 MB
+for native and the fused artifact. These figures exclude weights and scratch
+buffers; neither artifact quantizes the cache values.
+
 The resulting `homr_rs.wasm` also exports a minimal C ABI, documented in
 `src/decoder/wasm.rs`: allocate buffers, load the model once, run one staff,
 and free buffers/model. Each output step is six little-endian u32 tokens plus
@@ -104,10 +127,14 @@ this port as WebAssembly 2.2G (17x fewer). Staff detection alone: 41x fewer.
 Stage 2 (page image to segnet input, its output to masks): Pyodide 6.5G a page,
 the port 4.4G (here homr's work is mostly native numpy/OpenCV/Pillow already).
 
-Decoder only (four staffs / 123 steps, load baseline subtracted): Rust WASM
-333.29M retired instructions per step versus ORT-web 479.58M, **1.44x fewer**.
-Native Rust is 1.56x more instructions than single-threaded native ORT on this
-page. See LOG.md for the full table, reference versions, and counter method.
+Decoder only, four staffs / 123 steps, three paired load-subtracted runs:
+strict SIMD128 **182.32M** retired instructions/step versus ORT-web **479.06M**
+(**2.63x fewer**); the optional fused relaxed-SIMD artifact uses **119.55M**
+versus **481.48M** (**4.03x fewer**) on the validated ARM64 Node/V8 host.
+Native Rust uses 56.25M versus single-threaded native ORT's 46.38M.
+The 3x target is met by the optional fused artifact, **not** the portable
+SIMD128 fallback. LOG.md contains the component profile, memory tradeoff,
+failed unfused-arithmetic experiment, and before/after tables.
 
 ## Results for staff detection (the first stage ported)
 
@@ -151,9 +178,22 @@ directories are untouched. The Rust checker runs its own greedy trajectory,
 reports every differing page/staff/step and both logit margins, and writes
 `decoder.json` from its own tokens and attention for `check_xml`.
 Keep the large recordings in scratch. `bench/decoder.mjs rust check ...` also
-checks the WASM build against these recordings.
+checks the WASM build against these recordings. To stream the whole corpus
+without loading all encoder outputs into JS simultaneously, use `@all`:
+
+```sh
+DECODER_WASM=<decoder.wasm> REPORT=<scratch-report.json> \
+  node bench/decoder.mjs rust check <decoder.onnx> <scratch-reference-dir> @all
+```
+
+To also generate WASM `decoder.json` files for `check_xml`, set
+`SAVE_DECODER=<scratch-output-dir>` and `VOCAB=<scratch-vocabulary.json>`;
+create the latter with `cargo run --release --bin dump_vocab` redirected into
+scratch. Every staff must complete before a page's output is written.
 
 Decoder instruction benchmarks are in `bench/measure_decoder.py` (use `--help`).
+Select an artifact explicitly with `--wasm <file>`; the report records its path.
+`--native-bin` permits benchmarking a separate checkout's native executable.
 They compare identical staffs and fixed step counts, including first-step
 context projections, with a separate load-only baseline for each engine.
 Use `--ort-module` to point to onnxruntime-web 1.30.0's `ort.node.min.mjs`, and
@@ -161,6 +201,21 @@ Use `--ort-module` to point to onnxruntime-web 1.30.0's `ort.node.min.mjs`, and
 engines use one thread; recording preserves native default session options.
 `/usr/bin/time -l` is the default counter; `--libproc` reads the macOS retired
 instruction counter directly when sandbox restrictions prevent `time -l`.
+
+For component profiling, compile with `--features decoder-profile`, then run
+`bench_decoder profile ...` natively or `bench/profile_decoder.mjs` for WASM.
+On macOS the latter imports a benchmark-only Node counter addon:
+
+```sh
+cc -bundle -undefined dynamic_lookup -I/opt/homebrew/include/node \
+  bench/counter.c -o <scratch-dir>/counter.node
+```
+
+Set `COUNTER_ADDON` to that file and `PROFILE_WASM` to the instrumented WASM.
+Use a separate `CARGO_TARGET_DIR` for profile builds. Normal decoder builds
+contain no counter callbacks or allocation instrumentation. The synthetic
+SIMD tests also run through `bench/run_wasi.mjs`; this is a test runner, not
+a benchmark. All instruction benchmarking stays outside CI.
 
 When a case differs, `tools/dump_mid.py` + `cargo run --release --bin mid cases/<page>`
 compare the intermediate steps (anchors, raw staffs).

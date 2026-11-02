@@ -115,3 +115,10 @@ pub extern "C" fn decoder_profile_value(id: usize, calls: u32) -> f64 {
 pub extern "C" fn decoder_profile_calibrate() -> f64 {
     super::profile::calibrate()
 }
+
+/// Reports whether this optional relaxed-SIMD artifact observes fused arithmetic.
+/// Hosts must still validate their engine; relaxed SIMD permits unfused results.
+#[no_mangle]
+pub extern "C" fn decoder_fused_simd_supported() -> u32 {
+    super::fused_simd_supported() as u32
+}

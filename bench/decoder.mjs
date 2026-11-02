@@ -17,9 +17,11 @@ const readStaff=name=>{
 const data=corpus?staffs.map(name=>({name})):staffs.map(readStaff);
 const weights=fs.readFileSync(model);
 let run;
+let fusedSimd=false;
 if(engine==='rust') {
   const wasm=process.env.DECODER_WASM||'target/wasm32-unknown-unknown/release/homr_rs.wasm';
   const {instance:{exports:e}}=await WebAssembly.instantiate(fs.readFileSync(wasm),{});
+  fusedSimd=!!e.decoder_fused_simd_supported?.();
   const p=e.decoder_alloc(weights.length);
   new Uint8Array(e.memory.buffer,p,weights.length).set(weights);
   const handle=e.decoder_load(p,weights.length);
@@ -89,7 +91,7 @@ steps+=results.length;
     });
   }
 }
-const report={engine,staffs:staffs.length,steps,differingSteps,lengthDifferences,attentionMaxAbs:maxAbs,attentionMeanAbs:totalAbs/count,differences};
+const report={engine,fusedSimd,staffs:staffs.length,steps,differingSteps,lengthDifferences,attentionMaxAbs:maxAbs,attentionMeanAbs:totalAbs/count,differences};
 console.log(JSON.stringify(report));
 if(process.env.REPORT)fs.writeFileSync(process.env.REPORT,JSON.stringify(report,null,2));
 if(differingSteps||lengthDifferences)process.exitCode=1;

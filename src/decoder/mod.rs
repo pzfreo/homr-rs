@@ -84,28 +84,28 @@ impl Step {
         )
     }
 }
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
 type CacheFloat = f64;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_feature = "relaxed-simd"))]
 type CacheFloat = f32;
 #[inline]
 fn cache_float(v: f32) -> CacheFloat {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
     {
         v as f64
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "relaxed-simd"))]
     {
         v
     }
 }
 #[inline]
 fn cache_narrow(v: CacheFloat) -> f32 {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
     {
         v as f32
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "relaxed-simd"))]
     {
         v
     }
@@ -207,13 +207,21 @@ impl Cache {
         }
     }
 }
-#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_feature = "simd128",
+    not(target_feature = "relaxed-simd")
+))]
 #[inline(always)]
 unsafe fn round2(v: core::arch::wasm32::v128) -> core::arch::wasm32::v128 {
     use core::arch::wasm32::*;
     f64x2_promote_low_f32x4(f32x4_demote_f64x2_zero(v))
 }
-#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_feature = "simd128",
+    not(target_feature = "relaxed-simd")
+))]
 unsafe fn score_simd(q: &[f32], keys: &[CacheFloat], stride: usize, h: usize, out: &mut [f32]) {
     use core::arch::wasm32::*;
     let queries: [v128; HD] =
@@ -249,7 +257,11 @@ unsafe fn score_simd(q: &[f32], keys: &[f32], stride: usize, h: usize, out: &mut
         vst1q_f32(out.as_mut_ptr().add(p), vmulq_n_f32(sum, 0.125));
     }
 }
-#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_feature = "simd128",
+    not(target_feature = "relaxed-simd")
+))]
 unsafe fn weighted_sum(values: &[CacheFloat], scores: &[f32], h: usize, out: &mut [f32]) {
     use core::arch::wasm32::*;
     for d in (0..HD).step_by(8) {
@@ -288,6 +300,69 @@ unsafe fn weighted_sum(values: &[f32], scores: &[f32], h: usize, out: &mut [f32]
         vst1q_f32(out.as_mut_ptr().add(h * HD + d + 4), hi);
     }
 }
+
+// This optional artifact requires a host whose relaxed multiply-add is fused.
+// The strict SIMD128 artifact remains the fallback for other engines.
+#[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
+unsafe fn score_simd(q: &[f32], keys: &[CacheFloat], stride: usize, h: usize, out: &mut [f32]) {
+    use core::arch::wasm32::*;
+    for p in (0..out.len()).step_by(4) {
+        let mut sum = f32x4_splat(0.0);
+        for d in 0..HD {
+            let v = v128_load(keys.as_ptr().add((h * HD + d) * stride + p).cast());
+            sum = f32x4_relaxed_madd(v, f32x4_splat(*q.get_unchecked(h * HD + d)), sum);
+        }
+        v128_store(
+            out.as_mut_ptr().add(p).cast(),
+            f32x4_mul(sum, f32x4_splat(0.125)),
+        );
+    }
+}
+#[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
+unsafe fn weighted_sum(values: &[CacheFloat], scores: &[f32], h: usize, out: &mut [f32]) {
+    use core::arch::wasm32::*;
+    for d in (0..HD).step_by(8) {
+        let mut lo = f32x4_splat(0.0);
+        let mut hi = f32x4_splat(0.0);
+        for (p, &s) in scores.iter().enumerate() {
+            let scale = f32x4_splat(s);
+            let v = values.as_ptr().add(p * DIM + h * HD + d);
+            lo = f32x4_relaxed_madd(v128_load(v.cast()), scale, lo);
+            hi = f32x4_relaxed_madd(v128_load(v.add(4).cast()), scale, hi);
+        }
+        v128_store(out.as_mut_ptr().add(h * HD + d).cast(), lo);
+        v128_store(out.as_mut_ptr().add(h * HD + d + 4).cast(), hi);
+    }
+}
+#[cfg(target_arch = "wasm32")]
+fn fused_simd_supported() -> bool {
+    #[cfg(not(target_feature = "relaxed-simd"))]
+    {
+        false
+    }
+    #[cfg(target_feature = "relaxed-simd")]
+    {
+        use core::arch::wasm32::*;
+        let a = std::hint::black_box([1.0000001f32; 4]);
+        let b = std::hint::black_box([0.9999999f32; 4]);
+        let c = std::hint::black_box([-1.0f32; 4]);
+        let mut out = [0.0f32; 4];
+        // SAFETY: these are four-element arrays in the current linear memory.
+        unsafe {
+            v128_store(
+                out.as_mut_ptr().cast(),
+                f32x4_relaxed_madd(
+                    v128_load(a.as_ptr().cast()),
+                    v128_load(b.as_ptr().cast()),
+                    v128_load(c.as_ptr().cast()),
+                ),
+            );
+        }
+        out.iter().enumerate().all(|(i, &v)| {
+            v.to_bits() == ((a[i] as f64 * b[i] as f64 + c[i] as f64) as f32).to_bits()
+        })
+    }
+}
 struct BlockState {
     self_cache: Cache,
     cross_cache: Cache,
@@ -312,6 +387,14 @@ fn gain(g: &Graph, name: &str) -> Result<Vec<f32>, String> {
 }
 impl Decoder {
     pub fn from_onnx(bytes: &[u8]) -> Result<Self, String> {
+        #[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
+        if !fused_simd_supported() {
+            return Err(
+                "relaxed SIMD host does not fuse multiply-add; use the SIMD128 fallback artifact"
+                    .into(),
+            );
+        }
+
         let g = Graph::read(bytes)?;
         if g.nodes
             .iter()

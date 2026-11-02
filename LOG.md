@@ -516,3 +516,103 @@ Three paired runs measured 182.303M strict-WASM instructions/step (5.606 G per
 staff) against 480.396M ORT-web, a 2.635x reduction. This does **not** meet the
 3x target for strict SIMD128. The final measurements below repeat this test
 against a fresh build of the round-1 commit as well.
+
+### Optional fused SIMD artifact, and the strict target limitation
+
+A separate build with `-C target-feature=+simd128,+relaxed-simd` uses explicit
+`f32x4_relaxed_madd` for the ordered attention kernels. It retains float32 K/V
+storage (about 82 MB maximum reserved capacity) and directly uses fused SIMD on
+the validated ARM64 V8 host. The ordinary `+simd128` build remains the strict
+float64-emulation fallback, not a silently relaxed build.
+
+This is a conditional deployment choice. The [WebAssembly specification](https://www.w3.org/TR/wasm-core/)
+allows relaxed multiply-add to be fused or unfused. A load-time arithmetic
+probe rejects an obviously unfused host and the exported
+`decoder_fused_simd_supported()` lets a host check before copying weights.
+Passing that probe does not prove every possible engine's code generation:
+validate the actual engine with the corpus, and otherwise select the strict
+artifact. Other browsers/CPUs have not been certified by this Node/V8 run.
+`bench/build_decoder_variants.py` builds separately labelled artifacts; the
+benchmark's `--wasm` argument records the exact selected file.
+
+Full native and optional-fused-WASM validation after the final change each
+covers all 88 pages / 627 staffs / 38,076 steps / 228,456 token choices, with
+zero differing tokens or lengths. Attention max/mean are unchanged:
+0.0003662109375 / 0.0000035342254462343814 pixels. Native median error is zero,
+p95 0.0000152587890625 pixels. Each retained float optimization was checked on
+its frozen native and WASM artifacts separately; all their independently
+produced symbol sets pass check_xml with 75 byte-identical + 13 matching
+failures, zero different. Seven synthetic tests pass natively and under WASI
+in both strict SIMD128 and fused relaxed-SIMD configurations.
+
+The 3x speed target is reached on this fused artifact, **not** on strict
+SIMD128. Required FMA emulation is the measured remaining blocker in the strict
+build. It is not correct to replace it with ordinary float32 multiply/add.
+That alternative was built only in a separate scratch worktree and **rejected**:
+full native and WASM runs each produced 4,177 differing overlapping steps and
+7 length differences (37,454 generated steps, versus the reference's 38,076).
+The first divergence is app-2 / staff 3 / step 123 / pitch: 44 instead of 41;
+winning margins 0.015042782 in the experiment, 0.009525299 in ORT. This is an
+arithmetic perturbation followed by quantization-boundary changes and greedy
+history divergence. Error pages were included, not exempted. The unfused code
+is not part of the branch and no acceptance criterion was relaxed.
+
+### Final component profile and paired measurements
+
+The same calibrated exclusive counters, four staffs / 123 steps, M retired
+instructions per step. Native is unchanged between the two WASM artifact
+configurations. The residual instrumentation bucket is excluded; sums remain
+within approximately 1% of the ordinary, uninstrumented paired benchmark.
+Allocation figures close to zero are below the calibration resolution.
+
+| component | native final | strict SIMD128 final | fused SIMD final |
+|---|---:|---:|---:|
+| cross K/V staff setup | 27.13 | 60.64 | 60.68 |
+| self QKV matmul | 1.51 | 3.07 | 3.09 |
+| self output matmul | 1.01 | 2.07 | 2.05 |
+| cross Q matmul | 0.51 | 1.02 | 1.02 |
+| cross output matmul | 1.01 | 2.05 | 2.11 |
+| FF input matmul | 4.04 | 8.20 | 8.25 |
+| FF output matmul | 1.78 | 3.73 | 3.80 |
+| heads matmul | 0.05 | 0.10 | 0.10 |
+| activation quantization | 0.54 | 3.19 | 3.52 |
+| attention scores | 9.79 | 41.42 | 11.67 |
+| softmax/exp | 0.96 | 7.17 | 7.69 |
+| weighted V | 4.73 | 41.19 | 8.65 |
+| norms | 0.49 | 0.76 | 0.74 |
+| sigmoid + GELU/Erf | 1.06 | 3.54 | 3.59 |
+| centroid (no repeated Einsum) | 0.62 | 0.76 | 0.76 |
+| allocation/free | 0.32 | 0.31 | <0.3 |
+| copies/cache conversion | 1.14 | 2.91 | 1.54 |
+
+Strict attention still costs 82.61M per step, versus 20.31M for the explicit
+fused path. The largest remaining item in the fast artifact is staff setup,
+60.68M when amortized over this short page. Allocation/copy removal alone
+could not close the strict build's gap to 3x.
+
+For the final before/after table, freshly built round-1 commit d00b5f1 in
+another detached scratch worktree, then rebuilt HEAD. All measurements use
+the same four native-reference angelus_0 staffs and all 123 steps. Each entry
+is the median of **three paired decode-minus-load runs**, including first-step
+K/V preparation. ORT-web 1.30.0 and native ORT 1.31.0 use one thread. The
+counter is proc_pid_rusage RUSAGE_INFO_V4, as before; time -l's sandbox failure
+is unchanged. Nothing is estimated from wall time.
+
+| engine/artifact | before M/step | after M/step | before G/staff | after G/staff |
+|---|---:|---:|---:|---:|
+| Rust native | 72.250 | 56.251 | 2.221677 | 1.729733 |
+| ORT native | 45.723 | 46.376 | 1.405987 | 1.426056 |
+| Rust WASM, strict SIMD128 | 332.978 | 182.320 | 10.239076 | 5.606345 |
+| ORT-web, strict comparison batch | 478.177 | 479.056 | 14.703955 | 14.730976 |
+| Rust WASM, optional fused SIMD | 332.978 | 119.545 | 10.239076 | 3.676007 |
+| ORT-web, fused comparison batch | 478.177 | 481.482 | 14.703955 | 14.805579 |
+
+Thus strict SIMD128 uses **2.628x fewer** instructions than its paired ORT-web
+baseline, and optional fused SIMD uses **4.028x fewer**. Native Rust improved
+22.1% versus round 1 but still uses 1.21x as many as native ORT. External ORT
+baseline variation between batches is reported rather than attributed to the
+Rust changes. The comparison is not a claim about every phone's wall time.
+
+No models, corpora, benchmark dumps or survey output were committed. Profile
+and benchmark harnesses live under bench; the original pipeline checks and
+all existing reference expectations remain intact.
