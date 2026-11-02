@@ -112,6 +112,11 @@ def main():
 
         def do_POST(self):
             size = int(self.headers.get("Content-Length", "0"))
+            if self.path == "/progress" and 0 < size <= 4096:
+                (args.output / "progress.txt").write_bytes(self.rfile.read(size))
+                self.send_response(204)
+                self.end_headers()
+                return
             if self.path != "/report" or not 0 < size <= 32 * 1024 * 1024:
                 self.send_error(400)
                 return
