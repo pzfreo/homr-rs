@@ -921,3 +921,198 @@ sample, zero tokens change but one XML file changes by an attention-derived
 imgpos comment (y=658 vs 659); removing comments makes it identical. The final
 corpus report retains byte differences and supplies comment-stripped counts
 as an additional diagnostic, never as a relaxed pass criterion.
+
+### Final encoder, greedy decoder and combined XML results
+
+The full four-thread ORT-web WASM 1.30.0 run completed without skipping any
+of the **88 pages / 627 staffs**, including all staffs on the 13 native failure
+pages. Each staff uses the native [1,1,256,1280] input and outputs all
+[1,1280,512] float32 values. All 627 contexts differ. Across 410,910,720 values,
+387,918,136 (94.40448%) differ numerically. Global max absolute error is
+**1.1920928955078125e-5** (fix-1, staff 10); the value-weighted mean is
+**4.36081726078844e-7**. Per-staff maxima range 4.291534423828125e-6 to the
+maximum above; per-staff means range 3.728967971738939e-7 to
+5.998186930256111e-7 (largest mean: pdf-1 staff 8). Full per-staff max/mean
+measurements remain in scratch models_wasm4/<page>/metrics.json, alongside
+all saved context bytes. Native input canvases and normalized images are in
+models_native/<page>/<staff>/; model hashes and native package versions are
+recorded per page.
+
+| backend | segnet differing tile pixels | worst-page fraction | encoder max abs | encoder mean abs |
+|---|---:|---:|---:|---:|
+| WASM 1.30.0, 4 threads | 14 / 826,982,400 | 3.487723214e-7 (fix-six-1) | 1.192092896e-5 | 4.360817261e-7 |
+| Chrome WebGPU + WASM fallback | not measured (SIGABRT before CDP) | unavailable | unavailable | unavailable |
+
+The exact Rust decoder follows its own greedy trajectory on every context,
+including EOS, all six heads, and each error-page staff. It never stops at the
+first mismatch or teacher-forces native tokens.
+
+| encoder backend -> Rust decoder | staffs with token/length changes | differing overlapping steps | differing head choices | staffs with changed length | extra steps | missing steps |
+|---|---:|---:|---:|---:|---:|---:|
+| WASM | 47 / 627 | 3,924 / 36,166 | 15,500 / 216,996 | 17 | 109 | 1,910 |
+| WebGPU | not run | not run | not run | not run | not run | not run |
+
+Native emits 38,076 steps; WASM-context decoding emits 36,275. The overlapping
+step count is 36,166, with 109 extra and 1,910 missing. If missing/extra steps
+are counted as unmatched events, there are 5,943 differing/unmatched events;
+they are separated above so no tail is hidden in a denominator. First token
+mismatch: app-2/staff 0/step 2, position head 3 versus native 1. Other first
+mismatches quickly affect rhythms/pitches (app-2/staff 3/step 15 rhythm 100
+versus 201; staff 6/step 1 rhythm 30 versus 28). The observed amplification is consistent with
+quantization-boundary changes in this int8 decoder followed by greedy-history
+divergence; this stream did not trace every changed quantized element. Isolated
+first-step closeness is not a parity criterion.
+
+Whole-page XML replay using native masks and these newly decoded symbols has
+**74 byte-different results**, **10 different after removing comments**, and
+**13 matching native AssertionError outcomes**. Of the 75 successful native
+pages, only one remains byte-identical. The optional comment-stripped count
+supplements the exact comparison; it is not a new acceptance criterion.
+
+For the combined result, all 11 differing-segnet pages were replayed again
+through native homr, this time with the WASM-context/Rust-decoder symbols.
+All canvases and call counts still match; ten successful XML files match the
+encoder-only Rust replay byte for byte, and fix-six-1 still has the same
+native failure. The other 77 pages have identical segnet model boundaries.
+Thus the combined boundary replay has the same **74 byte differences, 10
+comment-stripped differences, 13 matching failures**. Segnet alone caused zero
+XML changes; the measured final changes come from the encoder perturbations.
+This is real model inference plus full greedy decoding and page/XML replay,
+not an unbroken live browser app run; Chrome and actual phone GPU behavior
+were not executed.
+
+A second Node browser-bundle diagnostic with explicit JSEP bytes selected an
+incompatible asyncify module and failed during initialization; it produced no
+metrics and is not a tested setting. The full results above use the normal
+pinned Node ORT-web WASM artifact, as in the existing ortbench tooling.
+
+### Per-page model and decoder measurements
+
+Encoder errors below summarize every staff on each page; the mean is the
+mean over all its context values. Per-staff raw metrics and step trajectories
+remain in scratch. Steps/heads columns compare overlapping greedy positions;
+extra/missing counts are in the full scratch comparison and the table above.
+
+| page | seg diff pixels | seg fraction | staffs | encoder max abs | encoder mean abs | token-different staffs | differing steps | differing heads |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| angelus_0 | 0 | 0 | 4 | 6.1988831e-06 | 4.2019768e-07 | 0 | 0 | 0 |
+| angelus_1 | 1 | 1.80845e-07 | 12 | 6.6757202e-06 | 4.2671997e-07 | 0 | 0 | 0 |
+| angelus_2 | 0 | 0 | 12 | 8.1062317e-06 | 4.2544037e-07 | 0 | 0 | 0 |
+| angelus_3 | 0 | 0 | 4 | 6.1988831e-06 | 4.2699849e-07 | 0 | 0 | 0 |
+| angelus_4 | 0 | 0 | 12 | 6.6757202e-06 | 4.2298719e-07 | 0 | 0 | 0 |
+| angelus_5 | 0 | 0 | 12 | 7.6293945e-06 | 4.2921244e-07 | 0 | 0 | 0 |
+| app-2 | 0 | 0 | 13 | 8.9406967e-06 | 4.6399938e-07 | 3 | 395 | 1267 |
+| app-3 | 2 | 9.04225e-08 | 14 | 6.6757202e-06 | 4.3724488e-07 | 0 | 0 | 0 |
+| app-4 | 1 | 2.22959e-08 | 28 | 7.0929527e-06 | 4.147907e-07 | 0 | 0 | 0 |
+| cam_0_exif1 | 0 | 0 | 1 | 5.7220459e-06 | 4.166498e-07 | 1 | 42 | 150 |
+| cam_0_exif6 | 0 | 0 | 4 | 5.2452087e-06 | 4.2579375e-07 | 0 | 0 | 0 |
+| cam_1_exif6 | 0 | 0 | 6 | 6.6757202e-06 | 4.2801731e-07 | 0 | 0 | 0 |
+| cam_2_exif3 | 0 | 0 | 1 | 5.7220459e-06 | 4.0176366e-07 | 0 | 0 | 0 |
+| cam_2_exif6 | 0 | 0 | 4 | 5.7220459e-06 | 4.3062394e-07 | 0 | 0 | 0 |
+| cam_3_exif6 | 0 | 0 | 5 | 6.4373016e-06 | 4.4279215e-07 | 0 | 0 | 0 |
+| fail-1 | 0 | 0 | 2 | 6.5565109e-06 | 4.5509091e-07 | 1 | 2 | 2 |
+| files-1 | 0 | 0 | 13 | 9.894371e-06 | 4.5698969e-07 | 4 | 225 | 525 |
+| fix-1 | 0 | 0 | 13 | 1.1920929e-05 | 4.6158315e-07 | 1 | 78 | 327 |
+| fix-six-1 | 3 | 3.48772e-07 | 12 | 7.1525574e-06 | 4.696005e-07 | 5 | 765 | 3303 |
+| follow-1 | 0 | 0 | 8 | 6.6757202e-06 | 4.3438539e-07 | 0 | 0 | 0 |
+| follow-2 | 0 | 0 | 8 | 6.1988831e-06 | 4.3292165e-07 | 0 | 0 | 0 |
+| follow-3 | 1 | 1.16257e-07 | 1 | 4.7683716e-06 | 4.3333805e-07 | 0 | 0 | 0 |
+| gpufail-1 | 0 | 0 | 13 | 7.6293945e-06 | 4.5842421e-07 | 6 | 425 | 1988 |
+| huron_0 | 0 | 0 | 4 | 5.7220459e-06 | 4.3071412e-07 | 1 | 1 | 1 |
+| huron_1 | 0 | 0 | 6 | 6.6757202e-06 | 4.2725036e-07 | 0 | 0 | 0 |
+| huron_2 | 0 | 0 | 4 | 5.2452087e-06 | 4.3091443e-07 | 0 | 0 | 0 |
+| huron_3 | 0 | 0 | 5 | 5.8412552e-06 | 4.4487032e-07 | 0 | 0 | 0 |
+| img-000 | 0 | 0 | 6 | 6.6757202e-06 | 4.3650799e-07 | 0 | 0 | 0 |
+| img-001 | 0 | 0 | 4 | 6.1988831e-06 | 4.3309483e-07 | 0 | 0 | 0 |
+| img-002 | 0 | 0 | 6 | 8.1062317e-06 | 4.3695772e-07 | 0 | 0 | 0 |
+| img-003 | 0 | 0 | 8 | 7.390976e-06 | 4.3187531e-07 | 0 | 0 | 0 |
+| img-004 | 0 | 0 | 11 | 8.1062317e-06 | 4.3881892e-07 | 0 | 0 | 0 |
+| img-005 | 0 | 0 | 4 | 6.1988831e-06 | 4.2504383e-07 | 0 | 0 | 0 |
+| img-006 | 0 | 0 | 6 | 6.1988831e-06 | 4.2869283e-07 | 0 | 0 | 0 |
+| img-007 | 0 | 0 | 7 | 6.6757202e-06 | 4.2950473e-07 | 0 | 0 | 0 |
+| img-008 | 0 | 0 | 7 | 5.7220459e-06 | 4.3265743e-07 | 0 | 0 | 0 |
+| img-009 | 0 | 0 | 6 | 6.6757202e-06 | 4.2976081e-07 | 0 | 0 | 0 |
+| lib-2 | 0 | 0 | 4 | 6.1988831e-06 | 4.3276624e-07 | 1 | 71 | 210 |
+| live-2 | 0 | 0 | 13 | 8.9406967e-06 | 4.6399938e-07 | 3 | 395 | 1267 |
+| live-3 | 0 | 0 | 14 | 6.4373016e-06 | 4.3835991e-07 | 0 | 0 | 0 |
+| live-4 | 0 | 0 | 28 | 7.1525574e-06 | 4.1378453e-07 | 2 | 2 | 2 |
+| manual-1 | 1 | 1.16257e-07 | 5 | 6.6757202e-06 | 4.3595583e-07 | 0 | 0 | 0 |
+| markfirst-1 | 0 | 0 | 12 | 7.6293945e-06 | 4.5606392e-07 | 0 | 0 | 0 |
+| openpdf-1 | 0 | 0 | 13 | 8.5830688e-06 | 4.5580808e-07 | 6 | 295 | 1149 |
+| pdf-1 | 0 | 0 | 11 | 9.9539757e-06 | 4.5468899e-07 | 4 | 303 | 1620 |
+| readf-1 | 0 | 0 | 4 | 5.7220459e-06 | 4.2359397e-07 | 0 | 0 | 0 |
+| round-1 | 0 | 0 | 2 | 7.5101852e-06 | 4.8988504e-07 | 1 | 501 | 2386 |
+| rt-follow-1 | 0 | 0 | 8 | 6.6757202e-06 | 4.310852e-07 | 0 | 0 | 0 |
+| rt-follow-2 | 0 | 0 | 8 | 6.1988831e-06 | 4.3161467e-07 | 0 | 0 | 0 |
+| rt-follow-3 | 0 | 0 | 1 | 4.7683716e-06 | 4.3649179e-07 | 0 | 0 | 0 |
+| rt-follow2-1 | 0 | 0 | 8 | 6.6757202e-06 | 4.3074714e-07 | 0 | 0 | 0 |
+| rt-follow2-2 | 0 | 0 | 8 | 6.6757202e-06 | 4.3254176e-07 | 0 | 0 | 0 |
+| rt-follow2-3 | 0 | 0 | 1 | 7.5101852e-06 | 4.3590305e-07 | 0 | 0 | 0 |
+| scanner-1 | 0 | 0 | 1 | 7.6293945e-06 | 4.7446163e-07 | 0 | 0 | 0 |
+| scar-1 | 0 | 0 | 2 | 7.1525574e-06 | 4.7546131e-07 | 0 | 0 | 0 |
+| scar2-1 | 0 | 0 | 3 | 7.6293945e-06 | 4.6869376e-07 | 0 | 0 | 0 |
+| scar3-1 | 0 | 0 | 3 | 7.6293945e-06 | 4.6869376e-07 | 0 | 0 | 0 |
+| sharepos-1 | 0 | 0 | 4 | 6.6757202e-06 | 4.3202478e-07 | 0 | 0 | 0 |
+| shot-2 | 0 | 0 | 13 | 8.9406967e-06 | 4.6399938e-07 | 3 | 395 | 1267 |
+| shot-3 | 0 | 0 | 14 | 6.4373016e-06 | 4.3835991e-07 | 0 | 0 | 0 |
+| shot-4 | 0 | 0 | 28 | 6.6757202e-06 | 4.142077e-07 | 1 | 3 | 3 |
+| t-follow-1 | 0 | 0 | 8 | 6.6757202e-06 | 4.3330344e-07 | 0 | 0 | 0 |
+| t-follow-2 | 0 | 0 | 8 | 6.6757202e-06 | 4.3215109e-07 | 0 | 0 | 0 |
+| t-follow-3 | 1 | 1.16257e-07 | 1 | 4.7683716e-06 | 4.3333805e-07 | 0 | 0 | 0 |
+| t-library-2 | 0 | 0 | 4 | 6.6757202e-06 | 4.3614253e-07 | 0 | 0 | 0 |
+| t-manual-1 | 1 | 1.16257e-07 | 5 | 6.6757202e-06 | 4.3595583e-07 | 0 | 0 | 0 |
+| t-views-1 | 1 | 1.16257e-07 | 4 | 5.7220459e-06 | 4.116707e-07 | 1 | 1 | 1 |
+| t-views-2 | 0 | 0 | 4 | 5.7220459e-06 | 4.0962989e-07 | 1 | 1 | 1 |
+| try-2 | 0 | 0 | 1 | 6.1988831e-06 | 5.5299385e-07 | 1 | 23 | 30 |
+| vid-1 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-10 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-11 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-12 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-13 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-14 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-15 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-16 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-2 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-3 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-4 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-5 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-6 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-7 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-8 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-9 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| views-1 | 1 | 1.16257e-07 | 4 | 5.7220459e-06 | 4.116707e-07 | 1 | 1 | 1 |
+| views-2 | 0 | 0 | 4 | 5.7220459e-06 | 4.0984815e-07 | 0 | 0 | 0 |
+| zoom-1 | 1 | 1.16257e-07 | 10 | 6.6757202e-06 | 4.217838e-07 | 0 | 0 | 0 |
+
+No data, ONNX files, contexts, class maps or generated reports were added to
+Git. Numbers are recorded here; reusable harnesses are under bench/ and tools/.
+The existing check_xml gained only optional scratch artifact export; its
+byte-exact comparison and failure/call-consumption checks remain intact.
+
+### Final verification and unattended decisions
+
+Final required commands pass: **cargo fmt --check**, **cargo clippy
+--all-targets -- -D warnings**, and **cargo test --release** (seven library
+tests, all binary/doc test targets successful). Python harnesses compile and
+all added JavaScript modules pass node --check; the standalone SIMD cost
+probe is rustfmt-clean and both strict/fused artifacts matched its native
+sample bytes before measuring instructions. The baseline XML diagnostic
+preserves 75 exact results + 13 matching native failures.
+
+All background measurement, token, segmentation replay, combined replay and
+XML jobs exited successfully. Full native and WASM measurements ran; WebGPU
+was scripted and launch-attempted only. No actual phone, Chrome GPU inference,
+new ORT build, large Rust model port or native service was run/implemented.
+Blockers are the headless Chrome SIGABRT before CDP and unavailable published
+ORT-web 1.31.0 package. GPU numeric/speed results remain explicitly unknown.
+
+Unattended choices were to preserve default native options, reuse existing
+native encoder outputs after fresh sample validation, store lossless tile
+inputs as uint8, use Partsong's four-thread setting for the full WASM corpus,
+and use separate warmed one-thread runs for speed budgets. Input duplicates
+were not used to skip browser inference: all 8,076 tiles and all 627 staffs
+ran. Segnet-only and combined replay reuse symbols deliberately, with canvas
+and call-count checks; they are labelled as boundary replays rather than live
+browser runs. No user answers were needed. All work is committed on cx/models;
+Partsong and the plain homr checkout were not edited. Nothing was pushed or
+posted, and generated data/reports remain only in scratch.
