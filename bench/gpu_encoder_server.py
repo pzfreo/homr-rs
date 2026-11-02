@@ -10,6 +10,7 @@ import http.server
 import json
 import os
 import subprocess
+import ssl
 from pathlib import Path
 import time
 from urllib.parse import unquote, urlsplit
@@ -51,6 +52,7 @@ def prepare(args):
                 "decoder": "/decoder/" + decoder.name, "threads": args.threads,
                 "staffs": staffs, "pages": len({s["page"] for s in staffs}), "corpus_staffs": total,
                 "audit": args.audit, "math_cases": args.math_cases, "post_report": not args.manifest_only,
+                "profile": args.profile,
                 "main_thread": args.main_thread, "native_steps": sum(s["native_steps"] for s in staffs),
                 "revision": subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip(),
                 "wasm_bytes": args.wasm.stat().st_size, "wasm_mtime_ns": args.wasm.stat().st_mtime_ns}
@@ -66,6 +68,10 @@ def main():
     p.add_argument("output", type=Path)
     p.add_argument("--threads", type=int, default=4)
     p.add_argument("--port", type=int, default=8796)
+    p.add_argument("--bind", default="127.0.0.1", help="LAN use requires trusted HTTPS or an Android localhost port forward")
+    p.add_argument("--cert", type=Path, help="trusted TLS certificate for phone HTTPS")
+    p.add_argument("--key", type=Path, help="TLS private key (read only)")
+    p.add_argument("--profile", type=int, default=0, help="interleaved per-kernel timestamp trials on first staff (1..20)")
     p.add_argument("--audit", choices=["full", "first", "none"], default="full")
     p.add_argument("--math-cases", type=int, default=1048576)
     p.add_argument("--limit", type=int)
@@ -75,6 +81,8 @@ def main():
     args = p.parse_args()
     if not 1 <= args.threads <= 32 or args.math_cases < 1 or (args.limit is not None and args.limit < 1):
         p.error("Invalid thread/count arguments")
+    if not 0 <= args.profile <= 20 or bool(args.cert) != bool(args.key):
+        p.error("Invalid profile count or missing TLS cert/key")
     roots, manifest = prepare(args)
     if args.manifest_only:
         print(json.dumps({"roots": roots, "manifest": manifest}))
@@ -117,8 +125,12 @@ def main():
         def log_message(self, *_):
             pass
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    print(f"Open http://127.0.0.1:{server.server_port}/ in Safari. {len(manifest['staffs'])} staffs, audit={args.audit}.", flush=True)
+    server = http.server.ThreadingHTTPServer((args.bind, args.port), Handler)
+    if args.cert:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(args.cert, args.key)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+    print(f"Open {'https' if args.cert else 'http'}://{args.bind}:{server.server_port}/ in Safari/Chrome. {len(manifest['staffs'])} staffs, audit={args.audit}, profile={args.profile}.", flush=True)
     server.serve_forever()
 
 

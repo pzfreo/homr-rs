@@ -2253,3 +2253,31 @@ Open the server's printed URL in Safari; it saves the same-origin `/report`
 JSON locally. Both commands default to all 627 staffs, full independent CPU
 per-op/primitive audits and native decoder-step comparisons. These are
 instructions for the maintainer; no report was posted during this work.
+
+## GPU mobile scheduling round (cx/gpu, after 67769a7)
+
+Maintainer-supplied qualification of the previous shaders: Chrome 156 / Apple
+Metal, 627/627 exact contexts, 0/38,076 token-step differences, zero guards,
+about 123 billion audited primitives with zero differences, median 64 ms GPU
+per staff. Partsong Mac: three pages' MusicXML agrees, 54 ms self-test and
+about 70 ms/staff. Android 10 / Chrome 156 (GPU unknown): self-test passes in
+955 ms, no fallbacks, about 1.55 s/staff, versus about 1.1 s for three-thread
+fused CPU and 0.35 s for non-exact ORT WebGPU. These are supplied results for
+the previous revision, not measurements or qualification of the new shaders.
+Safari qualification remains in progress externally.
+
+First stage: added per-pass timestamps for every model operation, separate
+per-staff image and one-time weight scans, and interleaved guarded/arithmetic
+controls. Each control final context is bit-compared to native; guard overhead
+is withheld on any mismatch/flag. Differential timings are explicitly noisy,
+not additive hardware counters, and never feed production encoding. One warm
+up plus three measured trials is the default profiling command. Production
+encode still submits the entire staff without intermediate CPU readbacks.
+Added optional trusted TLS/LAN binding to the local Safari/phone server.
+
+Tried actual GPU execution before kernel changes: installed Dawn's `webgpu`
+0.6.2 into scratch. Both explicit Metal and default requestAdapter returned
+null in this sandbox. The reusable `bench/gpu_encoder_node.mjs` saves this
+blocker and can run the exact same browser qualification/profiling harness
+where Metal is accessible. No software/null backend is substituted as GPU
+evidence. Host-control and JS syntax checks pass at this stage.

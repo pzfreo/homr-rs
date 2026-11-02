@@ -249,6 +249,59 @@ export class EncoderGPU {
     finally {this.busy=false;}
   }
   // Diagnostic timing control only; never writes a context or affects fallback.
+  async profile(image,{trials=3,reference=null}={}) {
+    if(!this.enabled||!this.timestamp||this.busy)return {available:false,reason:'Need idle qualified GPU with timestamp-query'};
+    if(!Number.isInteger(trials)||trials<1||trials>20)throw Error('profile trials must be 1..20');
+    this.busy=true;const d=this.device,live=[];let scoped=false;
+    try {
+      pushErrors(d);scoped=true;
+      const compile=performance.now(),control=await Program.create(d,true),control_compile_ms=performance.now()-compile;
+      const groups=this.ops.map(op=>control.group(op.params[0],[this.buffers[op.input],this.weights,this.buffers[op.residual],this.buffers[op.output],op.q,this.guard]));
+      const count=2*(this.ops.length+1),queries=d.createQuerySet({type:'timestamp',count});live.push(queries);
+      const resolved=storage(d,count*8,GPUBufferUsage.QUERY_RESOLVE|GPUBufferUsage.COPY_SRC);live.push(resolved);
+      const rows=[],scan=[];let expected=reference instanceof Uint32Array?reference:reference?new Uint32Array(reference):null;
+      for(let trial=-1;trial<trials;trial++)for(const guarded of ((trial+1)%2?[false,true]:[true,false])){
+        // Restore raw input for each control: a preceding guarded run must not
+        // silently sanitize the unguarded control's input.
+        d.queue.writeBuffer(this.buffers[0],0,new Uint32Array(this.e.memory.buffer,image,256*1280).slice());
+        d.queue.writeBuffer(this.guard,0,new Uint32Array(1));
+        const cmd=d.createCommandEncoder(),program=guarded?this.program:control;
+        if(guarded)program.dispatch(cmd,10,this.scanParams,this.scanGroup,{querySet:queries,beginningOfPassWriteIndex:0,endOfPassWriteIndex:1});
+        for(let i=0;i<this.ops.length;i++){
+          const op=this.ops[i];program.dispatch(cmd,op.params[0],op.params,guarded?op.group:groups[i],{querySet:queries,beginningOfPassWriteIndex:2*(i+1),endOfPassWriteIndex:2*(i+1)+1});
+        }
+        // Unwritten scan queries are not resolved in the unguarded control.
+        cmd.resolveQuerySet(queries,guarded?0:2,count-(guarded?0:2),resolved,0);d.queue.submit([cmd.finish()]);
+        const times=new BigUint64Array(await readBuffer(d,resolved,(count-(guarded?0:2))*8));
+        const flags=new Uint32Array(await readBuffer(d,this.guard,4))[0];
+        const actual=new Uint32Array(await readBuffer(d,this.buffers[this.meta.output],this.contextBytes));expected??=actual;
+        const diff=bitDifference(actual,expected),offset=guarded?2:0;
+        const kernels=this.ops.map((op,i)=>({index:i,name:op.name,kind:op.params[0],gpu_ms:Number(times[offset+2*i+1]-times[offset+2*i])/1e6}));
+        if(trial>=0)rows.push({trial,guarded,flags,...diff,image_scan_ms:guarded?Number(times[1]-times[0])/1e6:0,kernels,
+          dispatch_span_ms:Number(times.at(-1)-times[0])/1e6});
+      }
+      // Weight scanning is a one-time initialization cost, never per-staff.
+      const q=new Uint32Array(16);q[14]=this.meta.weights;const params=uniform(d,q);live.push(params);
+      const group=this.program.group(9,[null,this.weights,null,null,params,this.guard]);
+      for(let trial=-1;trial<trials;trial++){
+        d.queue.writeBuffer(this.guard,0,new Uint32Array(1));const cmd=d.createCommandEncoder();
+        this.program.dispatch(cmd,9,q,group,{querySet:queries,beginningOfPassWriteIndex:0,endOfPassWriteIndex:1});
+        cmd.resolveQuerySet(queries,0,2,resolved,0);d.queue.submit([cmd.finish()]);
+        const t=new BigUint64Array(await readBuffer(d,resolved,16)),flags=new Uint32Array(await readBuffer(d,this.guard,4))[0];
+        if(trial>=0)scan.push({gpu_ms:Number(t[1]-t[0])/1e6,flags});
+      }
+      const median=xs=>xs.toSorted((a,b)=>a-b)[Math.floor(xs.length/2)],valid=rows.every(r=>!r.flags&&!r.bit_differences)&&scan.every(r=>!r.flags);
+      const kernels=this.ops.map((op,i)=>{const guarded=median(rows.filter(r=>r.guarded).map(r=>r.kernels[i].gpu_ms)),arithmetic=median(rows.filter(r=>!r.guarded).map(r=>r.kernels[i].gpu_ms));
+        return {index:i,name:op.name,kind:op.params[0],guarded_ms:guarded,arithmetic_control_ms:arithmetic,guard_delta_ms:valid?guarded-arithmetic:null};});
+      const totals={};for(const k of kernels){const t=totals[k.kind]??={kind:k.kind,guarded_ms:0,arithmetic_control_ms:0};t.guarded_ms+=k.guarded_ms;t.arithmetic_control_ms+=k.arithmetic_control_ms;}
+      const image_scan_ms=median(rows.filter(r=>r.guarded).map(r=>r.image_scan_ms)),guarded_ms=kernels.reduce((n,k)=>n+k.guarded_ms,0)+image_scan_ms,arithmetic_control_ms=kernels.reduce((n,k)=>n+k.arithmetic_control_ms,0);
+      scoped=false;await popErrors(d);
+      return {available:true,valid,trials,control_compile_ms,kernels,by_kind:Object.values(totals),image_scan_ms,weight_scan_once_ms:median(scan.map(r=>r.gpu_ms)),guarded_ms,arithmetic_control_ms,
+        guard_and_image_delta_ms:valid?guarded_ms-arithmetic_control_ms:null,guard_and_image_fraction:valid?(guarded_ms-arithmetic_control_ms)/guarded_ms:null,rows,weight_scan:scan,
+        policy:'Per-pass timestamps; one warm-up and interleaved trials. Deltas are noisy differential estimates, not additive hardware counters. Control retains rounding barriers and exact certificates; no control output is used for encoding.'};
+    } finally {if(scoped){try{await popErrors(d);}catch{}}for(const b of live)b.destroy();this.busy=false;}
+  }
+  // Diagnostic timing control only; never writes a context or affects fallback.
   async measureGuardCost(image,{trials=3,reference=null}={}) {
     if(!this.enabled||!this.timestamp||this.busy) return {available:false,reason:'Need idle qualified GPU with timestamp-query'};
     this.busy=true;

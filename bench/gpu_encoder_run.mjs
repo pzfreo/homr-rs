@@ -119,6 +119,7 @@ export async function runGPUEncoder(config,progress=console.log){
     if(report.single_staff.cpu_plan_context.bit_differences||audit.math.differences||audit.rows.some(r=>r.bit_differences&&!r.cumulative_guard)) {report.blocker='Single-staff op/CPU-plan qualification failed';return report;}
     report.guard_cost=single.backend==='gpu'&&!single.guard&&!report.single_staff.raw?.bit_differences?
       await gpu.measureGuardCost(image,{reference:firstNative}):{available:false,reason:'First staff flagged or drifted; omitting unsafe unguarded control'};
+    if(config.profile)report.profile=await gpu.profile(image,{trials:config.profile,reference:firstNative});
     for(let i=0;i<config.staffs.length;i++){
       const staff=config.staffs[i];const [input,native,steps]=await Promise.all([load(staff.input),load(staff.context),json(staff.steps)]);
       new Uint8Array(e.memory.buffer,image,input.byteLength).set(new Uint8Array(input));
