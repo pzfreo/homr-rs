@@ -44,5 +44,7 @@ encoder-probes = []
 encoder-trace = []
 # Shared-memory host pool. Build std with atomics; workers do not allocate.
 encoder-threads = []
+# Diagnostic-only static/dynamic comparison, chunk tuning and sleeping ranks.
+encoder-chunk-bench = ["encoder-threads"]
 # Follow OpenCV 5.0 where it differs from 4.11 (minAreaRect conventions).
 opencv5 = []

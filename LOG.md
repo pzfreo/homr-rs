@@ -1709,3 +1709,277 @@ the subnormal 2 (Metal flushes subnormal results to zero), and schedule cell 51
 subnormals, so the outputs agree, but bit-identity is not guaranteed on Metal for
 inputs that reach the subnormal range. An exact GPU encoder would need either
 proof that no subnormals arise, or detection and CPU fallback for affected tiles.
+
+## Dynamic encoder chunks for heterogeneous cores (cx/chunks)
+
+The maintainer supplied real Android 10 / Chrome 156 combined encoder+decoder
+observations: about **2.8 s/staff with one thread**, **2.1–3.1 s with four**.
+The eight-core phone is likely heterogeneous, but slow-rank dominance is an
+inference, not a measured cause. The supplied iPhone *simulator* observation is
+**111 -> 30 s per six-staff page**, strict/four threads, with MusicXML identical
+to Chrome. This is not a physical iPhone measurement. No device timings are
+invented or inferred from those observations in this round.
+
+### Verified implementation stage
+
+Every job now owns an atomic, saturating next-unit cursor. Every rank, including
+the coordinator, claims another chunk until exhausted. The CAS loop prevents
+wrap at exhaustion, including usize::MAX in its numeric regression test. The
+cursor is 128-byte padded away from immutable metadata. Relaxed ordering is
+sufficient for ownership; existing host publication/join atomics still provide
+the input/output happens-before edges. The descriptor stays on the coordinator
+stack until all ranks join. Workers construct mutable slices only for the
+range they claimed; inputs and weights remain immutable.
+
+GEMM chunks contain whole four-row tiles. Depthwise chunks contain whole
+pixels, activations whole SIMD vectors, and LayerNorm whole rows. No K/channel
+reduction is split or reassociated. Downsample's independent 128-term sums and
+their ordered combination, bias schedules and all floating-point kernels are
+unchanged. The strict guard now checks immutable B/bias/K once per job and A
+once per claimed slice. This avoids rescanning a full weight matrix for every
+small chunk; the same proven bounded-arithmetic conditions are enforced.
+Slices failing the guard still execute general correctly rounded arithmetic.
+
+The C ABI, dispatch signature and existing two host files are unchanged:
+tools/encoder_pool.mjs and encoder_worker.mjs have **no changes**. Jobs are
+opaque to JS and every worker receives the same compiled module. Hosts only
+need to replace the WASM artifact; existing thread options continue to work.
+Ordinary nonshared builds keep their previous implementation and exports.
+
+The selected-source isolated Conv, depthwise, LayerNorm, MatMul/Gemm, Div, Erf
+and Gelu checks pass at **1/2/4/6 threads** on both builds, with zero differing
+bits. Native release library tests pass **13 tests**, including concurrent
+exactly-once ticket coverage/tails and overflow-safe exhaustion. All-target,
+all-feature native Clippy -D warnings passes. Full corpus follows final timing.
+
+### Chunk-size evidence and selected geometry
+
+The scratch diagnostic feature encoder-chunk-bench supports static scheduling,
+chunk overrides, per-rank work statistics and WASM atomic-wait *sleeping*.
+None of these hooks, delays, statistics or static scheduling paths is compiled
+into production modules. There are no new imports. The normal shipped host
+files also contain no slowdown option. The benchmark overrides only dispatch
+in its own process, using diagnostic exports before publication/after joining.
+
+A single-rank calibration warms once and records three full encodes. The
+median of each job's elapsed time per unit sets an additional sleeping budget
+of **3x calibrated work time** on ranks 2 and 3. This models slower service
+without burning dummy instructions on the loaded machine. It is not a CPU
+clock throttle or a claim that those ranks run at exactly one-quarter speed:
+OS wait granularity and descheduling can increase the effective delay. Static
+and dynamic use the same calibration, input, arithmetic and sleeping rule.
+Dynamic sleepers release the remaining tickets for faster ranks to claim.
+
+Sweep: four threads; one warm-up and three interleaved measured trials for
+static, quarter/base/four-times-base dynamic chunks, separately per build.
+Each run bit-compares the full context and verifies **33 native decoder steps**
+using the same context pointer. Encoder-only and combined wall times are kept
+separately because the decoder remains serial. This differs from comparing
+phone combined times with an encoder-only Mac speedup. Process counters include
+all case workers; different cases reside in separate idle processes. Only one
+case executes at a time. Raw samples and work shares stay in scratch.
+
+| diagnostic schedule / size | fused encoder seconds | fused combined seconds | strict encoder seconds | strict combined seconds |
+|---|---:|---:|---:|---:|
+| static equal shares | 1.8173 | 2.1218 | 27.3558 | 28.2057 |
+| dynamic quarter size | 0.6200 | 1.0782 | 16.4161 | 17.1818 |
+| dynamic base size | 0.7153 | 1.3004 | 14.8857 | 15.9238 |
+| dynamic four-times size | 1.0812 | 1.3789 | 17.5724 | 18.6186 |
+
+The op-group medians (GEMM, activation, depthwise, norm) agree with the whole
+encode choice: quarter wins each fused group; base wins each strict group.
+For example fused GEMM drops from 1262.69 ms static to 431.87 ms at quarter,
+versus 473.15 ms base and 714.08 ms coarse. Strict GEMM is 12172.71/11108.32/
+13211.65 ms for quarter/base/coarse. These are diagnostic elapsed intervals,
+not claimed production instruction overhead or universal phone optima.
+
+Selected base units: GEMM floor(1,000,000 / (4*K*N)), clamped to 1..64
+four-row tiles; activation 2048 four-float vectors; depthwise floor(250,000 /
+(C*kernel^2)) pixels, at least one; norm floor(4096/C) rows, at least one.
+Strict uses these base sizes. Fused quarters the resulting integer unit count,
+with a minimum of one. In the actual graph this gives:
+
+| operation | fused chunk | strict chunk |
+|---|---|---|
+| MLP GEMM / projection | 4 rows | 4 or 24 MLP rows; projection 4 |
+| stem Conv lowered GEMM | 64 rows | 256 rows |
+| downsample partial GEMM, stages 1/2 | 8 / 4 rows | 40 / 20 rows |
+| GELU/Erf | 2048 float32 values | 8192 float32 values |
+| depthwise C=96/192/384 | 13 / 6 / 3 pixels | 53 / 26 / 13 pixels |
+| LayerNorm C=96/192/384 | 10 / 5 / 2 rows | 42 / 21 / 10 rows |
+
+There are many chunks per rank even in late stages (e.g. 320 four-row MLP
+tiles), while expensive reductions stay intact. Frozen PR #4 production
+artifacts in chunks_static are the independent instruction baseline. The new
+static diagnostic schedule shares the hoisted guard with dynamic, isolating
+scheduling for the slowdown experiment. Production instruction comparisons
+use uninstrumented original-static versus uninstrumented selected-dynamic
+modules, not the diagnostic feature. Counter overhead, balancing and 8-rank
+recommendation measurements are still running at this stage.
+
+### Independent instruction-budget check
+
+Uninstrumented PR #4 static modules versus the selected uninstrumented dynamic
+modules: one warm-up per case and three interleaved trials, separately isolated
+case processes. Every output context and the paired 33-step decoder trajectory
+match native. Process-wide proc_pid_rusage includes all ranks. No sleeping,
+diagnostic counters or tuning callbacks are present in these production runs.
+
+| total ranks | fused static G | fused dynamic G | dynamic change | strict static G | strict dynamic G | dynamic change |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 20.976078 | 20.959912 | -0.077% | 267.661999 | 267.688295 | +0.010% |
+| 4 | 20.988019 | 20.969987 | -0.086% | 268.300881 | 267.847858 | -0.169% |
+| 6 | 20.988791 | 20.970397 | -0.088% | 268.651249 | 267.636136 | -0.378% |
+| 8 | 21.024552 | 20.977367 | -0.224% | 268.983984 | 267.620287 | -0.507% |
+
+The ~1% budget passes at every requested count. Small net reductions are not
+claimed as an intrinsic cost-free queue: strict removes redundant immutable
+weight scans, and code layout/loop setup also differ from the older module.
+The operation and element work is not skipped. Input-slice guards still run.
+Raw samples, encoder/decoder times, modules and trial order are retained in
+chunks_overhead.json. The loaded machine makes wall-time ratios less reliable
+than these retired-instruction totals.
+
+### Final uneven-rank comparison and thread-count recommendation
+
+These independent follow-up trials use the selected default chunks, the same
+fixed calibration as the sweep, and additional sleeping on ranks 2..N-1. Thus
+two ranks have no artificial delay; all other ranks add 3x calibrated unit
+time. It is a controlled synthetic service-rate imbalance, not a measurement
+of the Android phone's cores. Counts in the diagnostic module verify every
+job's total claimed units, and native context/tokens are checked on every run.
+The case is still angelus_0 staff 0, **33 decoder steps**. Three interleaved
+trials per configuration, one warm-up, medians below. No fastest sample is used.
+
+| build / total ranks | static encoder s | dynamic encoder s | static combined s | dynamic combined s |
+|---|---:|---:|---:|---:|
+| fused / 2 | 0.491401 | 0.456949 | 0.694371 | 0.661569 |
+| fused / 4 | 1.405956 | 0.401338 | 1.614135 | 0.599002 |
+| fused / 6 | 0.983674 | 0.359595 | 1.195267 | 0.561079 |
+| fused / 8 | 0.760735 | 0.334056 | 0.971430 | 0.546372 |
+| strict / 2 | 8.165176 | 8.286689 | 8.587021 | 8.706171 |
+| strict / 4 | 25.302966 | 7.905961 | 25.787282 | 8.358725 |
+| strict / 6 | 17.301198 | 6.609772 | 17.745162 | 7.033454 |
+| strict / 8 | 13.615893 | 5.809145 | 14.025706 | 6.208149 |
+
+The two-rank case has no artificially slow ranks. Dynamic and static strict
+are within about 1.5% there; this experiment is about imbalance, not universal
+speedup. With four ranks, the two undelayed ranks perform median **86.40% of
+fused GEMM MACs / 86.71% strict**, versus **50%** under static ownership. This
+work-weighted share counts MACs, not incomparable totals of vectors and pixels.
+The observed effective slowdown is affected by OS wait granularity/load; the
+requested sleeping budget and individual rank units/chunks remain in the raw
+report so it is not misrepresented as an exact hardware frequency ratio.
+
+Also delaying coordinator rank 0 and helper rank 3 at four total ranks gives:
+
+| build | static encoder s | dynamic encoder s | static combined s | dynamic combined s |
+|---|---:|---:|---:|---:|
+| fused | 1.345755 | 0.404503 | 1.547690 | 0.603064 |
+| strict | 25.416481 | 7.776948 | 25.826240 | 8.189261 |
+
+Every rank really pulls, including the coordinator. The host still joins all
+ranks before releasing a job; dynamic claiming removes computational equal-
+share tails, not arbitrary OS suspension or the serial decoder. This does
+not establish that the phone's original poor scaling was caused by core
+heterogeneity; on-phone per-rank profiling is still needed to confirm that.
+
+Recommend the caller start with **min(hardwareConcurrency || 4, 8)**, retaining
+an override and validating UI/thermal behavior on-device. Use more ranks than
+the number of fast cores: in this synthetic case, dynamic 8 versus dynamic 4
+reduces combined latency by **8.79% fused / 25.73% strict**, and both beat the
+two-fast-rank-only combined case. Six ranks also help; the extra benefit from
+6 to 8 is smaller for fused, but all three fused trial pairs improve. The
+production eight-rank instruction comparison also remains within budget.
+
+The pool's existing API default remains 1 for backward compatibility. Partsong
+already passes an explicit count; no host JS/C ABI change is needed for dynamic
+claiming at its current count. Selecting the recommended larger count is an
+optional change to that existing threads setting, not a protocol migration.
+Partsong and homr were not edited. Raw evidence is chunks_calibration.json,
+chunks_sweep.json, chunks_overhead.json and chunks_uneven.json in scratch.
+
+### Freeze before full corpus
+
+Production/diagnostic strict and fused WASM Clippy -D warnings pass. After a
+style-only lint annotation, all six rebuilt modules are byte-for-byte identical
+to the measured modules; full outputs are still validated directly, never by
+hash. Selected-source op checks are repeated at 1/2/4/6 ranks and all pass.
+The frozen production modules (no diagnostic exports/static path/delays) now
+run all 627 staffs with four actual host ranks per build. Existing per-rank
+host counts measure calls to encoder_work, **not chunks**: a rank may correctly
+find no remaining work on a cheap job. Actual work shares are measured only
+in the separate diagnostic experiment above.
+
+### Fused dynamic corpus verified
+
+The frozen production fused module completes **627/627 bit-identical contexts**
+and its Rust decoder completes **38,076 native steps**, with zero differing
+heads, steps or lengths. XML replay gives **75 byte-identical files and 13
+matching native failures**. Production exports contain no encoder_bench_ entry
+points, and imports remain only env.memory and encoder_threads.dispatch.
+The strict production corpus is now running. Host pool/worker sources remain
+byte-unchanged from main; no Partsong or homr edits, push or posting occurred.
+
+### Final build and compatibility checks
+
+`cargo fmt --check`, all-target/all-feature Clippy `-D warnings`, and
+`cargo test --release -j1` pass (13 library tests, including concurrent
+exactly-once/tail chunk coverage and exhaustion without integer wrap). Both
+WASI SIMD variants also pass their applicable tests. Both nonshared WASM
+builds pass combined encoder/decoder smoke checks; both shared builds pass
+the same checks with a one-rank pool. These four checks retain 121 native
+token steps and bit-identical contexts. The original single-thread API and
+the threaded one-rank path remain working.
+
+Rebuilt every shared configuration with `bench/build_encoder_threads.py`:
+strict/fused production, probes, chunk diagnostics, and probes plus chunk
+diagnostics. The six frozen production/probe/diagnostic artifacts reproduce
+the measured modules byte for byte; the two combined probe/diagnostic
+artifacts also build successfully. This is artifact provenance only: op/corpus comparisons use
+actual float32 output bytes and token sequences, not hashes. WASM Clippy
+passes for strict/fused production and diagnostic features.
+
+Decision during validation: a fresh nonshared build made no visible dependency
+progress for several minutes with the globally configured shared sccache
+wrapper. Reran the checks with per-command `RUSTC_WRAPPER=''` and a separate
+scratch target directory; they completed. Left global configuration and the
+shared cache server alone. The cause of the cache stall was not diagnosed.
+
+### Both dynamic production corpora and XML replay complete
+
+Final independent assertions over comparison.json and every staff record:
+
+| production shared build, four ranks | contexts bit-identical | differing token steps | differing token heads / length steps | MusicXML replay |
+|---|---:|---:|---:|---|
+| fused | 627 / 627 | 0 / 38,076 | 0 / 0 | 75 byte-identical + 13 matching failures |
+| strict | 627 / 627 | 0 / 38,076 | 0 / 0 | 75 byte-identical + 13 matching failures |
+
+Both complete all 88 pages' recorded staff images. Every staff dispatches 89
+jobs and every one of the four ranks enters all 89 jobs. Actual chunk owners
+can vary; no rank is required to own work when other ranks exhaust a cheap
+job first. Both final XML comparison summaries have 88 pages, zero byte
+differences, zero comment-stripped differences and 13 matching failure
+strings, with replay calls consumed. Scratch chunks_corpus.log ends with
+ALL_DYNAMIC_CORPUS_CHECKS_PASSED.
+
+The isolated native-reference Conv, depthwise Conv, MatMul/Gemm, LayerNorm,
+Div and Erf/GELU checks also have zero differing float32 bits for **both
+builds at 1/2/4/6 ranks**, including optimized subgraph probes. Corpus contexts
+and all six token heads are compared directly; there are no hash tests.
+
+Scope: these are full encoder/decoder runs from recorded native staff inputs,
+followed by check_xml replay against the unchanged page fixtures. They are
+not fresh live page segmentation or physical-phone inference. All requested
+implementation, simulated imbalance, instruction, operator, corpus and build
+checks are complete. Physical phone per-rank profiling was not available;
+therefore the Android core-heterogeneity diagnosis and the best device-specific
+thread count remain to be confirmed on the maintainer's device. This does not
+block using the compatible dynamic module at the existing count.
+
+Final unattended decisions: keep the host protocol and library default intact;
+recommend an app thread count capped at eight with an override; use measured
+per-op work budgets and a diagnostic-only sleeping-rank simulation; retain
+all raw data/modules in scratch. No source changed after the passing final
+build checks. No edits to Partsong/homr, data/report dumps in Git, pushes or
+posts. Work is committed locally on cx/chunks.

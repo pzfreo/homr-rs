@@ -1,4 +1,8 @@
 //! Prototype Rust port of homr (https://github.com/liebharc/homr).
+#![cfg_attr(
+    all(target_arch = "wasm32", feature = "encoder-chunk-bench"),
+    feature(stdarch_wasm_atomic_wait)
+)]
 pub mod braces;
 pub mod contours;
 pub mod decoder;

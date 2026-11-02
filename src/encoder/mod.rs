@@ -1,4 +1,6 @@
 //! Fixed-graph execution of homr's float32 ConvNeXt encoder.
+#[cfg(any(all(target_arch = "wasm32", feature = "encoder-threads"), test))]
+mod chunks;
 pub mod kernels;
 #[cfg(all(target_arch = "wasm32", feature = "encoder-threads"))]
 mod parallel;

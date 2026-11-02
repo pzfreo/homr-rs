@@ -125,6 +125,24 @@ const e = pool.exports;
 await pool.close();
 ```
 
+Each rank, including the coordinator, repeatedly claims whole output chunks
+from an atomic counter. Faster cores therefore take more work; reductions
+retain their original order. Chunk budgets differ between strict and fused
+builds; LOG.md records the sweep, exactness checks and instruction overhead.
+The descriptor is opaque to the host, so existing pool/worker files and C ABI
+calls remain compatible: update the WASM asset to enable dynamic scheduling.
+
+For a caller-selected worker count, the measured starting recommendation is
+`Math.min(navigator.hardwareConcurrency || 4, 8)`, with a device-specific
+override. This can use slower cores as well as fast ones. The pool API default
+remains one thread for compatibility. Device thermal/UI behavior and combined
+encoder/serial-decoder latency still need testing on the target phone.
+
+`bench/chunk_bench.mjs` measures static/dynamic production instruction counts
+and diagnostic uneven-rank timing. `--chunk-bench` on the shared builder enables
+sleeping-rank simulation and work-share counters only in separately named
+diagnostic artifacts; do not ship those artifacts.
+
 Only the coordinator may call graph/allocator exports; worker instances call
 `encoder_work` with disjoint output ranges. Treat a pool as unusable after a
 worker failure and terminate it before discarding its memory. Ordinary
