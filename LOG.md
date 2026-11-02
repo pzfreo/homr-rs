@@ -641,3 +641,18 @@ synthetic tests pass in both WASI SIMD configurations. All retained float
 versions independently retained the full corpus and the 75 + 13 XML result.
 No lint expectation was weakened, no pipeline fix was reverted, and nothing
 was pushed or posted.
+
+## Segnet and encoder native-parity survey (cx/models)
+
+Work in progress: record the 88 pages through plain homr's default CPU path
+(arm64 ORT 1.31.0, OpenCV 4.11), preserving batches of eight segnet tiles and
+all 627 native staff canvases. Reuse the completed decoder-native context
+fixtures and replay their symbols while collecting encoder inputs. Fixtures,
+class maps, contexts, graph dumps and per-page/per-staff JSON stay in scratch.
+Reusable recording/comparison tools are under tools/ and bench/.
+
+Headless Chrome with the requested flags aborted with SIGABRT before CDP
+became ready, both in a direct DOM probe and in bench/models_chrome.mjs.
+No WebGPU measurements are inferred from WASM. The Chrome harness serves local
+fixtures and ORT 1.30.0, requests an actual GPU adapter, and uses the same
+comparison loop as Node. Nothing is pushed or posted.
