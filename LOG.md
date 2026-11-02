@@ -763,3 +763,44 @@ independent positional parameters. A future port can losslessly store the two
 arrays (120,320 bytes) instead of the expanded 2,621,440-byte tensor; assembly
 is copying, so it introduces no arithmetic drift. Total inferred learned
 inference parameters: **12,572,128 encoder**, **14,323,142 segnet**.
+
+### Planning instruction budget (not measured full ports)
+
+All 88 native pages completed: 8,076 tiles, 627 staffs, 75 matching successful
+native XML files and 13 matching native AssertionErrors. Direct dense arithmetic
+averages **1,561.643 GFLOPs/page segnet** and **346.811 GFLOPs/page encoder**;
+page sizes and staff counts vary (30–438 tiles/page).
+
+Warmed one-thread ORT-web 1.30 samples, three counter runs each, have median
+**71.805326636G per 8-tile batch = 8.975665830G/tile** and
+**28.407695541G/encoder staff**. Every repeat's output bytes equal the warmed
+output. The native one-thread baselines above use identical tensors. Four-thread
+capture counters include worker overhead and are not substituted for these
+one-thread arithmetic baselines.
+
+A reusable stand-alone 2x16, K=96 ordered GEMM cost probe checks its 32 outputs
+bit for bit against native first-MLP results. Three counter runs (100,000
+repetitions = 307.2M MACs) have median **6.8541 instructions/MAC strict SIMD128**
+versus **0.8012 fused relaxed SIMD** on this host. A 2x8 strict variant is worse,
+7.2953/MAC. First samples include V8 tier-up; medians of three are reported.
+This is a microkernel cost calibration, not a completed model port or a claim
+that every native Conv/Gemm has the same accumulation schedule.
+
+Multiplying those costs by the model inventory gives raw arithmetic budgets
+of roughly 58G/tile + 167G/staff strict, or 6.8G/tile + 19.5G/staff fused.
+For planning, allow packing, boundaries, normalization, GELU and copies:
+
+| future exact Rust artifact | expected G instructions/tile segnet | expected G instructions/staff encoder | vs current one-thread ORT-web |
+|---|---:|---:|---|
+| strict SIMD128 with FMA emulation | 60–90 | 180–270 | about 6–10x more instructions |
+| validated fused relaxed SIMD | 8–12 | 24–35 | roughly 0.85–1.35x current work |
+
+These deliberately broad engineering estimates require actual ports and full
+validation. The strict probe uses the decoder-style widened recurrence; an
+exact implementation must also handle any f64-to-f32 double-rounding corner
+cases, underflow and special values it admits. Fused SIMD must probe actual
+fused behavior and fall back when absent: the [WASM specification](https://www.w3.org/TR/wasm-core/)
+permits fused or unfused relaxed multiply-add. Its availability alone proves
+no model parity. No decoder-style 4x speedup is promised for these already
+optimized dense float32 models. GPU work is not measured by host retired
+instructions and cannot be ranked by this CPU counter.
