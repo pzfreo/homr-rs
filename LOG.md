@@ -674,11 +674,12 @@ Conv/MatMul sizes:
 | model | ops | learned parameters | all initializer bytes | dense MACs/input | dense FLOPs/input |
 |---|---|---:|---:|---:|---:|
 | segnet | Conv 31, Relu 27, Add 8, Resize 5, MaxPool 1, Sub/Div 1 each, Shape 5, Concat 9 | 14,323,142 | 57,292,672 | 8,508,211,200/tile | 17,016,422,400/tile |
-| encoder | Conv 18, MatMul 31, LayerNormalization 18, Erf/Div 15 each, Mul 45, Add 62, Transpose 37, Reshape 1 | 12,542,048 | 52,789,668 | 24,337,612,800/staff | 48,675,225,600/staff |
+| encoder | Conv 18, MatMul 31, LayerNormalization 18, Erf/Div 15 each, Mul 45, Add 62, Transpose 37, Reshape 1 | 12,572,128 | 52,789,668 | 24,337,612,800/staff | 48,675,225,600/staff |
 
 Encoder totals include 1.437G convolution MACs and 22.901G matrix MACs. Its
-655,360-element positional buffer and scalar/shape constants are excluded from
-learned parameters. Segnet excludes normalization and shape constants. FLOPs
+655,360-element folded positional tensor contains repeated learned height/width
+embeddings: 16 x 170 + 80 x 342 = 30,080 independent parameters, included in
+the learned count. Scalar/shape constants are excluded. Segnet excludes normalization and shape constants. FLOPs
 are mathematical direct dense counts (2/MAC), not executed instructions or an
 assumption that native convolution uses that exact algorithm. Nonlinear ops,
 normalization and memory movement are additional work.
@@ -752,3 +753,13 @@ model speed claim. For a meaningful kernel baseline, fresh one-thread native
 outputs exactly (segnet argmax, encoder all float32 values). No option changed
 the target recording. The actual machine's SME2 support matters to this count;
 SIMD128 on a phone cannot be assumed to have native SME's instruction width.
+
+The exported encoder's expanded positional initializer is not a nonlearned
+sinusoid: the actual bytes split into 170 channels constant across width and
+342 constant across height, with no channels constant across both. This agrees
+with homr's [factorized learned position embeddings](https://github.com/liebharc/homr/blob/main/training/architecture/transformer/encoder.py).
+The inventory tool now checks these exact repetitions before counting 30,080
+independent positional parameters. A future port can losslessly store the two
+arrays (120,320 bytes) instead of the expanded 2,621,440-byte tensor; assembly
+is copying, so it introduces no arithmetic drift. Total inferred learned
+inference parameters: **12,572,128 encoder**, **14,323,142 segnet**.

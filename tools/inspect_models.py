@@ -62,10 +62,24 @@ for source in sys.argv[2:]:
     parameters = {k: {'shape': list(v.shape), 'dtype': str(v.dtype), 'elements': int(v.size), 'bytes': v.nbytes}
                   for k, v in arrays.items()}
     learned = {k: v for k, v in arrays.items() if any(s in k for s in ['weight', 'bias', 'MatMul_', 'Mul_'])}
+    # This encoder folds learned, factorized height/width embeddings into an
+    # expanded (1,H,W,D) constant. Recover the independent parameter count,
+    # checking the repetition bit-for-bit rather than treating it as a buffer.
+    positional_parameters = 0
+    if '/Concat_output_0' in arrays:
+        position = arrays['/Concat_output_0']
+        if position.ndim == 4 and position.shape[0] == 1:
+            position = position[0]
+            same_x = np.all(position == position[:, 0:1, :], axis=(0, 1))
+            same_y = np.all(position == position[0:1, :, :], axis=(0, 1))
+            assert np.all(same_x ^ same_y), 'unrecognized positional embedding'
+            positional_parameters = int(position.shape[0] * same_x.sum() + position.shape[1] * same_y.sum())
     report = {'model': str(source), 'opset': {o.domain: o.version for o in model.opset_import},
         'ops': dict(inventory), 'initializer_elements': sum(v.size for v in arrays.values()),
         'initializer_bytes': sum(v.nbytes for v in arrays.values()), 'initializers': parameters,
-        'learned_parameter_elements': sum(v.size for v in learned.values()),
+        'named_weight_parameter_elements': sum(v.size for v in learned.values()),
+        'factorized_positional_parameters': positional_parameters,
+        'learned_parameter_elements': sum(v.size for v in learned.values()) + positional_parameters,
         'dense_macs': sum(a['macs'] for a in arithmetic), 'dense_flops': 2 * sum(a['macs'] for a in arithmetic),
         'arithmetic': arithmetic, 'unresolved_arithmetic': unknown}
     name = Path(source).stem
