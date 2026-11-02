@@ -355,3 +355,58 @@ retired-instruction counter directly, as explained above. Other CPU targets
 and browser engines remain unverified; no cross-platform parity is inferred
 from the Node/V8 run. All data and intermediate reports remain in scratch.
 Changes were committed on `cx/decoder`; nothing was pushed or posted.
+
+## Decoder round 2: profile before optimization
+
+Built detached `origin/main` (d6617e8) in scratch `decoder-main`, with separate
+native and WASI targets. All requested stage checks were run on main and HEAD;
+correctness output agrees after removing only live instruction counts. TREE
+contours: 948/948. EXTERNAL against the supplied TREE references: the same 641
+matching / 307 differing masks on both builds; no reference was replaced.
+Detailed final counts and paired pipeline benchmarks are recorded below.
+
+Added optional `decoder-profile` instrumentation and a benchmark-only Node
+N-API counter bridge (`bench/counter.c`). The native build reads
+`proc_pid_rusage` directly; the WASM build synchronously imports that same
+counter from Node at phase boundaries. Allocation/free accounting uses a
+feature-gated allocator wrapper; nested phases subtract child time. An empty
+guard loop calibrates counter/boundary overhead (about 6,845 native / 10,002
+WASM retired instructions per span). Instrumentation is absent in normal
+builds. Allocations were below the roughly 0.3M/step calibration resolution;
+their raw spans were 2.87M native / 3.74M WASM, mostly counter overhead.
+
+Initial profile on all 123 steps of the four staffs in angelus_0, including
+staff setup, M retired instructions per step (exclusive calibrated spans):
+
+| component | native | WASM |
+|---|---:|---:|
+| cross K/V staff setup | 41.94 | 162.10 |
+| self QKV matmul | 1.52 | 5.77 |
+| self output matmul | 1.01 | 3.86 |
+| cross Q matmul | 0.51 | 1.92 |
+| cross output matmul | 1.02 | 3.84 |
+| FF input matmul | 4.05 | 15.39 |
+| FF output matmul | 1.80 | 7.38 |
+| heads matmul | 0.05 | 0.19 |
+| activation quantization | 0.55 | 3.13 |
+| attention scores | 12.31 | 65.00 |
+| softmax/exp | 0.92 | 7.13 |
+| weighted V | 4.33 | 52.04 |
+| norms | 0.49 | 0.74 |
+| sigmoid + GELU/Erf | 1.06 | 3.55 |
+| centroid (Einsum scores already shared) | 0.62 | 0.76 |
+| allocations/free | <0.3 | <0.3 |
+| copies | 0.48 | 0.26 |
+
+Sum excluding the residual/instrumentation bucket: 72.90M native / 333.07M
+WASM, close to the uninstrumented paired 72.35M / 333.29M measurements. The
+instrumentation bucket adds 6.19M / 8.22M and is not decoder work. There is no
+separate attention-output Einsum: its identical probabilities are shared.
+
+The largest cost is the initial 16 cross K/V matrices over 1,280 positions:
+5.37 billion integer MACs per staff, or 174.6M MACs per benchmark step when
+amortized over this short page. This is additional to steady-step matmuls.
+WASM uses widening i16 dot products, not a hardware byte-dot instruction.
+First optimization priority is this batch computation; next are the 117M
+WASM instructions in attention scores and weighted sums. No float optimization
+has been applied yet.

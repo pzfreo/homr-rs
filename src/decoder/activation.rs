@@ -115,6 +115,7 @@ pub(super) fn gelu(x: f32) -> f32 {
     (0.5 * x) * (r.copysign(v) + 1.0)
 }
 pub(super) fn softmax(x: &mut [f32]) {
+    let _g = super::profile::enter(super::profile::Phase::Softmax);
     let max = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let mut lanes = [0.0f32; 4];
     let bulk = x.len() / 4 * 4;

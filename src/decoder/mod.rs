@@ -6,6 +6,7 @@
 mod activation;
 mod math;
 mod onnx;
+pub mod profile;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 use activation::{gelu, sigmoid, softmax};
@@ -91,6 +92,7 @@ struct Cache {
 impl Cache {
     // Position-major storage lets append preserve all previous positions in place.
     fn append(&mut self, k: &[f32], v: &[f32]) {
+        let _g = profile::enter(profile::Phase::Copy);
         self.k.extend_from_slice(k);
         self.v.extend_from_slice(v);
     }
@@ -100,16 +102,21 @@ impl Cache {
         let mut scores = vec![0.0; len];
         for h in 0..HEADS {
             let start = h * HD;
-            for (p, s) in scores.iter_mut().enumerate() {
-                *s = dot_float(
-                    &q[start..start + HD],
-                    &self.k[p * DIM + start..p * DIM + start + HD],
-                ) * 0.125;
+            {
+                let _g = profile::enter(profile::Phase::Scores);
+                for (p, s) in scores.iter_mut().enumerate() {
+                    *s = dot_float(
+                        &q[start..start + HD],
+                        &self.k[p * DIM + start..p * DIM + start + HD],
+                    ) * 0.125;
+                }
             }
             softmax(&mut scores);
             if let Some(map) = map.as_deref_mut() {
+                let _g = profile::enter(profile::Phase::Copy);
                 map[h * len..(h + 1) * len].copy_from_slice(&scores);
             }
+            let _g = profile::enter(profile::Phase::WeightedV);
             for (p, &s) in scores.iter().enumerate() {
                 weighted_add(
                     &mut out[start..start + HD],
@@ -344,6 +351,7 @@ impl Decoder {
     }
 }
 fn gated(x: Vec<f32>) -> Vec<f32> {
+    let _g = profile::enter(profile::Phase::Activation);
     let half = x.len() / 2;
     (0..half).map(|i| x[i] * sigmoid(x[half + i])).collect()
 }
@@ -366,6 +374,7 @@ impl Session<'_> {
                 return Err("token outside embedding vocabulary".into());
             }
         }
+        let _step = profile::enter(profile::Phase::Other);
         let mut x = self.model.embeddings[0].row(tokens[0]).to_vec();
         for (i, &t) in tokens.iter().enumerate().skip(1) {
             for (x, &e) in x.iter_mut().zip(self.model.embeddings[i].row(t)) {
@@ -406,12 +415,15 @@ impl Session<'_> {
             let input = norm(&x, &b.gains[2], None);
             let ff = b.ff_in.run(&input);
             let half = ff.len() / 2;
-            let ff: Vec<f32> = (0..half)
-                .map(|j| {
-                    let v = ff[half + j];
-                    ff[j] * gelu(v)
-                })
-                .collect();
+            let ff: Vec<f32> = {
+                let _g = profile::enter(profile::Phase::Activation);
+                (0..half)
+                    .map(|j| {
+                        let v = ff[half + j];
+                        ff[j] * gelu(v)
+                    })
+                    .collect()
+            };
             residual(&mut x, b.ff_out.run(&ff));
         }
         let x = norm(&x, &self.model.final_gain, None);
@@ -426,6 +438,7 @@ impl Session<'_> {
             }
             best
         });
+        let _centroid = profile::enter(profile::Phase::Centroid);
         let mut sums = [[[0.0f32; 4]; 2]; 3];
         for p in 0..CONTEXT_POSITIONS {
             let mut a = 0.0;

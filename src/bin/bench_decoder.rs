@@ -30,9 +30,14 @@ fn main() {
         wait();
         return;
     }
-    assert_eq!(args[1], "decode");
+    assert!(["decode", "profile"].contains(&args[1].as_str()));
+    #[cfg(feature = "decoder-profile")]
+    let overhead = homr_rs::decoder::profile::calibrate();
+    #[cfg(feature = "decoder-profile")]
+    homr_rs::decoder::profile::reset();
     let mut total = 0;
     for (context, count) in data {
+        let _all = homr_rs::decoder::profile::enter(homr_rs::decoder::profile::Phase::Other);
         let mut session = model.session(&context).unwrap();
         let mut input = [1, 0, 0, 0, 0];
         for _ in 0..count {
@@ -43,6 +48,17 @@ fn main() {
         }
         total += count;
     }
+    #[cfg(feature = "decoder-profile")]
+    {
+        homr_rs::decoder::profile::stop();
+        let (totals, calls) = homr_rs::decoder::profile::values();
+        let phases:Vec<_>=(0..homr_rs::decoder::profile::N).map(|i| serde_json::json!({"phase":homr_rs::decoder::profile::NAMES[i],"raw":totals[i],"calls":calls[i],"corrected":(totals[i] as f64-calls[i] as f64*overhead).max(0.0)})).collect();
+        println!(
+            "{}",
+            serde_json::json!({"steps":total,"overhead":overhead,"phases":phases})
+        );
+    }
+    #[cfg(not(feature = "decoder-profile"))]
     println!("{total} steps");
     wait();
 }

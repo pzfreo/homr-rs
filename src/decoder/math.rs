@@ -1,5 +1,6 @@
 //! Exact integer dot products. Weights are transposed once at model load.
 use super::onnx::Graph;
+use super::profile::{enter, Phase};
 
 pub(super) struct Quantized {
     pub data: Vec<u8>,
@@ -8,6 +9,7 @@ pub(super) struct Quantized {
 }
 impl Quantized {
     pub fn fused(x: &[f32]) -> Self {
+        let _g = enter(Phase::Quantize);
         let (mut lo, mut hi) = (0.0f32, 0.0f32);
         for &v in x {
             lo = lo.min(v);
@@ -33,6 +35,7 @@ impl Quantized {
         }
     }
     pub fn new(x: &[f32]) -> Self {
+        let _g = enter(Phase::Quantize);
         let (mut lo, mut hi) = (0.0f32, 0.0f32);
         for &v in x {
             lo = lo.min(v);
@@ -55,6 +58,7 @@ pub(super) struct Linear {
     n: usize,
     scale: f32,
     bias: Vec<f32>,
+    kind: Phase,
 }
 impl Linear {
     pub fn load(g: &Graph, weight: &str, bias: Option<&str>) -> Result<Self, String> {
@@ -96,6 +100,7 @@ impl Linear {
             n,
             scale,
             bias,
+            kind: Phase::SelfQkv,
         })
     }
     pub fn named(g: &Graph, name: &str, bias: Option<&str>) -> Result<Self, String> {
@@ -104,7 +109,34 @@ impl Linear {
             .iter()
             .find(|n| n.op == "MatMulInteger" && n.name.starts_with(name))
             .ok_or_else(|| format!("matmul missing: {name}"))?;
-        Self::load(g, node.inputs.get(1).ok_or("matmul weight input")?, bias)
+        let mut linear = Self::load(g, node.inputs.get(1).ok_or("matmul weight input")?, bias)?;
+        linear.kind = if name.contains("to_logits") {
+            Phase::Heads
+        } else if name.contains("ff/ff.0") {
+            Phase::FfIn
+        } else if name.contains("ff/ff.2") {
+            Phase::FfOut
+        } else if name.contains("to_k/") || name.contains("to_v/") {
+            Phase::Context
+        } else if name.contains("to_q/") {
+            Phase::CrossQ
+        } else {
+            let layer: usize = name
+                .split("layers.")
+                .nth(1)
+                .unwrap()
+                .split('.')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
+            if layer.is_multiple_of(3) {
+                Phase::SelfOut
+            } else {
+                Phase::CrossOut
+            }
+        };
+        Ok(linear)
     }
     pub fn shape(&self) -> (usize, usize) {
         (self.k, self.n)
@@ -115,6 +147,7 @@ impl Linear {
     pub fn quantized(&self, q: &Quantized) -> Vec<f32> {
         let rows = q.data.len() / self.k;
         let mut out = vec![0.0; rows * self.n];
+        let _g = enter(self.kind);
         let scale = q.scale * self.scale;
         for (a, y) in q
             .data
@@ -257,6 +290,7 @@ unsafe fn neon_dot(a: &[u8], b: &[i8]) -> i32 {
 }
 
 pub(super) fn norm(x: &[f32], gain: &[f32], bias: Option<&[f32]>) -> Vec<f32> {
+    let _g = enter(Phase::Norm);
     let (mut mean, mut m2) = (0.0f32, 0.0f32);
     for (i, &v) in x.iter().enumerate() {
         let d = v - mean;

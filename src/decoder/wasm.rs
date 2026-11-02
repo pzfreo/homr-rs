@@ -57,6 +57,7 @@ pub unsafe extern "C" fn decoder_run(
     if steps > MAX_STEPS {
         return 0;
     }
+    let _all = super::profile::enter(super::profile::Phase::Other);
     let model = &*model;
     let Ok(mut session) = model.session(std::slice::from_raw_parts(context, 1280 * DIM)) else {
         return 0;
@@ -87,4 +88,30 @@ pub unsafe extern "C" fn decoder_run(
         last = [if t[0] == 2 { 3 } else { t[0] }, t[1], t[2], t[4], t[5]];
     }
     steps
+}
+
+#[cfg(feature = "decoder-profile")]
+#[no_mangle]
+pub extern "C" fn decoder_profile_reset() {
+    super::profile::reset();
+}
+#[cfg(feature = "decoder-profile")]
+#[no_mangle]
+pub extern "C" fn decoder_profile_stop() {
+    super::profile::stop();
+}
+#[cfg(feature = "decoder-profile")]
+#[no_mangle]
+pub extern "C" fn decoder_profile_value(id: usize, calls: u32) -> f64 {
+    let (t, n) = super::profile::values();
+    if calls == 0 {
+        t[id] as f64
+    } else {
+        n[id] as f64
+    }
+}
+#[cfg(feature = "decoder-profile")]
+#[no_mangle]
+pub extern "C" fn decoder_profile_calibrate() -> f64 {
+    super::profile::calibrate()
 }
