@@ -1983,3 +1983,75 @@ per-op work budgets and a diagnostic-only sleeping-rank simulation; retain
 all raw data/modules in scratch. No source changed after the passing final
 build checks. No edits to Partsong/homr, data/report dumps in Git, pushes or
 posts. Work is committed locally on cx/chunks.
+
+## WebGPU encoder (cx/gpu): ordered arithmetic foundation
+
+Maintainer evidence (external, not remeasured in this sandbox): the original
+fc1 probe has zero / 7,864,320 differing values in Chrome 156 Apple Metal
+(0.40 ms) and Mac Safari 26.6 Metal (1.9 ms). Both fail only subnormal known
+answers through flush-to-zero. The iOS simulator has no WebGPU adapter. These
+are fc1 results, not whole-encoder qualification or physical-iPhone timings.
+
+Unattended choices: implement WGSL using full float32, explicit fused fma,
+ascending reductions, separate rounding boundaries, and a fail-closed CPU
+fallback. Export a plan/packed weights from the loaded Rust model instead of
+parsing ONNX again in JS. Keep CPU encode/decode arithmetic and existing
+exports/host pool unchanged. Device qualification is not inferred from fc1.
+
+### Division and sqrt: refinement with exact certificates
+
+Normalize float32 inputs by their integer significands/exponents. Division
+uses four reciprocal Newton steps and one fma residual correction on operands
+in [1,2); sqrt uses four reciprocal-root steps and one residual correction on
+[1,4). The approximate seed is never the correctness argument. For division,
+let Ma/Mb be the normalized exact quotient, choose exponent e=0 or -1, and
+let candidate integer significand be M. Compare the exact 64-bit integer
+Ma*2^(24-e) against (2M-1)*Mb and (2M+1)*Mb. For sqrt, compare
+Ma*2^(25+parity) with (2M-1)^2 and (2M+1)^2. Adjust M by one if necessary,
+then repeat the midpoint test. Equality accepts only even M. A failed
+certificate sets a flag; it cannot silently accept an approximate answer.
+
+WGSL implements these <=50-bit products with exact u32 limbs, not f64 or
+GPU approximate division/sqrt. Exponents are restored by constructing bits.
+A special exact threshold handles rounding up to minimum normal from below
+(the CPU random/bin-edge tests caught this case during development). A result
+that would be subnormal, an unsupported operand, or overflow triggers CPU
+fallback. Normal-input sqrt always has a normal result. Refinement intermediates
+are bounded near one, with nonzero residuals on a >=2^-48 grid, so FTZ cannot
+affect a certified result. The integer certificate also tolerates an inaccurate
+seed, without requiring a universal Newton-convergence claim.
+
+Native oracle verification: one million randomized normal operand pairs and
+one million positive-normal square roots, plus all normal exponent bin edges
+and Welford denominators, pass against native IEEE / and sqrt for normal
+results. A separate million full-u32 wide multiplications match u64 exactly.
+These are CPU algorithm checks, **not GPU measurements**. Guarded and
+diagnostic-unguarded WGSL pass Naga 27.0.3 parsing/validation and Metal output
+generation, using a scratch-only validator (no application dependency added).
+
+### Rounding and FTZ policy
+
+A runtime uniform integer XOR mask (always zero) observes each arithmetic
+result's bits before its next use. This prevents contraction across separate
+mul/add operations: the compiler cannot algebraically pass through an unknown
+integer transformation. Explicit fma is still hardware-dependent. WGSL does
+not guarantee RN-even arithmetic or fused fma and permits reassociation; see
+https://www.w3.org/TR/WGSL/#floating-point-accuracy and
+https://www.w3.org/TR/WGSL/#reassociation-and-fusion . Therefore the normal
+add/mul/fma part is conditional on qualifying the actual implementation with
+known answers and corpus runs; a finite self-test is not a mathematical proof
+for every conforming GPU/compiler. No claim of universal WGSL exactness.
+
+The guard checks stored/input bits, all arithmetic results, and constructed
+exp scales. Every nonzero subnormal or nonfinite result is flagged. If a
+result is zero, mul is safe only with a zero operand, add only for exact
+cancellation/zeros, and fma only for zero terms or an **integer-verified** exact
+product/c cancellation. All other zero results conservatively flag possible
+FTZ. Thus in a flag-free execution every operand and observable result remains
+normal or an exact zero: by induction there is no unobserved flushed value
+that could contaminate a later normal result. Normalized refinement is covered
+by its integer certificate rather than a false-positive residual-zero test.
+If any flag fires, discard the GPU context and recompute the whole staff on
+the existing CPU encoder. Input/immutable-weight bit checks happen before
+upload, preserving detection even if a GPU flushes floating loads. No guard
+frequency or cost has been measured yet; the runners will report both.

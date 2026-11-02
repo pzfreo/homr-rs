@@ -57,6 +57,132 @@ pub extern "C" fn encoder_fused_simd_supported() -> u32 {
     crate::decoder::fused_simd_supported() as u32
 }
 
+/// Pack a GPU plan from a live, already validated encoder. Read-only to model.
+/// # Safety
+/// `model` is a live encoder_load handle; release the result once with plan_drop.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_plan_create(model: *const Encoder) -> *mut super::gpu::Plan {
+    Box::into_raw(Box::new(super::gpu::Plan::new(&*model)))
+}
+/// # Safety
+/// A live encoder_gpu_plan_create handle, released exactly once.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_plan_drop(plan: *mut super::gpu::Plan) {
+    drop(Box::from_raw(plan));
+}
+/// # Safety
+/// Live plan. Borrowed immutable bytes remain valid until plan_drop.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_plan_json(plan: *const super::gpu::Plan) -> *const u8 {
+    (*plan).json.as_ptr()
+}
+/// # Safety
+/// Live plan.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_plan_json_len(plan: *const super::gpu::Plan) -> usize {
+    (*plan).json.len()
+}
+/// # Safety
+/// Live plan. Borrowed immutable floats remain valid until plan_drop.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_plan_weights(plan: *const super::gpu::Plan) -> *const f32 {
+    (*plan).weights.as_ptr()
+}
+/// # Safety
+/// Live plan. Number of float32 values (not bytes).
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_plan_weights_len(plan: *const super::gpu::Plan) -> usize {
+    (*plan).weights.len()
+}
+/// Diagnostic per-node CPU oracle, deliberately using the existing CPU kernels.
+/// # Safety
+/// Live plan, valid op index, inputs/output have the shapes in its metadata.
+/// Output must not alias the plan or inputs. Call only on the coordinator.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_reference(
+    plan: *const super::gpu::Plan,
+    op: usize,
+    input: *const f32,
+    residual: *const f32,
+    output: *mut f32,
+) -> usize {
+    let plan = &*plan;
+    let Some(op) = plan.ops.get(op) else {
+        return 0;
+    };
+    let q = &op.params;
+    let n = match q[0] {
+        super::gpu::MATMUL => (q[1] * q[2]) as usize,
+        super::gpu::CONV | super::gpu::DEPTHWISE => (q[7] * q[8] * q[9]) as usize,
+        _ => op.values(),
+    };
+    let r = if q[0] == super::gpu::ADD {
+        std::slice::from_raw_parts(residual, op.values())
+    } else {
+        &[]
+    };
+    let values = plan.reference(op, std::slice::from_raw_parts(input, n), r);
+    std::ptr::copy_nonoverlapping(values.as_ptr(), output, values.len());
+    values.len()
+}
+/// Independent scalar/activation oracle for math probes. Records are four u32
+/// words: opcode, a bits, b bits, c bits. Outputs are one u32 bit pattern each.
+/// # Safety
+/// Input has count*4 words, output count writable words, with no aliasing.
+#[no_mangle]
+pub unsafe extern "C" fn encoder_gpu_math_reference(
+    input: *const u32,
+    output: *mut u32,
+    count: usize,
+) {
+    use super::kernels;
+    let records = std::slice::from_raw_parts(input, count * 4);
+    let out = std::slice::from_raw_parts_mut(output, count);
+    // Use the encoder's actual SIMD activation, including its strict fused
+    // emulation, rather than the decoder scalar's f64 approximation to fma.
+    let mut erfs = Vec::new();
+    let mut gelus = Vec::new();
+    for r in records.chunks_exact(4) {
+        match r[0] {
+            3 => erfs.push(f32::from_bits(r[1])),
+            4 => gelus.push(f32::from_bits(r[1])),
+            _ => {}
+        }
+    }
+    // Pad to SIMD width so the scalar tail cannot use a different fma helper.
+    erfs.resize(erfs.len().next_multiple_of(4), 0.0);
+    gelus.resize(gelus.len().next_multiple_of(4), 0.0);
+    kernels::erf_in_place(&mut erfs);
+    kernels::gelu_in_place(&mut gelus);
+    let (mut ei, mut gi) = (0, 0);
+    for (r, out) in records.chunks_exact(4).zip(out) {
+        let a = f32::from_bits(r[1]);
+        let b = f32::from_bits(r[2]);
+        let c = f32::from_bits(r[3]);
+        *out = match r[0] {
+            0 => kernels::fma(a, b, c),
+            1 => a / b,
+            2 => a.sqrt(),
+            3 => {
+                let v = erfs[ei];
+                ei += 1;
+                v
+            }
+            4 => {
+                let v = gelus[gi];
+                gi += 1;
+                v
+            }
+            5 => super::gpu::erf_exp(a),
+            6 => a + b,
+            7 => a * b,
+            8 => a - b,
+            _ => f32::NAN,
+        }
+        .to_bits();
+    }
+}
+
 #[cfg(feature = "encoder-probes")]
 mod probes {
     use crate::{encoder::kernels, onnx::Graph};
