@@ -641,3 +641,478 @@ synthetic tests pass in both WASI SIMD configurations. All retained float
 versions independently retained the full corpus and the 75 + 13 XML result.
 No lint expectation was weakened, no pipeline fix was reverted, and nothing
 was pushed or posted.
+
+## Segnet and encoder native-parity survey (cx/models)
+
+Work in progress: record the 88 pages through plain homr's default CPU path
+(arm64 ORT 1.31.0, OpenCV 4.11), preserving batches of eight segnet tiles and
+all 627 native staff canvases. Reuse the completed decoder-native context
+fixtures and replay their symbols while collecting encoder inputs. Fixtures,
+class maps, contexts, graph dumps and per-page/per-staff JSON stay in scratch.
+Reusable recording/comparison tools are under tools/ and bench/.
+
+Headless Chrome with the requested flags aborted with SIGABRT before CDP
+became ready, both in a direct DOM probe and in bench/models_chrome.mjs.
+No WebGPU measurements are inferred from WASM. The Chrome harness serves local
+fixtures and ORT 1.30.0, requests an actual GPU adapter, and uses the same
+comparison loop as Node. Nothing is pushed or posted.
+
+Unattended execution decision: the full WASM corpus uses four threads, matching
+Partsong's cross-origin-isolated setting (min(4, hardwareConcurrency)). Preserve
+the initial one-thread four-page sample separately; do not merge its instruction
+counts into four-thread results. Interrupt the one-thread process through its
+own tool session before continuing, keeping CPU parallelism modest. Native
+reference options remain homr's defaults. No answers or permission requested.
+
+### Arithmetic evidence and scope (measured samples, not corpus totals)
+
+Both supplied models are float32; neither has int8/quantization, Softmax,
+attention, or ReduceMean nodes. The encoder is a ConvNeXt-style convolution/MLP
+encoder, not another attention transformer. Inferred static shapes resolve all
+Conv/MatMul sizes:
+
+| model | ops | learned parameters | all initializer bytes | dense MACs/input | dense FLOPs/input |
+|---|---|---:|---:|---:|---:|
+| segnet | Conv 31, Relu 27, Add 8, Resize 5, MaxPool 1, Sub/Div 1 each, Shape 5, Concat 9 | 14,323,142 | 57,292,672 | 8,508,211,200/tile | 17,016,422,400/tile |
+| encoder | Conv 18, MatMul 31, LayerNormalization 18, Erf/Div 15 each, Mul 45, Add 62, Transpose 37, Reshape 1 | 12,572,128 | 52,789,668 | 24,337,612,800/staff | 48,675,225,600/staff |
+
+Encoder totals include 1.437G convolution MACs and 22.901G matrix MACs. Its
+655,360-element folded positional tensor contains repeated learned height/width
+embeddings: 16 x 170 + 80 x 342 = 30,080 independent parameters, included in
+the learned count. Scalar/shape constants are excluded. Segnet excludes normalization and shape constants. FLOPs
+are mathematical direct dense counts (2/MAC), not executed instructions or an
+assumption that native convolution uses that exact algorithm. Nonlinear ops,
+normalization and memory movement are additional work.
+
+Identical-native-input, isolated-operator probes on angelus_0 (segnet batch 8;
+encoder staff 0) give max absolute errors:
+
+| operator | segnet | encoder |
+|---|---:|---:|
+| Sub, Div | 0, 0 | Div 0 |
+| Conv | 3.8146973e-6 | 2.3841858e-6 |
+| depthwise Conv | absent | 3.7252903e-8 |
+| MatMul | absent | 1.4305115e-6 |
+| LayerNormalization | absent | 4.7916546e-7 |
+| Erf | absent | 5.9604645e-8 |
+| nearest Resize | 0 | absent |
+
+These probes expose intermediate values and may inhibit whole-graph fusions;
+they isolate arithmetic, not an additive attribution of final error. They do
+not justify claiming every node of an operator family differs equally.
+
+The pinned [ORT 1.30 SIMD helper](https://github.com/microsoft/onnxruntime/blob/v1.30.0/onnxruntime/core/mlas/lib/mlasi.h)
+uses wasm_f32x4_add(wasm_f32x4_mul(...)) versus ARM64 vfmaq_f32. The
+[WASM SGEMM kernel](https://github.com/microsoft/onnxruntime/blob/v1.30.0/onnxruntime/core/mlas/lib/wasm_simd/SgemmKernelWasmSimd.cpp)
+uses this helper. Erf polynomial evaluation uses it too. The CPU layer norm
+fallback uses ordered Welford updates; contraction of M2 += delta*delta2 and
+output scale/bias also matters. WebGPU has different shader reductions/kernel
+schedules, so no bit parity is inferred from its float32 storage.
+
+The supplied machine reports NEON=true, SME=true, SME2=true, SVE=false through
+Rust feature detection (scratch diagnostic). ORT's
+[1.31 platform dispatch](https://github.com/microsoft/onnxruntime/blob/v1.31.0/onnxruntime/core/mlas/lib/platform.cpp)
+selects KleidiAI SGEMM/convolution overrides when SME is available. Therefore
+“copy NEON FMA” alone is not a sufficient plan: record the selected kernel,
+packing/blocking and accumulation order, including SME, before porting. The
+native wheel reports commit 402979a. The reference is this actual default
+native path, not a newly selected portable CPU algorithm.
+
+Fresh default-native encoder runs on all four angelus_0 staffs match the
+reused contexts bit for bit, in three runs each. Native 1.30.0 also matches
+those four contexts bit for bit. Native 1.31 one-thread samples match too.
+Thus this sample isolates backend arithmetic rather than merely the version
+number or native thread count. WASM 1.30 encoder with optimizations disabled
+still differs (max 7.6293945e-6, mean 4.2591845e-7 over the four staffs), versus
+all optimizations (max 6.1988831e-6, mean 4.2019768e-7). No matching stock setting
+has been found. npm rejects onnxruntime-web@1.31.0 with ETARGET; no published
+1.31 package was available to test. A Node import of the browser JSEP bundle
+failed loading its WASM via fetch; that attempt produced no comparison data.
+
+The four all-optimized one-thread WASM encoder sample contexts cause zero
+changed tokens/steps/lengths in the Rust decoder (123 steps). This is only a
+sample; the full greedy corpus comparison is still required.
+
+Default-native optimized graphs are also recorded in scratch: segnet fuses 27
+Conv+Relu pairs into FusedConv, retaining four Conv; encoder has 31 Gemm, 15
+Gelu, one NhwcFusedConv and 17 Conv, plus 18 LayerNormalization. Reproducing
+that fused arithmetic schedule matters; an unfused ONNX-op transcription is
+not automatically the default CPU program. A diagnostic sequential float32
+FMA recurrence matches **all 24,576** sampled native first-MLP matrix outputs
+(64 rows x 384 columns); separate multiply/add differs in **15,607**, max
+4.7683716e-7. This supports the FMA diagnosis even with the SME dispatch caveat.
+
+Speed sampling uses only retired process instructions from proc_pid_rusage.
+Default native sessions' worker spinning makes their counts large and variable
+on this loaded machine, so they are retained as raw capture metadata, not a
+model speed claim. For a meaningful kernel baseline, fresh one-thread native
+1.31 sessions were warmed and measured three times: median 23.350628368G per
+8-tile segnet batch (2.918828546G/tile) and approximately 3.782G/encoder staff
+(four angelus_0 staff medians 3.789476112, 3.781003135, 3.782403137,
+3.782195698G). Both one-thread samples preserve the default native reference
+outputs exactly (segnet argmax, encoder all float32 values). No option changed
+the target recording. The actual machine's SME2 support matters to this count;
+SIMD128 on a phone cannot be assumed to have native SME's instruction width.
+
+The exported encoder's expanded positional initializer is not a nonlearned
+sinusoid: the actual bytes split into 170 channels constant across width and
+342 constant across height, with no channels constant across both. This agrees
+with homr's [factorized learned position embeddings](https://github.com/liebharc/homr/blob/main/training/architecture/transformer/encoder.py).
+The inventory tool now checks these exact repetitions before counting 30,080
+independent positional parameters. A future port can losslessly store the two
+arrays (120,320 bytes) instead of the expanded 2,621,440-byte tensor; assembly
+is copying, so it introduces no arithmetic drift. Total inferred learned
+inference parameters: **12,572,128 encoder**, **14,323,142 segnet**.
+
+### Planning instruction budget (not measured full ports)
+
+All 88 native pages completed: 8,076 tiles, 627 staffs, 75 matching successful
+native XML files and 13 matching native AssertionErrors. Direct dense arithmetic
+averages **1,561.643 GFLOPs/page segnet** and **346.811 GFLOPs/page encoder**;
+page sizes and staff counts vary (30–438 tiles/page).
+
+Warmed one-thread ORT-web 1.30 samples, three counter runs each, have median
+**71.805326636G per 8-tile batch = 8.975665830G/tile** and
+**28.407695541G/encoder staff**. Every repeat's output bytes equal the warmed
+output. The native one-thread baselines above use identical tensors. Four-thread
+capture counters include worker overhead and are not substituted for these
+one-thread arithmetic baselines.
+
+A reusable stand-alone 2x16, K=96 ordered GEMM cost probe checks its 32 outputs
+bit for bit against native first-MLP results. Three counter runs (100,000
+repetitions = 307.2M MACs) have median **6.8541 instructions/MAC strict SIMD128**
+versus **0.8012 fused relaxed SIMD** on this host. A 2x8 strict variant is worse,
+7.2953/MAC. First samples include V8 tier-up; medians of three are reported.
+This is a microkernel cost calibration, not a completed model port or a claim
+that every native Conv/Gemm has the same accumulation schedule.
+
+Multiplying those costs by the model inventory gives raw arithmetic budgets
+of roughly 58G/tile + 167G/staff strict, or 6.8G/tile + 19.5G/staff fused.
+For planning, allow packing, boundaries, normalization, GELU and copies:
+
+| future exact Rust artifact | expected G instructions/tile segnet | expected G instructions/staff encoder | vs current one-thread ORT-web |
+|---|---:|---:|---|
+| strict SIMD128 with FMA emulation | 60–90 | 180–270 | about 6–10x more instructions |
+| validated fused relaxed SIMD | 8–12 | 24–35 | roughly 0.85–1.35x current work |
+
+These deliberately broad engineering estimates require actual ports and full
+validation. The strict probe uses the decoder-style widened recurrence; an
+exact implementation must also handle any f64-to-f32 double-rounding corner
+cases, underflow and special values it admits. Fused SIMD must probe actual
+fused behavior and fall back when absent: the [WASM specification](https://www.w3.org/TR/wasm-core/)
+permits fused or unfused relaxed multiply-add. Its availability alone proves
+no model parity. No decoder-style 4x speedup is promised for these already
+optimized dense float32 models. GPU work is not measured by host retired
+instructions and cannot be ranked by this CPU counter.
+
+### Reproducing the WebGPU part outside this sandbox
+
+From this checkout, with the supplied sibling scratch directories, run:
+
+```sh
+node bench/models_chrome.mjs ../models_native ../models_files ../models_webgpu ../music_files.txt ../ortbench/node_modules/onnxruntime-web/dist
+```
+
+This uses --headless=new --enable-unsafe-webgpu, a fresh profile and local
+HTTP serving; all data stays local. It requires an adapter and actual GPU
+queue submissions during **each model/page**, recording adapter and Chrome
+identity. The EP list is WebGPU+WASM as in Partsong: unsupported nodes may run
+on WASM, but a whole-model CPU fallback is rejected. It does not fabricate a
+GPU speed estimate from CPU submission instructions. Then run:
+
+```sh
+python3 bench/decode_models.py ../plain/src/homr/transformer/decoder_pytorch_model_465-597144cab54c8f6d0f6c9619df5c5312694eadd6.onnx ../decoder_native_ref ../models_webgpu ../models_webgpu_tokens ../music_files.txt
+python3 bench/compare_model_xml.py ../p411b ../models_webgpu_tokens ../replay_all ../models_webgpu_xml
+```
+
+The WebGPU harness could only be syntax-checked here; the two real Chrome
+launch attempts both aborted before an adapter/session existed. No WebGPU
+class/context/token/XML numbers are available, and no Chrome GPU parity is
+claimed.
+
+### Recommended route, ordered by calendar time and phone work
+
+1. **If a service is acceptable, use the already exact native pipeline as the
+   canonical result**, on the pinned reference runtime/hardware. Wrapping and
+   integrating that existing pipeline is a days-scale engineering task; it
+   removes model inference instructions from the phone, at the cost of upload,
+   connectivity and service operation. Do not assume another ARM64 CPU's
+   default dispatch is identical just because its architecture name matches.
+   No service, upload or integration was implemented in this stream.
+2. **For offline browser parity, prototype a targeted ORT arithmetic build
+   before committing to two ports.** Start from the pinned native version and
+   optimized graph semantics, replace WASM multiply/add with a correct fused
+   primitive, mirror native Welford/GELU and Conv/Gemm accumulation/bias order,
+   and use a validated relaxed-SIMD fused path plus a strict fallback. Budget
+   roughly 1–2 engineer-weeks for an operator-level feasibility prototype,
+   then several more for both full models, devices and packaging. This retains
+   ORT's graph execution, weight packing and memory management. No existing
+   stock setting/build tested here matches native; a version bump, global
+   fast-math, more threads or enabling relaxed SIMD alone is not a parity fix.
+3. **A fixed-graph Rust port is sound and gives ownership of the numerical
+   program**, but budget approximately 2–4 weeks for the encoder and 3–6 for
+   segnet, plus device validation (engineering estimates, not delivery dates).
+   Start with the encoder: its isolated probes identify all required arithmetic
+   families, and the decoder's erf/FMA experience helps. Its large products
+   are float32, so the decoder's int8 GEMM kernels are not directly reusable.
+   Segnet is the larger arithmetic cost per corpus page. Preserve native
+   convolution padding/layout/block schedules, Conv+Relu/bias fusion, pooling
+   and nearest resize details; validate every model boundary, then the full
+   greedy trajectory and XML. Both models must be covered for exact parity.
+   Use the measured microkernel-derived budgets above; do not promise the
+   decoder's 4x speedup. Portable strict SIMD likely makes phones substantially
+   slower, while validated fused SIMD may stay near current WASM work.
+4. **GPU remains the fast approximate option until separately certified.**
+   Stock WebGPU float32 has no portable native-bit contract: [WGSL evaluation
+   rules](https://www.w3.org/TR/WGSL/#floating-point-evaluation) permit rounding,
+   contraction and reassociation choices. A carefully ordered, device-specific
+   shader implementation could be checked on each supported stack; universal
+   exactness would need deterministic integer/software float arithmetic for
+   the sensitive operations, including division/sqrt/erf. That is a separate,
+   larger project (many weeks/months), with unmeasured instruction/battery
+   costs. GPU preview plus canonical native/WASM completion is sound; confidence
+   margins, pixel thresholds or “only recheck uncertain tokens” do not prove
+   exact parity through quantized greedy decoding and cannot replace checks.
+
+This recommendation does not alter homr's target, add a model approximation,
+implement a large port, or change Partsong. The current scope is measurement,
+reusable local harnesses, and the exact XML checker's optional scratch export.
+
+### Completed WASM segnet result
+
+All 88 pages / 8,076 tiles / 826,982,400 tile pixels were run at batch 8
+(last batch preserved), ORT-web 1.30.0, four WASM threads, all graph optimizations.
+**14 class pixels differ on 11 pages: fraction 1.69290180783e-08 (1.69290180783e-06%).**
+77 pages have no differing class pixels. Worst fraction: fix-six-1,
+3 / 8,601,600 = 3.487723214e-7. Counts include tile overlap/padding, as the
+model emits it, not just unique page pixels.
+
+| differing page | pixels different | tile pixels | fraction |
+|---|---:|---:|---:|
+| angelus_1 | 1 | 5529600 | 1.808449074e-07 |
+| app-3 | 2 | 22118400 | 9.04224537e-08 |
+| app-4 | 1 | 44851200 | 2.229594749e-08 |
+| fix-six-1 | 3 | 8601600 | 3.487723214e-07 |
+| follow-3 | 1 | 8601600 | 1.162574405e-07 |
+| manual-1 | 1 | 8601600 | 1.162574405e-07 |
+| t-follow-3 | 1 | 8601600 | 1.162574405e-07 |
+| t-manual-1 | 1 | 8601600 | 1.162574405e-07 |
+| t-views-1 | 1 | 8601600 | 1.162574405e-07 |
+| views-1 | 1 | 8601600 | 1.162574405e-07 |
+| zoom-1 | 1 | 8601600 | 1.162574405e-07 |
+
+All 11 differing-class pages were replayed through native homr with the
+native decoder symbols, checking every staff canvas against the recorded
+native canvas. **Zero changed canvases, call counts, XML files or error
+outcomes**; the other 77 pages have identical class maps at the model boundary.
+This is a recorded-symbol segmentation replay, not a claim that class maps
+are exact. A combined replay with the newly decoded WASM encoder symbols is
+also queued for those 11 pages.
+
+The one-/four-thread cross-check also completed: all four angelus_0 encoder
+contexts are byte-identical across thread counts, and all seven batches on
+each of the first four segnet pages (28 batches total) have byte-identical
+class maps. This is a setting sample, not an unrun one-thread full corpus.
+
+A native-context baseline run through the XML diagnostic confirms the old
+acceptance result unchanged: **75 byte-identical + 13 matching failures, zero
+different**, both with and without comments. On the four-staff WASM encoder
+sample, zero tokens change but one XML file changes by an attention-derived
+imgpos comment (y=658 vs 659); removing comments makes it identical. The final
+corpus report retains byte differences and supplies comment-stripped counts
+as an additional diagnostic, never as a relaxed pass criterion.
+
+### Final encoder, greedy decoder and combined XML results
+
+The full four-thread ORT-web WASM 1.30.0 run completed without skipping any
+of the **88 pages / 627 staffs**, including all staffs on the 13 native failure
+pages. Each staff uses the native [1,1,256,1280] input and outputs all
+[1,1280,512] float32 values. All 627 contexts differ. Across 410,910,720 values,
+387,918,136 (94.40448%) differ numerically. Global max absolute error is
+**1.1920928955078125e-5** (fix-1, staff 10); the value-weighted mean is
+**4.36081726078844e-7**. Per-staff maxima range 4.291534423828125e-6 to the
+maximum above; per-staff means range 3.728967971738939e-7 to
+5.998186930256111e-7 (largest mean: pdf-1 staff 8). Full per-staff max/mean
+measurements remain in scratch models_wasm4/<page>/metrics.json, alongside
+all saved context bytes. Native input canvases and normalized images are in
+models_native/<page>/<staff>/; model hashes and native package versions are
+recorded per page.
+
+| backend | segnet differing tile pixels | worst-page fraction | encoder max abs | encoder mean abs |
+|---|---:|---:|---:|---:|
+| WASM 1.30.0, 4 threads | 14 / 826,982,400 | 3.487723214e-7 (fix-six-1) | 1.192092896e-5 | 4.360817261e-7 |
+| Chrome WebGPU + WASM fallback | not measured (SIGABRT before CDP) | unavailable | unavailable | unavailable |
+
+The exact Rust decoder follows its own greedy trajectory on every context,
+including EOS, all six heads, and each error-page staff. It never stops at the
+first mismatch or teacher-forces native tokens.
+
+| encoder backend -> Rust decoder | staffs with token/length changes | differing overlapping steps | differing head choices | staffs with changed length | extra steps | missing steps |
+|---|---:|---:|---:|---:|---:|---:|
+| WASM | 47 / 627 | 3,924 / 36,166 | 15,500 / 216,996 | 17 | 109 | 1,910 |
+| WebGPU | not run | not run | not run | not run | not run | not run |
+
+Native emits 38,076 steps; WASM-context decoding emits 36,275. The overlapping
+step count is 36,166, with 109 extra and 1,910 missing. If missing/extra steps
+are counted as unmatched events, there are 5,943 differing/unmatched events;
+they are separated above so no tail is hidden in a denominator. First token
+mismatch: app-2/staff 0/step 2, position head 3 versus native 1. Other first
+mismatches quickly affect rhythms/pitches (app-2/staff 3/step 15 rhythm 100
+versus 201; staff 6/step 1 rhythm 30 versus 28). The observed amplification is consistent with
+quantization-boundary changes in this int8 decoder followed by greedy-history
+divergence; this stream did not trace every changed quantized element. Isolated
+first-step closeness is not a parity criterion.
+
+Whole-page XML replay using native masks and these newly decoded symbols has
+**74 byte-different results**, **10 different after removing comments**, and
+**13 matching native AssertionError outcomes**. Of the 75 successful native
+pages, only one remains byte-identical. The optional comment-stripped count
+supplements the exact comparison; it is not a new acceptance criterion.
+
+For the combined result, all 11 differing-segnet pages were replayed again
+through native homr, this time with the WASM-context/Rust-decoder symbols.
+All canvases and call counts still match; ten successful XML files match the
+encoder-only Rust replay byte for byte, and fix-six-1 still has the same
+native failure. The other 77 pages have identical segnet model boundaries.
+Thus the combined boundary replay has the same **74 byte differences, 10
+comment-stripped differences, 13 matching failures**. Segnet alone caused zero
+XML changes; the measured final changes come from the encoder perturbations.
+This is real model inference plus full greedy decoding and page/XML replay,
+not an unbroken live browser app run; Chrome and actual phone GPU behavior
+were not executed.
+
+A second Node browser-bundle diagnostic with explicit JSEP bytes selected an
+incompatible asyncify module and failed during initialization; it produced no
+metrics and is not a tested setting. The full results above use the normal
+pinned Node ORT-web WASM artifact, as in the existing ortbench tooling.
+
+### Per-page model and decoder measurements
+
+Encoder errors below summarize every staff on each page; the mean is the
+mean over all its context values. Per-staff raw metrics and step trajectories
+remain in scratch. Steps/heads columns compare overlapping greedy positions;
+extra/missing counts are in the full scratch comparison and the table above.
+
+| page | seg diff pixels | seg fraction | staffs | encoder max abs | encoder mean abs | token-different staffs | differing steps | differing heads |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| angelus_0 | 0 | 0 | 4 | 6.1988831e-06 | 4.2019768e-07 | 0 | 0 | 0 |
+| angelus_1 | 1 | 1.80845e-07 | 12 | 6.6757202e-06 | 4.2671997e-07 | 0 | 0 | 0 |
+| angelus_2 | 0 | 0 | 12 | 8.1062317e-06 | 4.2544037e-07 | 0 | 0 | 0 |
+| angelus_3 | 0 | 0 | 4 | 6.1988831e-06 | 4.2699849e-07 | 0 | 0 | 0 |
+| angelus_4 | 0 | 0 | 12 | 6.6757202e-06 | 4.2298719e-07 | 0 | 0 | 0 |
+| angelus_5 | 0 | 0 | 12 | 7.6293945e-06 | 4.2921244e-07 | 0 | 0 | 0 |
+| app-2 | 0 | 0 | 13 | 8.9406967e-06 | 4.6399938e-07 | 3 | 395 | 1267 |
+| app-3 | 2 | 9.04225e-08 | 14 | 6.6757202e-06 | 4.3724488e-07 | 0 | 0 | 0 |
+| app-4 | 1 | 2.22959e-08 | 28 | 7.0929527e-06 | 4.147907e-07 | 0 | 0 | 0 |
+| cam_0_exif1 | 0 | 0 | 1 | 5.7220459e-06 | 4.166498e-07 | 1 | 42 | 150 |
+| cam_0_exif6 | 0 | 0 | 4 | 5.2452087e-06 | 4.2579375e-07 | 0 | 0 | 0 |
+| cam_1_exif6 | 0 | 0 | 6 | 6.6757202e-06 | 4.2801731e-07 | 0 | 0 | 0 |
+| cam_2_exif3 | 0 | 0 | 1 | 5.7220459e-06 | 4.0176366e-07 | 0 | 0 | 0 |
+| cam_2_exif6 | 0 | 0 | 4 | 5.7220459e-06 | 4.3062394e-07 | 0 | 0 | 0 |
+| cam_3_exif6 | 0 | 0 | 5 | 6.4373016e-06 | 4.4279215e-07 | 0 | 0 | 0 |
+| fail-1 | 0 | 0 | 2 | 6.5565109e-06 | 4.5509091e-07 | 1 | 2 | 2 |
+| files-1 | 0 | 0 | 13 | 9.894371e-06 | 4.5698969e-07 | 4 | 225 | 525 |
+| fix-1 | 0 | 0 | 13 | 1.1920929e-05 | 4.6158315e-07 | 1 | 78 | 327 |
+| fix-six-1 | 3 | 3.48772e-07 | 12 | 7.1525574e-06 | 4.696005e-07 | 5 | 765 | 3303 |
+| follow-1 | 0 | 0 | 8 | 6.6757202e-06 | 4.3438539e-07 | 0 | 0 | 0 |
+| follow-2 | 0 | 0 | 8 | 6.1988831e-06 | 4.3292165e-07 | 0 | 0 | 0 |
+| follow-3 | 1 | 1.16257e-07 | 1 | 4.7683716e-06 | 4.3333805e-07 | 0 | 0 | 0 |
+| gpufail-1 | 0 | 0 | 13 | 7.6293945e-06 | 4.5842421e-07 | 6 | 425 | 1988 |
+| huron_0 | 0 | 0 | 4 | 5.7220459e-06 | 4.3071412e-07 | 1 | 1 | 1 |
+| huron_1 | 0 | 0 | 6 | 6.6757202e-06 | 4.2725036e-07 | 0 | 0 | 0 |
+| huron_2 | 0 | 0 | 4 | 5.2452087e-06 | 4.3091443e-07 | 0 | 0 | 0 |
+| huron_3 | 0 | 0 | 5 | 5.8412552e-06 | 4.4487032e-07 | 0 | 0 | 0 |
+| img-000 | 0 | 0 | 6 | 6.6757202e-06 | 4.3650799e-07 | 0 | 0 | 0 |
+| img-001 | 0 | 0 | 4 | 6.1988831e-06 | 4.3309483e-07 | 0 | 0 | 0 |
+| img-002 | 0 | 0 | 6 | 8.1062317e-06 | 4.3695772e-07 | 0 | 0 | 0 |
+| img-003 | 0 | 0 | 8 | 7.390976e-06 | 4.3187531e-07 | 0 | 0 | 0 |
+| img-004 | 0 | 0 | 11 | 8.1062317e-06 | 4.3881892e-07 | 0 | 0 | 0 |
+| img-005 | 0 | 0 | 4 | 6.1988831e-06 | 4.2504383e-07 | 0 | 0 | 0 |
+| img-006 | 0 | 0 | 6 | 6.1988831e-06 | 4.2869283e-07 | 0 | 0 | 0 |
+| img-007 | 0 | 0 | 7 | 6.6757202e-06 | 4.2950473e-07 | 0 | 0 | 0 |
+| img-008 | 0 | 0 | 7 | 5.7220459e-06 | 4.3265743e-07 | 0 | 0 | 0 |
+| img-009 | 0 | 0 | 6 | 6.6757202e-06 | 4.2976081e-07 | 0 | 0 | 0 |
+| lib-2 | 0 | 0 | 4 | 6.1988831e-06 | 4.3276624e-07 | 1 | 71 | 210 |
+| live-2 | 0 | 0 | 13 | 8.9406967e-06 | 4.6399938e-07 | 3 | 395 | 1267 |
+| live-3 | 0 | 0 | 14 | 6.4373016e-06 | 4.3835991e-07 | 0 | 0 | 0 |
+| live-4 | 0 | 0 | 28 | 7.1525574e-06 | 4.1378453e-07 | 2 | 2 | 2 |
+| manual-1 | 1 | 1.16257e-07 | 5 | 6.6757202e-06 | 4.3595583e-07 | 0 | 0 | 0 |
+| markfirst-1 | 0 | 0 | 12 | 7.6293945e-06 | 4.5606392e-07 | 0 | 0 | 0 |
+| openpdf-1 | 0 | 0 | 13 | 8.5830688e-06 | 4.5580808e-07 | 6 | 295 | 1149 |
+| pdf-1 | 0 | 0 | 11 | 9.9539757e-06 | 4.5468899e-07 | 4 | 303 | 1620 |
+| readf-1 | 0 | 0 | 4 | 5.7220459e-06 | 4.2359397e-07 | 0 | 0 | 0 |
+| round-1 | 0 | 0 | 2 | 7.5101852e-06 | 4.8988504e-07 | 1 | 501 | 2386 |
+| rt-follow-1 | 0 | 0 | 8 | 6.6757202e-06 | 4.310852e-07 | 0 | 0 | 0 |
+| rt-follow-2 | 0 | 0 | 8 | 6.1988831e-06 | 4.3161467e-07 | 0 | 0 | 0 |
+| rt-follow-3 | 0 | 0 | 1 | 4.7683716e-06 | 4.3649179e-07 | 0 | 0 | 0 |
+| rt-follow2-1 | 0 | 0 | 8 | 6.6757202e-06 | 4.3074714e-07 | 0 | 0 | 0 |
+| rt-follow2-2 | 0 | 0 | 8 | 6.6757202e-06 | 4.3254176e-07 | 0 | 0 | 0 |
+| rt-follow2-3 | 0 | 0 | 1 | 7.5101852e-06 | 4.3590305e-07 | 0 | 0 | 0 |
+| scanner-1 | 0 | 0 | 1 | 7.6293945e-06 | 4.7446163e-07 | 0 | 0 | 0 |
+| scar-1 | 0 | 0 | 2 | 7.1525574e-06 | 4.7546131e-07 | 0 | 0 | 0 |
+| scar2-1 | 0 | 0 | 3 | 7.6293945e-06 | 4.6869376e-07 | 0 | 0 | 0 |
+| scar3-1 | 0 | 0 | 3 | 7.6293945e-06 | 4.6869376e-07 | 0 | 0 | 0 |
+| sharepos-1 | 0 | 0 | 4 | 6.6757202e-06 | 4.3202478e-07 | 0 | 0 | 0 |
+| shot-2 | 0 | 0 | 13 | 8.9406967e-06 | 4.6399938e-07 | 3 | 395 | 1267 |
+| shot-3 | 0 | 0 | 14 | 6.4373016e-06 | 4.3835991e-07 | 0 | 0 | 0 |
+| shot-4 | 0 | 0 | 28 | 6.6757202e-06 | 4.142077e-07 | 1 | 3 | 3 |
+| t-follow-1 | 0 | 0 | 8 | 6.6757202e-06 | 4.3330344e-07 | 0 | 0 | 0 |
+| t-follow-2 | 0 | 0 | 8 | 6.6757202e-06 | 4.3215109e-07 | 0 | 0 | 0 |
+| t-follow-3 | 1 | 1.16257e-07 | 1 | 4.7683716e-06 | 4.3333805e-07 | 0 | 0 | 0 |
+| t-library-2 | 0 | 0 | 4 | 6.6757202e-06 | 4.3614253e-07 | 0 | 0 | 0 |
+| t-manual-1 | 1 | 1.16257e-07 | 5 | 6.6757202e-06 | 4.3595583e-07 | 0 | 0 | 0 |
+| t-views-1 | 1 | 1.16257e-07 | 4 | 5.7220459e-06 | 4.116707e-07 | 1 | 1 | 1 |
+| t-views-2 | 0 | 0 | 4 | 5.7220459e-06 | 4.0962989e-07 | 1 | 1 | 1 |
+| try-2 | 0 | 0 | 1 | 6.1988831e-06 | 5.5299385e-07 | 1 | 23 | 30 |
+| vid-1 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-10 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-11 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-12 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-13 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-14 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-15 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-16 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-2 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-3 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-4 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-5 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-6 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-7 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-8 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| vid-9 | 0 | 0 | 5 | 7.1525574e-06 | 4.352329e-07 | 0 | 0 | 0 |
+| views-1 | 1 | 1.16257e-07 | 4 | 5.7220459e-06 | 4.116707e-07 | 1 | 1 | 1 |
+| views-2 | 0 | 0 | 4 | 5.7220459e-06 | 4.0984815e-07 | 0 | 0 | 0 |
+| zoom-1 | 1 | 1.16257e-07 | 10 | 6.6757202e-06 | 4.217838e-07 | 0 | 0 | 0 |
+
+No data, ONNX files, contexts, class maps or generated reports were added to
+Git. Numbers are recorded here; reusable harnesses are under bench/ and tools/.
+The existing check_xml gained only optional scratch artifact export; its
+byte-exact comparison and failure/call-consumption checks remain intact.
+
+### Final verification and unattended decisions
+
+Final required commands pass: **cargo fmt --check**, **cargo clippy
+--all-targets -- -D warnings**, and **cargo test --release** (seven library
+tests, all binary/doc test targets successful). Python harnesses compile and
+all added JavaScript modules pass node --check; the standalone SIMD cost
+probe is rustfmt-clean and both strict/fused artifacts matched its native
+sample bytes before measuring instructions. The baseline XML diagnostic
+preserves 75 exact results + 13 matching native failures.
+
+All background measurement, token, segmentation replay, combined replay and
+XML jobs exited successfully. Full native and WASM measurements ran; WebGPU
+was scripted and launch-attempted only. No actual phone, Chrome GPU inference,
+new ORT build, large Rust model port or native service was run/implemented.
+Blockers are the headless Chrome SIGABRT before CDP and unavailable published
+ORT-web 1.31.0 package. GPU numeric/speed results remain explicitly unknown.
+
+Unattended choices were to preserve default native options, reuse existing
+native encoder outputs after fresh sample validation, store lossless tile
+inputs as uint8, use Partsong's four-thread setting for the full WASM corpus,
+and use separate warmed one-thread runs for speed budgets. Input duplicates
+were not used to skip browser inference: all 8,076 tiles and all 627 staffs
+ran. Segnet-only and combined replay reuse symbols deliberately, with canvas
+and call-count checks; they are labelled as boundary replays rather than live
+browser runs. No user answers were needed. All work is committed on cx/models;
+Partsong and the plain homr checkout were not edited. Nothing was pushed or
+posted, and generated data/reports remain only in scratch.

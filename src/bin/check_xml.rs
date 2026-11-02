@@ -19,6 +19,9 @@ fn main() {
     let refs = std::env::args()
         .nth(3)
         .expect("replay dir (tools/pyodide_replay.mjs)");
+    // Optional scratch artifacts for diagnosing byte differences (including
+    // imgpos comments) without changing this checker's exact comparison.
+    let save = std::env::var_os("CHECK_XML_OUTPUT");
     // pages homr replayed to MusicXML, and pages where homr itself fails
     // (decoder.json has "error"): the port must fail the same way
     let mut names: Vec<String> = fs::read_dir(&decs)
@@ -126,6 +129,25 @@ fn main() {
         };
         let result =
             analyse_page(&masks).and_then(|multi| page_xml(&multi, &image, &mapping, &mut predict));
+        if let Some(save) = &save {
+            let dir = std::path::Path::new(save).join(&name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("status.json"),
+                serde_json::to_vec(&serde_json::json!({"unused_calls": calls.len()})).unwrap(),
+            )
+            .unwrap();
+            match &result {
+                Ok(xml) => {
+                    let _ = fs::remove_file(dir.join("error.txt"));
+                    fs::write(dir.join("result.musicxml"), xml).unwrap();
+                }
+                Err(error) => {
+                    let _ = fs::remove_file(dir.join("result.musicxml"));
+                    fs::write(dir.join("error.txt"), error).unwrap();
+                }
+            }
+        }
         if let Some(e) = homr_error {
             match result {
                 Err(r) if r == e && calls.is_empty() => same_err += 1,
