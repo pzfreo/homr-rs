@@ -396,6 +396,7 @@ fn bounded_values(x: &[f32]) -> bool {
 
 /// `weights_bounded` may only be true after bounded_weights on these B/bias/K.
 #[cfg(all(target_arch = "wasm32", feature = "encoder-threads"))]
+#[allow(clippy::too_many_arguments)]
 pub(super) unsafe fn product_prechecked(
     a: &[f32],
     b: &[f32],

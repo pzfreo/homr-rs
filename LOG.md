@@ -1816,3 +1816,97 @@ scheduling for the slowdown experiment. Production instruction comparisons
 use uninstrumented original-static versus uninstrumented selected-dynamic
 modules, not the diagnostic feature. Counter overhead, balancing and 8-rank
 recommendation measurements are still running at this stage.
+
+### Independent instruction-budget check
+
+Uninstrumented PR #4 static modules versus the selected uninstrumented dynamic
+modules: one warm-up per case and three interleaved trials, separately isolated
+case processes. Every output context and the paired 33-step decoder trajectory
+match native. Process-wide proc_pid_rusage includes all ranks. No sleeping,
+diagnostic counters or tuning callbacks are present in these production runs.
+
+| total ranks | fused static G | fused dynamic G | dynamic change | strict static G | strict dynamic G | dynamic change |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 20.976078 | 20.959912 | -0.077% | 267.661999 | 267.688295 | +0.010% |
+| 4 | 20.988019 | 20.969987 | -0.086% | 268.300881 | 267.847858 | -0.169% |
+| 6 | 20.988791 | 20.970397 | -0.088% | 268.651249 | 267.636136 | -0.378% |
+| 8 | 21.024552 | 20.977367 | -0.224% | 268.983984 | 267.620287 | -0.507% |
+
+The ~1% budget passes at every requested count. Small net reductions are not
+claimed as an intrinsic cost-free queue: strict removes redundant immutable
+weight scans, and code layout/loop setup also differ from the older module.
+The operation and element work is not skipped. Input-slice guards still run.
+Raw samples, encoder/decoder times, modules and trial order are retained in
+chunks_overhead.json. The loaded machine makes wall-time ratios less reliable
+than these retired-instruction totals.
+
+### Final uneven-rank comparison and thread-count recommendation
+
+These independent follow-up trials use the selected default chunks, the same
+fixed calibration as the sweep, and additional sleeping on ranks 2..N-1. Thus
+two ranks have no artificial delay; all other ranks add 3x calibrated unit
+time. It is a controlled synthetic service-rate imbalance, not a measurement
+of the Android phone's cores. Counts in the diagnostic module verify every
+job's total claimed units, and native context/tokens are checked on every run.
+The case is still angelus_0 staff 0, **33 decoder steps**. Three interleaved
+trials per configuration, one warm-up, medians below. No fastest sample is used.
+
+| build / total ranks | static encoder s | dynamic encoder s | static combined s | dynamic combined s |
+|---|---:|---:|---:|---:|
+| fused / 2 | 0.491401 | 0.456949 | 0.694371 | 0.661569 |
+| fused / 4 | 1.405956 | 0.401338 | 1.614135 | 0.599002 |
+| fused / 6 | 0.983674 | 0.359595 | 1.195267 | 0.561079 |
+| fused / 8 | 0.760735 | 0.334056 | 0.971430 | 0.546372 |
+| strict / 2 | 8.165176 | 8.286689 | 8.587021 | 8.706171 |
+| strict / 4 | 25.302966 | 7.905961 | 25.787282 | 8.358725 |
+| strict / 6 | 17.301198 | 6.609772 | 17.745162 | 7.033454 |
+| strict / 8 | 13.615893 | 5.809145 | 14.025706 | 6.208149 |
+
+The two-rank case has no artificially slow ranks. Dynamic and static strict
+are within about 1.5% there; this experiment is about imbalance, not universal
+speedup. With four ranks, the two undelayed ranks perform median **86.40% of
+fused GEMM MACs / 86.71% strict**, versus **50%** under static ownership. This
+work-weighted share counts MACs, not incomparable totals of vectors and pixels.
+The observed effective slowdown is affected by OS wait granularity/load; the
+requested sleeping budget and individual rank units/chunks remain in the raw
+report so it is not misrepresented as an exact hardware frequency ratio.
+
+Also delaying coordinator rank 0 and helper rank 3 at four total ranks gives:
+
+| build | static encoder s | dynamic encoder s | static combined s | dynamic combined s |
+|---|---:|---:|---:|---:|
+| fused | 1.345755 | 0.404503 | 1.547690 | 0.603064 |
+| strict | 25.416481 | 7.776948 | 25.826240 | 8.189261 |
+
+Every rank really pulls, including the coordinator. The host still joins all
+ranks before releasing a job; dynamic claiming removes computational equal-
+share tails, not arbitrary OS suspension or the serial decoder. This does
+not establish that the phone's original poor scaling was caused by core
+heterogeneity; on-phone per-rank profiling is still needed to confirm that.
+
+Recommend the caller start with **min(hardwareConcurrency || 4, 8)**, retaining
+an override and validating UI/thermal behavior on-device. Use more ranks than
+the number of fast cores: in this synthetic case, dynamic 8 versus dynamic 4
+reduces combined latency by **8.79% fused / 25.73% strict**, and both beat the
+two-fast-rank-only combined case. Six ranks also help; the extra benefit from
+6 to 8 is smaller for fused, but all three fused trial pairs improve. The
+production eight-rank instruction comparison also remains within budget.
+
+The pool's existing API default remains 1 for backward compatibility. Partsong
+already passes an explicit count; no host JS/C ABI change is needed for dynamic
+claiming at its current count. Selecting the recommended larger count is an
+optional change to that existing threads setting, not a protocol migration.
+Partsong and homr were not edited. Raw evidence is chunks_calibration.json,
+chunks_sweep.json, chunks_overhead.json and chunks_uneven.json in scratch.
+
+### Freeze before full corpus
+
+Production/diagnostic strict and fused WASM Clippy -D warnings pass. After a
+style-only lint annotation, all six rebuilt modules are byte-for-byte identical
+to the measured modules; full outputs are still validated directly, never by
+hash. Selected-source op checks are repeated at 1/2/4/6 ranks and all pass.
+The frozen production modules (no diagnostic exports/static path/delays) now
+run all 627 staffs with four actual host ranks per build. Existing per-rank
+host counts measure calls to encoder_work, **not chunks**: a rank may correctly
+find no remaining work on a cheap job. Actual work shares are measured only
+in the separate diagnostic experiment above.
