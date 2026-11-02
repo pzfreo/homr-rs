@@ -3,6 +3,11 @@
 > **Experimental.** This port is new: it is not yet supported, and it has not
 > yet been tested in real use. It matches homr on the test pages described
 > below, but expect rough edges, and don't rely on it yet.
+>
+> **Written with AI.** Most of the code, tests and notes here were written by
+> Claude (Anthropic's AI model, working in Claude Code), directed by Paul
+> Fremantle. Its correctness rests on the comparisons against homr described
+> below (LOG.md has the detail), not on line-by-line human review.
 
 A Rust port of [homr](https://github.com/liebharc/homr), Christian Liebhardt's
 optical music recognition, aimed at running in the browser as WebAssembly
