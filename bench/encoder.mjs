@@ -7,7 +7,7 @@ import {createRequire} from 'node:module';
 const [wasm,model,root,out,corpus]=process.argv.slice(2);
 const counter=process.env.COUNTER_ADDON?createRequire(import.meta.url)(path.resolve(process.env.COUNTER_ADDON)):null;
 let profiling=false,previous=0,phases=Array(11).fill(0);
-const imports={encoder_profile:{mark(id){if(profiling){const now=counter.instructions();phases[id]+=now-previous;previous=counter.instructions();}}}};
+const imports={encoder_profile:{mark(id){if(profiling){const now=counter.instructions();phases[id]+=now-previous;if(process.env.TRACE_PHASES)console.log('phase',id,now-previous);previous=counter.instructions();}}}};
 const {instance:{exports:e}}=await WebAssembly.instantiate(fs.readFileSync(wasm),imports);
 const copy=bytes=>{const p=e.decoder_alloc(bytes.length);new Uint8Array(e.memory.buffer,p,bytes.length).set(bytes);return p;};
 const bytes=fs.readFileSync(model),p=copy(bytes),handle=e.encoder_load(p,bytes.length);e.decoder_free(p,bytes.length);if(!handle)throw Error('encoder rejected (including fused-host check)');
@@ -28,7 +28,7 @@ for(const source of fs.readFileSync(corpus,'utf8').trim().split('\n')){
   const dst=path.join(out,page,String(staff));fs.mkdirSync(dst,{recursive:true});fs.writeFileSync(path.join(dst,'context.bin'),Buffer.from(e.memory.buffer,op,ref.length));
   const row={staff,values:got.length,bit_differences:diff,max_abs:max,mean_abs:sum/got.length,instructions,phases};
   if(decoder){
-   const refs=JSON.parse(fs.readFileSync(path.join(process.env.DECODER_REFS,page,String(staff),'steps.json')));const steps=e.decoder_run(decoder,op,tokensOut,608,0);if(!steps)throw Error('decode failed');
+   const refs=JSON.parse(fs.readFileSync(path.join(process.env.DECODER_REFS,page,String(staff),'steps.json')));const steps=process.env.COMBINED?e.encoder_decode(handle,decoder,ip,tokensOut,608):e.decoder_run(decoder,op,tokensOut,608,0);if(!steps)throw Error('decode failed');
    let changedSteps=0,changedHeads=0;const symbols=[];
    for(let i=0;i<steps;i++){
     const t=Array.from(new Uint32Array(e.memory.buffer,tokensOut+i*32,6)),attention=Array.from(new Float32Array(e.memory.buffer,tokensOut+i*32+24,2));

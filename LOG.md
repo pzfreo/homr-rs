@@ -1189,3 +1189,31 @@ lanes; scalar strict Welford also uses fmaf. A numeric regression case uses
 (1+2^-23)*(1-2^-23)+16777218: naive double rounding gives 16777220 instead of
 16777218. With correction, every observed first-staff stage and context bit
 matches native. Decoder arithmetic was not changed by this fix.
+
+### Stage 5: native corpus and strict fallback engineering
+
+The native NEON encoder completed **627/627 bit-identical contexts**, followed
+by the rebuilt Rust decoder: **38,076 steps, zero token/step/length changes**.
+Native encoder+decoder XML remains **75 byte-identical + 13 matching failures**.
+
+Strict SIMD's fully general corrected recurrence was accurate but expensive:
+the initial explicit halfway/special checks used approximately 729G retired
+instructions/staff; outlining its rare scalar correction reduced this to
+roughly 669G. A branchless TwoSum + round-to-odd recurrence preserves exact
+fused rounding, including subnormal cases, and measured about 542G. These
+are superseded experiments, not the final strict performance claim.
+
+The retained strict GEMM adds a proven range fast path: if all nonzero
+operands/biases lie in [2^-40,2^40] and K<=65536, their products have a 2^-126
+grid. Every rounded partial sum remains on that grid, so it is zero or normal;
+K and the upper bound also prevent overflow. Only halfway double-rounding
+cases require scalar repair. Inputs outside these bounds execute the general
+round-to-odd path. No model input, staff or operation is skipped and this is
+not a fixture/hash gate. The native-like first full bounded-path staff
+(follow-3) matches every context bit and measures about **440G instructions**,
+still much more than ORT-web; this cost is not hidden.
+
+For the complete strict corpus use two independent, single-threaded Node
+workers over disjoint page lists (modest CPU parallelism), both executing
+normal, non-profile final artifacts and their own Rust decoder in the same
+linear memory. Fused and native runs are also complete/in progress as noted.

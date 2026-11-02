@@ -83,6 +83,7 @@ struct Conv {
     pad: usize,
 }
 impl Conv {
+    #[allow(clippy::too_many_arguments)]
     fn load(
         g: &Graph,
         name: &str,

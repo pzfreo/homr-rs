@@ -5,16 +5,16 @@
 pub fn fma(a: f32, b: f32, c: f32) -> f32 {
     #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
     {
-        return libm::fmaf(a, b, c);
+        libm::fmaf(a, b, c)
     }
     #[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
     {
         use std::arch::wasm32::*;
-        return f32x4_extract_lane::<0>(f32x4_relaxed_madd(
+        f32x4_extract_lane::<0>(f32x4_relaxed_madd(
             f32x4_splat(a),
             f32x4_splat(b),
             f32x4_splat(c),
-        ));
+        ))
     }
     #[cfg(not(target_arch = "wasm32"))]
     crate::decoder::activation::fma(a, b, c)
@@ -29,7 +29,6 @@ pub fn gelu_in_place(x: &mut [f32]) {
     #[cfg(any(target_arch = "aarch64", target_arch = "wasm32"))]
     {
         unsafe { super::simd::activation(x, true) };
-        return;
     }
     #[cfg(not(any(target_arch = "aarch64", target_arch = "wasm32")))]
     for v in x {
@@ -40,7 +39,6 @@ pub fn erf_in_place(x: &mut [f32]) {
     #[cfg(any(target_arch = "aarch64", target_arch = "wasm32"))]
     {
         unsafe { super::simd::activation(x, false) };
-        return;
     }
     #[cfg(not(any(target_arch = "aarch64", target_arch = "wasm32")))]
     for v in x {
@@ -290,5 +288,12 @@ mod tests {
         assert!(conv.iter().all(|v| v.to_bits() == 16777218.0f32.to_bits()));
         let mm = matmul(&[a; 4], &[b; 16], 4, 1, 16, Some(&bias));
         assert!(mm.iter().all(|v| v.to_bits() == 16777220.0f32.to_bits()));
+    }
+    #[test]
+    fn tiny_convolution_uses_general_rounding_path() {
+        let tiny = f32::from_bits(1);
+        let result = conv(&[tiny; 4], 1, 4, 1, &[0.5; 16], &[tiny; 16], 16, 1, 1, 0);
+        // minsub + minsub/2 is halfway, rounding to the even second subnormal.
+        assert!(result.iter().all(|v| v.to_bits() == 2));
     }
 }
