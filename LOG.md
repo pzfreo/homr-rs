@@ -1698,3 +1698,14 @@ Chrome/Safari/device corpus checks; the prototype alone is not a GPU encoder.
 All source/tool changes and result numbers are local commits on cx/threads.
 Model weights, recordings, generated outputs, timing samples, XML and browser
 profiles stay in scratch. Nothing was pushed or posted.
+
+### WebGPU fc1 probe, run by the maintainer's side (Chrome 156, Apple Metal 3)
+
+`node bench/gpu_fc1_chrome.mjs`: **0 of 7,864,320** values differ from native
+(and from Rust) in each of three trials; median GPU time 0.40 ms. The
+known-answer gate still **fails**: the subnormal fma case returns 0 instead of
+the subnormal 2 (Metal flushes subnormal results to zero), and schedule cell 51
+(a subnormal answer) does likewise. fc1's corpus inputs happen to produce no
+subnormals, so the outputs agree, but bit-identity is not guaranteed on Metal for
+inputs that reach the subnormal range. An exact GPU encoder would need either
+proof that no subnormals arise, or detection and CPU fallback for affected tiles.
