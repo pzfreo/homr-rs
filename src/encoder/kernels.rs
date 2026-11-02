@@ -56,7 +56,37 @@ fn product(
     bias: Option<&[f32]>,
     bias_start: bool,
 ) -> Vec<f32> {
+    assert_eq!(a.len(), m * k);
+    assert_eq!(b.len(), k * n);
+    if let Some(b) = bias {
+        assert_eq!(b.len(), n);
+    }
     let mut out = vec![0.0; m * n];
+    #[cfg(any(target_arch = "wasm32", target_arch = "aarch64"))]
+    if m.is_multiple_of(4) && n.is_multiple_of(16) {
+        // SAFETY: lengths and tile divisibility are checked above.
+        unsafe {
+            super::simd::product(
+                a,
+                b,
+                &mut out,
+                m,
+                k,
+                n,
+                if bias_start { bias } else { None },
+            );
+        }
+        if !bias_start {
+            if let Some(bias) = bias {
+                for row in out.chunks_exact_mut(n) {
+                    for (v, b) in row.iter_mut().zip(bias) {
+                        *v += b;
+                    }
+                }
+            }
+        }
+        return out;
+    }
     if bias_start {
         if let Some(b) = bias {
             for row in out.chunks_exact_mut(n) {
@@ -123,7 +153,37 @@ pub fn conv(
             b[p * n + j] = weights[j * k + p];
         }
     }
-    product(&patches, &b, oh * ow, k, n, Some(bias), true)
+    if c == 1 {
+        return product(&patches, &b, oh * ow, k, n, Some(bias), true);
+    }
+    // MLAS segmented convolution forms independent 128-term sums, then adds
+    // them in order. It applies bias after the last segment (not before).
+    let mut result = vec![0.0; oh * ow * n];
+    for start in (0..k).step_by(128) {
+        let count = (k - start).min(128);
+        let mut a = Vec::with_capacity(oh * ow * count);
+        for row in patches.chunks_exact(k) {
+            a.extend_from_slice(&row[start..start + count]);
+        }
+        let partial = product(
+            &a,
+            &b[start * n..(start + count) * n],
+            oh * ow,
+            count,
+            n,
+            None,
+            false,
+        );
+        for (out, v) in result.iter_mut().zip(partial) {
+            *out += v;
+        }
+    }
+    for row in result.chunks_exact_mut(n) {
+        for (v, b) in row.iter_mut().zip(bias) {
+            *v += b;
+        }
+    }
+    result
 }
 
 pub fn depthwise(

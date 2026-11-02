@@ -334,7 +334,7 @@ unsafe fn weighted_sum(values: &[CacheFloat], scores: &[f32], h: usize, out: &mu
     }
 }
 #[cfg(target_arch = "wasm32")]
-fn fused_simd_supported() -> bool {
+pub(crate) fn fused_simd_supported() -> bool {
     #[cfg(not(target_feature = "relaxed-simd"))]
     {
         false

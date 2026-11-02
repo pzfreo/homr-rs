@@ -1139,3 +1139,20 @@ with bias; summing from zero and adding bias later differed at 1,423,236
 outputs. Depthwise uses the opposite schedule: zero accumulation, bias after.
 No fixture hashes or approximate tolerances are used for these checks.
 Seven release library tests and all existing binary/doc test targets pass.
+
+### Stage 2: optimized native subgraphs and first whole-model agreement
+
+Added NEON/SIMD128 ordered 4x16 float GEMM. All previous single-node outputs
+remain bit-identical; native optimized Gemm+bias and Gelu each match all
+7,864,320 probe values. A diagnostic graph retains native optimized fusions
+and disables re-optimization; its final context is byte-identical to the
+ordinary default native session before its 114 intermediate outputs are used.
+
+The first assembled model initially diverged at the first downsample Conv.
+Native MLAS segments its contraction into **independent 128-term fused sums**,
+then adds those partials and finally bias. Replaying one uninterrupted FMA
+chain or initializing bias early is wrong for these two convolutions. The
+stem instead initializes bias early. With the segmented schedule, every
+observed intermediate and all **655,360 output float32 bits** on angelus_0
+staff 0 match native exactly. This is whole-model sample agreement, not yet a
+corpus claim. Runtime weight loading uses homr's original encoder ONNX.

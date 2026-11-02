@@ -16,6 +16,10 @@ path = "bench/decode_contexts.rs"
 name = "check_encoder_ops"
 path = "bench/check_encoder_ops.rs"
 
+[[bin]]
+name = "check_encoder"
+path = "bench/check_encoder.rs"
+
 [dependencies]
 libm = "0.2"
 serde_json = { version = "1", features = ["float_roundtrip"] }
