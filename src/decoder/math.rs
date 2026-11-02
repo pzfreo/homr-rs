@@ -59,6 +59,8 @@ pub(super) struct Linear {
     scale: f32,
     bias: Vec<f32>,
     kind: Phase,
+    #[cfg(target_arch = "wasm32")]
+    pair_safe: bool,
 }
 impl Linear {
     pub fn load(g: &Graph, weight: &str, bias: Option<&str>) -> Result<Self, String> {
@@ -101,6 +103,8 @@ impl Linear {
             scale,
             bias,
             kind: Phase::SelfQkv,
+            #[cfg(target_arch = "wasm32")]
+            pair_safe: !t.data.contains(&128),
         })
     }
     pub fn named(g: &Graph, name: &str, bias: Option<&str>) -> Result<Self, String> {
@@ -149,6 +153,54 @@ impl Linear {
         let mut out = vec![0.0; rows * self.n];
         let _g = enter(self.kind);
         let scale = q.scale * self.scale;
+        #[cfg(any(
+            target_arch = "aarch64",
+            all(target_arch = "wasm32", target_feature = "simd128")
+        ))]
+        if rows >= 4 && self.n.is_multiple_of(4) {
+            #[cfg(target_arch = "aarch64")]
+            let available = std::arch::is_aarch64_feature_detected!("dotprod");
+            #[cfg(target_arch = "wasm32")]
+            let available = true;
+            if available {
+                let bulk = rows / 4 * 4;
+                for r in (0..bulk).step_by(4) {
+                    for c in (0..self.n).step_by(4) {
+                        let a = &q.data[r * self.k..(r + 4) * self.k];
+                        let b = &self.weights[c * self.k..(c + 4) * self.k];
+                        // SAFETY: dimensions and the native feature were checked above.
+                        #[cfg(target_arch = "aarch64")]
+                        let dots = unsafe { neon_mat4(a, b, self.k) };
+                        #[cfg(target_arch = "wasm32")]
+                        let dots = unsafe {
+                            if self.pair_safe {
+                                wasm_mat4::<true>(a, b, self.k)
+                            } else {
+                                wasm_mat4::<false>(a, b, self.k)
+                            }
+                        };
+                        for i in 0..4 {
+                            for j in 0..4 {
+                                let d = dots[i * 4 + j] + (128 - q.zero) * self.sums[c + j];
+                                out[(r + i) * self.n + c + j] = d as f32 * scale + self.bias[c + j];
+                            }
+                        }
+                    }
+                }
+                // Context has 1280 rows, but support partial batches as well.
+                if bulk == rows {
+                    return out;
+                }
+                let tail = Quantized {
+                    data: q.data[bulk * self.k..].to_vec(),
+                    scale: q.scale,
+                    zero: q.zero,
+                };
+                out[bulk * self.n..].copy_from_slice(&self.quantized(&tail));
+                return out;
+            }
+        }
+
         for (a, y) in q
             .data
             .chunks_exact(self.k)
@@ -181,10 +233,15 @@ impl Linear {
                 for (block, values) in y[..bulk].as_chunks_mut::<4>().0.iter_mut().enumerate() {
                     let col = block * 4;
                     // SAFETY: weights hold n columns of k bytes; k is divisible by 16.
-                    let dots =
-                        unsafe { wasm_dot4(a, &self.weights[col * self.k..(col + 4) * self.k]) };
+                    let dots = unsafe {
+                        if self.pair_safe {
+                            wasm_mat1::<true>(a, &self.weights[col * self.k..(col + 4) * self.k])
+                        } else {
+                            wasm_mat1::<false>(a, &self.weights[col * self.k..(col + 4) * self.k])
+                        }
+                    };
                     for (j, v) in values.iter_mut().enumerate() {
-                        *v = (dots[j] - q.zero * self.sums[col + j]) as f32 * scale
+                        *v = (dots[j] + (128 - q.zero) * self.sums[col + j]) as f32 * scale
                             + self.bias[col + j];
                     }
                 }
@@ -248,27 +305,6 @@ unsafe fn wasm_dot(a: &[u8], b: &[i8]) -> i32 {
         + i32x4_extract_lane::<1>(s)
         + i32x4_extract_lane::<2>(s)
         + i32x4_extract_lane::<3>(s)
-}
-#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-unsafe fn wasm_dot4(a: &[u8], b: &[i8]) -> [i32; 4] {
-    use core::arch::wasm32::*;
-    let mut sums = [i32x4_splat(0); 4];
-    for i in (0..a.len()).step_by(16) {
-        let av = v128_load(a.as_ptr().add(i).cast());
-        let lo = u16x8_extend_low_u8x16(av);
-        let hi = u16x8_extend_high_u8x16(av);
-        for (j, s) in sums.iter_mut().enumerate() {
-            let bv = v128_load(b.as_ptr().add(j * a.len() + i).cast());
-            *s = i32x4_add(*s, i32x4_dot_i16x8(lo, i16x8_extend_low_i8x16(bv)));
-            *s = i32x4_add(*s, i32x4_dot_i16x8(hi, i16x8_extend_high_i8x16(bv)));
-        }
-    }
-    sums.map(|s| {
-        i32x4_extract_lane::<0>(s)
-            + i32x4_extract_lane::<1>(s)
-            + i32x4_extract_lane::<2>(s)
-            + i32x4_extract_lane::<3>(s)
-    })
 }
 #[cfg(target_arch = "aarch64")]
 unsafe fn neon_dot(a: &[u8], b: &[i8]) -> i32 {
@@ -338,9 +374,211 @@ unsafe fn neon_dot4(a: &[u8], b: &[i8]) -> [i32; 4] {
     }
     sums.map(|s| vaddvq_s32(s))
 }
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[inline]
+unsafe fn wasm_product<const SAFE: bool>(
+    a: core::arch::wasm32::v128,
+    b: core::arch::wasm32::v128,
+) -> core::arch::wasm32::v128 {
+    use core::arch::wasm32::*;
+    let lo = i16x8_extmul_low_i8x16(a, b);
+    let hi = i16x8_extmul_high_i8x16(a, b);
+    if SAFE {
+        i32x4_extadd_pairwise_i16x8(i16x8_add(lo, hi))
+    } else {
+        i32x4_add(
+            i32x4_extadd_pairwise_i16x8(lo),
+            i32x4_extadd_pairwise_i16x8(hi),
+        )
+    }
+}
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+unsafe fn wasm_mat1<const SAFE: bool>(a: &[u8], b: &[i8]) -> [i32; 4] {
+    use core::arch::wasm32::*;
+    let shift = i8x16_splat(-128);
+    let k = a.len();
+    let mut c0 = i32x4_splat(0);
+    let mut c1 = i32x4_splat(0);
+    let mut c2 = i32x4_splat(0);
+    let mut c3 = i32x4_splat(0);
+    for t in (0..k).step_by(16) {
+        let a0 = v128_xor(v128_load(a.as_ptr().add(0 * k + t).cast()), shift);
+        let b0 = v128_load(b.as_ptr().add(0 * k + t).cast());
+        let b1 = v128_load(b.as_ptr().add(1 * k + t).cast());
+        let b2 = v128_load(b.as_ptr().add(2 * k + t).cast());
+        let b3 = v128_load(b.as_ptr().add(3 * k + t).cast());
+        c0 = i32x4_add(c0, wasm_product::<SAFE>(a0, b0));
+        c1 = i32x4_add(c1, wasm_product::<SAFE>(a0, b1));
+        c2 = i32x4_add(c2, wasm_product::<SAFE>(a0, b2));
+        c3 = i32x4_add(c3, wasm_product::<SAFE>(a0, b3));
+    }
+    [c0, c1, c2, c3].map(|s| {
+        i32x4_extract_lane::<0>(s)
+            + i32x4_extract_lane::<1>(s)
+            + i32x4_extract_lane::<2>(s)
+            + i32x4_extract_lane::<3>(s)
+    })
+}
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+unsafe fn wasm_mat4<const SAFE: bool>(a: &[u8], b: &[i8], k: usize) -> [i32; 16] {
+    use core::arch::wasm32::*;
+    let shift = i8x16_splat(-128);
+    let mut c0 = i32x4_splat(0);
+    let mut c1 = i32x4_splat(0);
+    let mut c2 = i32x4_splat(0);
+    let mut c3 = i32x4_splat(0);
+    let mut c4 = i32x4_splat(0);
+    let mut c5 = i32x4_splat(0);
+    let mut c6 = i32x4_splat(0);
+    let mut c7 = i32x4_splat(0);
+    let mut c8 = i32x4_splat(0);
+    let mut c9 = i32x4_splat(0);
+    let mut c10 = i32x4_splat(0);
+    let mut c11 = i32x4_splat(0);
+    let mut c12 = i32x4_splat(0);
+    let mut c13 = i32x4_splat(0);
+    let mut c14 = i32x4_splat(0);
+    let mut c15 = i32x4_splat(0);
+    for t in (0..k).step_by(16) {
+        let a0 = v128_xor(v128_load(a.as_ptr().add(0 * k + t).cast()), shift);
+        let a1 = v128_xor(v128_load(a.as_ptr().add(1 * k + t).cast()), shift);
+        let a2 = v128_xor(v128_load(a.as_ptr().add(2 * k + t).cast()), shift);
+        let a3 = v128_xor(v128_load(a.as_ptr().add(3 * k + t).cast()), shift);
+        let b0 = v128_load(b.as_ptr().add(0 * k + t).cast());
+        let b1 = v128_load(b.as_ptr().add(1 * k + t).cast());
+        let b2 = v128_load(b.as_ptr().add(2 * k + t).cast());
+        let b3 = v128_load(b.as_ptr().add(3 * k + t).cast());
+        c0 = i32x4_add(c0, wasm_product::<SAFE>(a0, b0));
+        c1 = i32x4_add(c1, wasm_product::<SAFE>(a0, b1));
+        c2 = i32x4_add(c2, wasm_product::<SAFE>(a0, b2));
+        c3 = i32x4_add(c3, wasm_product::<SAFE>(a0, b3));
+        c4 = i32x4_add(c4, wasm_product::<SAFE>(a1, b0));
+        c5 = i32x4_add(c5, wasm_product::<SAFE>(a1, b1));
+        c6 = i32x4_add(c6, wasm_product::<SAFE>(a1, b2));
+        c7 = i32x4_add(c7, wasm_product::<SAFE>(a1, b3));
+        c8 = i32x4_add(c8, wasm_product::<SAFE>(a2, b0));
+        c9 = i32x4_add(c9, wasm_product::<SAFE>(a2, b1));
+        c10 = i32x4_add(c10, wasm_product::<SAFE>(a2, b2));
+        c11 = i32x4_add(c11, wasm_product::<SAFE>(a2, b3));
+        c12 = i32x4_add(c12, wasm_product::<SAFE>(a3, b0));
+        c13 = i32x4_add(c13, wasm_product::<SAFE>(a3, b1));
+        c14 = i32x4_add(c14, wasm_product::<SAFE>(a3, b2));
+        c15 = i32x4_add(c15, wasm_product::<SAFE>(a3, b3));
+    }
+    [
+        c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15,
+    ]
+    .map(|s| {
+        i32x4_extract_lane::<0>(s)
+            + i32x4_extract_lane::<1>(s)
+            + i32x4_extract_lane::<2>(s)
+            + i32x4_extract_lane::<3>(s)
+    })
+}
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "dotprod")]
+unsafe fn neon_mat4(a: &[u8], b: &[i8], k: usize) -> [i32; 16] {
+    use core::arch::aarch64::*;
+    let shift = vdupq_n_u8(128);
+    let mut c0 = vdupq_n_s32(0);
+    let mut c1 = vdupq_n_s32(0);
+    let mut c2 = vdupq_n_s32(0);
+    let mut c3 = vdupq_n_s32(0);
+    let mut c4 = vdupq_n_s32(0);
+    let mut c5 = vdupq_n_s32(0);
+    let mut c6 = vdupq_n_s32(0);
+    let mut c7 = vdupq_n_s32(0);
+    let mut c8 = vdupq_n_s32(0);
+    let mut c9 = vdupq_n_s32(0);
+    let mut c10 = vdupq_n_s32(0);
+    let mut c11 = vdupq_n_s32(0);
+    let mut c12 = vdupq_n_s32(0);
+    let mut c13 = vdupq_n_s32(0);
+    let mut c14 = vdupq_n_s32(0);
+    let mut c15 = vdupq_n_s32(0);
+    for t in (0..k).step_by(16) {
+        let a0 = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(a.as_ptr().add(0 * k + t)), shift));
+        let a1 = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(a.as_ptr().add(1 * k + t)), shift));
+        let a2 = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(a.as_ptr().add(2 * k + t)), shift));
+        let a3 = vreinterpretq_s8_u8(veorq_u8(vld1q_u8(a.as_ptr().add(3 * k + t)), shift));
+        let b0 = vld1q_s8(b.as_ptr().add(0 * k + t));
+        let b1 = vld1q_s8(b.as_ptr().add(1 * k + t));
+        let b2 = vld1q_s8(b.as_ptr().add(2 * k + t));
+        let b3 = vld1q_s8(b.as_ptr().add(3 * k + t));
+        c0 = vdotq_s32(c0, a0, b0);
+        c1 = vdotq_s32(c1, a0, b1);
+        c2 = vdotq_s32(c2, a0, b2);
+        c3 = vdotq_s32(c3, a0, b3);
+        c4 = vdotq_s32(c4, a1, b0);
+        c5 = vdotq_s32(c5, a1, b1);
+        c6 = vdotq_s32(c6, a1, b2);
+        c7 = vdotq_s32(c7, a1, b3);
+        c8 = vdotq_s32(c8, a2, b0);
+        c9 = vdotq_s32(c9, a2, b1);
+        c10 = vdotq_s32(c10, a2, b2);
+        c11 = vdotq_s32(c11, a2, b3);
+        c12 = vdotq_s32(c12, a3, b0);
+        c13 = vdotq_s32(c13, a3, b1);
+        c14 = vdotq_s32(c14, a3, b2);
+        c15 = vdotq_s32(c15, a3, b3);
+    }
+    [
+        c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15,
+    ]
+    .map(|s| vaddvq_s32(s))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn batched_integer_tiles_and_tails_match_scalar() {
+        for rows in [1, 3, 4, 5, 8] {
+            for minimum in [-128i8, -127] {
+                let (k, n) = (32, 8);
+                let weights: Vec<i8> = (0..k * n)
+                    .map(|i| if i % 3 == 0 { minimum } else { 127 })
+                    .collect();
+                let sums: Vec<i32> = weights
+                    .chunks_exact(k)
+                    .map(|col| col.iter().map(|&v| v as i32).sum())
+                    .collect();
+                let linear = Linear {
+                    weights,
+                    sums,
+                    k,
+                    n,
+                    scale: 0.125,
+                    bias: vec![0.5; n],
+                    kind: Phase::SelfQkv,
+                    #[cfg(target_arch = "wasm32")]
+                    pair_safe: minimum >= -127,
+                };
+                let q = Quantized {
+                    data: (0..rows * k)
+                        .map(|i| if i % 2 == 0 { 0 } else { 255 })
+                        .collect(),
+                    scale: 0.25,
+                    zero: 119,
+                };
+                let actual = linear.quantized(&q);
+                for r in 0..rows {
+                    for c in 0..n {
+                        let expected: i32 = (0..k)
+                            .map(|i| {
+                                (q.data[r * k + i] as i32 - q.zero)
+                                    * linear.weights[c * k + i] as i32
+                            })
+                            .sum();
+                        assert_eq!(
+                            actual[r * n + c],
+                            expected as f32 * (q.scale * linear.scale) + linear.bias[c]
+                        );
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn exact_integer_dot() {
         let a: Vec<u8> = (0..512).map(|i| (i * 73) as u8).collect();
@@ -382,7 +620,17 @@ mod tests {
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
         // SAFETY: a has 512 elements and b has four such columns.
         unsafe {
-            assert_eq!(wasm_dot4(&a, &b), expected);
+            let d = wasm_mat1::<false>(&a, &b);
+            for j in 0..4 {
+                assert_eq!(
+                    d[j] + 128
+                        * b[j * 512..(j + 1) * 512]
+                            .iter()
+                            .map(|&v| v as i32)
+                            .sum::<i32>(),
+                    expected[j]
+                );
+            }
         }
         std::hint::black_box(expected);
     }

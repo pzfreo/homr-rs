@@ -410,3 +410,29 @@ WASM uses widening i16 dot products, not a hardware byte-dot instruction.
 First optimization priority is this batch computation; next are the 117M
 WASM instructions in attention scores and weighted sums. No float optimization
 has been applied yet.
+
+### Integer projection optimization
+
+The measured first bottleneck was reduced with 4-row by 4-column register
+blocking for context projections. Each quantized input block and weight block
+is reused for sixteen output accumulators. WASM now multiplies signed bytes
+with `i16x8.extmul` and widens pairwise sums instead of first extending both
+operands to i16 and using a general i16 dot. Where weights exclude -128,
+combining the low/high products in i16 is safe: each combined magnitude is at
+most 32,512. Models with -128 weights take the non-combining exact path.
+Native NEON uses a matching 4x4 byte-dot tile. Tail rows/columns retain the
+scalar/SIMD fallback; synthetic tests cover tails and the -128 overflow case.
+No floating-point operation or reduction order changed.
+
+Three paired load-subtracted runs, the same four staffs / 123 steps:
+
+| | before M/step | after M/step | after G/staff |
+|---|---:|---:|---:|
+| Rust native | 72.35 | 57.37 | 1.764 |
+| ORT native, one thread | 46.33 | 46.23 | 1.422 |
+| Rust WASM | 333.29 | 213.56 | 6.567 |
+| ORT-web WASM | 479.58 | 479.23 | 14.736 |
+
+The first page's native and WASM checks retain all 123 exact token steps and
+exactly the previous attention error statistics. Next, the measured attention
+bottleneck is addressed without changing each dot product's addition order.
