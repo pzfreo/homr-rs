@@ -33,6 +33,7 @@ export async function compareModels({ort, pages, models, read, write, log = cons
           if (ref.length !== got.length) throw Error('class map size mismatch');
           for (let k = 0; k < n; k++) for (let p = 0; p < plane; p++) {
             let best = 0, v = data[k * c * plane + p];
+            if (!Number.isFinite(v)) throw Error('nonfinite segnet output');
             for (let ch = 1; ch < c; ch++) {
               const next = data[(k * c + ch) * plane + p];
               if (!Number.isFinite(next)) throw Error('nonfinite segnet output');

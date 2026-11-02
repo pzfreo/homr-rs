@@ -829,3 +829,51 @@ The WebGPU harness could only be syntax-checked here; the two real Chrome
 launch attempts both aborted before an adapter/session existed. No WebGPU
 class/context/token/XML numbers are available, and no Chrome GPU parity is
 claimed.
+
+### Recommended route, ordered by calendar time and phone work
+
+1. **If a service is acceptable, use the already exact native pipeline as the
+   canonical result**, on the pinned reference runtime/hardware. Wrapping and
+   integrating that existing pipeline is a days-scale engineering task; it
+   removes model inference instructions from the phone, at the cost of upload,
+   connectivity and service operation. Do not assume another ARM64 CPU's
+   default dispatch is identical just because its architecture name matches.
+   No service, upload or integration was implemented in this stream.
+2. **For offline browser parity, prototype a targeted ORT arithmetic build
+   before committing to two ports.** Start from the pinned native version and
+   optimized graph semantics, replace WASM multiply/add with a correct fused
+   primitive, mirror native Welford/GELU and Conv/Gemm accumulation/bias order,
+   and use a validated relaxed-SIMD fused path plus a strict fallback. Budget
+   roughly 1–2 engineer-weeks for an operator-level feasibility prototype,
+   then several more for both full models, devices and packaging. This retains
+   ORT's graph execution, weight packing and memory management. No existing
+   stock setting/build tested here matches native; a version bump, global
+   fast-math, more threads or enabling relaxed SIMD alone is not a parity fix.
+3. **A fixed-graph Rust port is sound and gives ownership of the numerical
+   program**, but budget approximately 2–4 weeks for the encoder and 3–6 for
+   segnet, plus device validation (engineering estimates, not delivery dates).
+   Start with the encoder: its isolated probes identify all required arithmetic
+   families, and the decoder's erf/FMA experience helps. Its large products
+   are float32, so the decoder's int8 GEMM kernels are not directly reusable.
+   Segnet is the larger arithmetic cost per corpus page. Preserve native
+   convolution padding/layout/block schedules, Conv+Relu/bias fusion, pooling
+   and nearest resize details; validate every model boundary, then the full
+   greedy trajectory and XML. Both models must be covered for exact parity.
+   Use the measured microkernel-derived budgets above; do not promise the
+   decoder's 4x speedup. Portable strict SIMD likely makes phones substantially
+   slower, while validated fused SIMD may stay near current WASM work.
+4. **GPU remains the fast approximate option until separately certified.**
+   Stock WebGPU float32 has no portable native-bit contract: [WGSL evaluation
+   rules](https://www.w3.org/TR/WGSL/#floating-point-evaluation) permit rounding,
+   contraction and reassociation choices. A carefully ordered, device-specific
+   shader implementation could be checked on each supported stack; universal
+   exactness would need deterministic integer/software float arithmetic for
+   the sensitive operations, including division/sqrt/erf. That is a separate,
+   larger project (many weeks/months), with unmeasured instruction/battery
+   costs. GPU preview plus canonical native/WASM completion is sound; confidence
+   margins, pixel thresholds or “only recheck uncertain tokens” do not prove
+   exact parity through quantized greedy decoding and cannot replace checks.
+
+This recommendation does not alter homr's target, add a model approximation,
+implement a large port, or change Partsong. The current scope is measurement,
+reusable local harnesses, and the exact XML checker's optional scratch export.
