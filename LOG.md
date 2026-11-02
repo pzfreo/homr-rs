@@ -740,3 +740,15 @@ not automatically the default CPU program. A diagnostic sequential float32
 FMA recurrence matches **all 24,576** sampled native first-MLP matrix outputs
 (64 rows x 384 columns); separate multiply/add differs in **15,607**, max
 4.7683716e-7. This supports the FMA diagnosis even with the SME dispatch caveat.
+
+Speed sampling uses only retired process instructions from proc_pid_rusage.
+Default native sessions' worker spinning makes their counts large and variable
+on this loaded machine, so they are retained as raw capture metadata, not a
+model speed claim. For a meaningful kernel baseline, fresh one-thread native
+1.31 sessions were warmed and measured three times: median 23.350628368G per
+8-tile segnet batch (2.918828546G/tile) and approximately 3.782G/encoder staff
+(four angelus_0 staff medians 3.789476112, 3.781003135, 3.782403137,
+3.782195698G). Both one-thread samples preserve the default native reference
+outputs exactly (segnet argmax, encoder all float32 values). No option changed
+the target recording. The actual machine's SME2 support matters to this count;
+SIMD128 on a phone cannot be assumed to have native SME's instruction width.

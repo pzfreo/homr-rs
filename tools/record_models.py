@@ -92,6 +92,7 @@ for image in Path(corpus).read_text().splitlines():
     finally:
         local.unlink(missing_ok=True)
     assert error == meta.get("error") and staff == len(meta["calls"])
-    (page / "models.json").write_text(json.dumps({"versions": versions, "models_sha256": hashes,
+    (page / "models.json.tmp").write_text(json.dumps({"versions": versions, "models_sha256": hashes,
         "image": image, "batches": batches, "staffs": staff, "error": error}, indent=2))
+    (page / "models.json.tmp").replace(page / "models.json")
     print(page.name, len(batches), "batches", staff, "staffs", flush=True)

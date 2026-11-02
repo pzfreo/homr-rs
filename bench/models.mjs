@@ -33,5 +33,8 @@ console.log(await compareModels({ort, pages, models, ep, threads: Number(threads
     }
     return fs.readFileSync(p);
   },
-  write: async (name, data) => { const p = resolve(name); fs.mkdirSync(path.dirname(p), {recursive: true}); fs.writeFileSync(p, data); },
+  write: async (name, data) => {
+    const p = resolve(name);fs.mkdirSync(path.dirname(p), {recursive: true});
+    fs.writeFileSync(`${p}.tmp`, data);fs.renameSync(`${p}.tmp`, p);
+  },
 }));
