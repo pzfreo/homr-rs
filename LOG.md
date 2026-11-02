@@ -1287,3 +1287,11 @@ threads and WebGPU can still have a latency advantage despite a smaller Rust
 single-thread instruction count. A worker pool is intentionally not built in
 this round: it requires a distinct shared-memory runtime and another exactness
 validation matrix. No Partsong integration or Android measurement was run.
+
+The final benchmark preflight found that the isolated optimized GELU fixture
+flattened its input to 2D while retaining a declared 4D output. Native ORT 1.31
+accepted this inconsistent rank, whereas ORT-web 1.30 rejected it. The recorder
+now follows the optimized graph's actual constant Reshape shape for both Gemm
+and Gelu. Correcting the scratch GELU input declaration to [1,64,320,384]
+preserves every native output byte and makes the browser probe load. This is
+a diagnostic-fixture correction, not an encoder arithmetic change.

@@ -46,7 +46,8 @@ seen=set();probes=[]
 for node in graph.graph.node:
     if node.op_type not in {'Gemm','Gelu'} or node.op_type in seen:continue
     seen.add(node.op_type);idx=len(probes);d=out/str(idx);d.mkdir(exist_ok=True)
-    # Reshape feeding Gemm has the same bytes as its unreshaped input.
+    # Reshapes feeding Gemm and Gelu preserve bytes but have different ranks.
+    # Retain the actual shape: ORT-web rejects an inconsistent declared rank.
     feeds={}
     for name in node.input:
         if name in weights:continue
@@ -54,7 +55,10 @@ for node in graph.graph.node:
         else:
             producer=next(n for n in graph.graph.node if name in n.output)
             assert producer.op_type=='Reshape'
-            value=actual[producer.input[0]].reshape(-1,actual[producer.input[0]].shape[-1])
+            raw=actual[producer.input[0]]
+            shape=numpy_helper.to_array(weights[producer.input[1]]).tolist()
+            shape=[raw.shape[i] if d==0 else d for i,d in enumerate(shape)]
+            value=raw.reshape(shape)
         feeds[name]=value
     ins=[helper.make_tensor_value_info(n,onnx.TensorProto.FLOAT,v.shape) for n,v in feeds.items()]
     outs=[values.get(n,helper.make_tensor_value_info(n,onnx.TensorProto.FLOAT,None)) for n in node.output]
