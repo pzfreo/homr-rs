@@ -908,3 +908,16 @@ outcomes**; the other 77 pages have identical class maps at the model boundary.
 This is a recorded-symbol segmentation replay, not a claim that class maps
 are exact. A combined replay with the newly decoded WASM encoder symbols is
 also queued for those 11 pages.
+
+The one-/four-thread cross-check also completed: all four angelus_0 encoder
+contexts are byte-identical across thread counts, and all seven batches on
+each of the first four segnet pages (28 batches total) have byte-identical
+class maps. This is a setting sample, not an unrun one-thread full corpus.
+
+A native-context baseline run through the XML diagnostic confirms the old
+acceptance result unchanged: **75 byte-identical + 13 matching failures, zero
+different**, both with and without comments. On the four-staff WASM encoder
+sample, zero tokens change but one XML file changes by an attention-derived
+imgpos comment (y=658 vs 659); removing comments makes it identical. The final
+corpus report retains byte differences and supplies comment-stripped counts
+as an additional diagnostic, never as a relaxed pass criterion.

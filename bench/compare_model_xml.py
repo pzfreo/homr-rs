@@ -33,8 +33,8 @@ for d in sorted(decoder.iterdir()):
                      'without_comments_same': calls_consumed and error == native_error})
     else:
         rows.append({'page': d.name, 'error': error,
-            'byte_same': calls_consumed and got.exists() and got.read_bytes() == ref.read_bytes(),
-            'without_comments_same': calls_consumed and got.exists() and ET.tostring(ET.parse(got).getroot()) == ET.tostring(ET.parse(ref).getroot())})
+            'byte_same': error is None and calls_consumed and got.exists() and got.read_bytes() == ref.read_bytes(),
+            'without_comments_same': error is None and calls_consumed and got.exists() and ET.tostring(ET.parse(got).getroot()) == ET.tostring(ET.parse(ref).getroot())})
 summary = {'pages': len(rows), 'byte_different': sum(not r['byte_same'] for r in rows),
     'without_comments_different': sum(not r['without_comments_same'] for r in rows),
     'matching_failures': sum(bool(r.get('native_error')) and r['byte_same'] for r in rows)}
