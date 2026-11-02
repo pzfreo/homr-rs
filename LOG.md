@@ -1656,3 +1656,45 @@ are rebuilt successfully. The two shared normal modules reproduce the frozen
 corpus modules **byte-for-byte** after rebuilding, establishing artifact
 provenance; this is not a substitute for output comparisons or a hash test.
 All actual outputs are still compared element by element against native.
+
+### Final threaded corpus result and unattended report
+
+The strict run and both XML replays exited successfully. Both normal shared
+artifacts execute the complete original corpus through **four total ranks**,
+including the coordinator. Every staff records **[89,89,89,89]** joined job
+executions: no single-thread fallback or missing rank is hidden in these runs.
+All 410,910,720 context float32 values per build are bit-compared directly.
+
+| build, 4 total threads | exact contexts | decoder steps | changed heads / steps / lengths | XML byte-identical / matching native failures |
+|---|---:|---:|---:|---:|
+| shared fused SIMD128 + relaxed SIMD | 627/627 | 38,076 | 0 / 0 / 0 | 75 / 13 |
+| shared strict SIMD128, fused emulation | 627/627 | 38,076 | 0 / 0 / 0 | 75 / 13 |
+
+All 1/2/4/6-thread native operator comparisons and benchmark staff outputs
+also pass; full-corpus runs use four threads, not every thread count. The
+ordinary single-thread artifacts retain every previous C ABI function with
+**zero imports**; shared artifacts retain them and add env.memory and
+encoder_threads.dispatch. Encoder/decoder combined API regression passes on
+both ordinary and both shared artifacts. Corpus uses the direct encoder_run
+output pointer as decoder_run input; neither stage's context crosses JS.
+
+Scratch evidence: threads_fused/comparison.json, threads_strict/comparison.json,
+threads_fused_xml/comparison.json, threads_strict_xml/comparison.json,
+threads_scaling_final.json and threads_final_checks.log. Input recordings and
+the unchanged native reference are reused; every staff actually runs the new
+encoder and its own Rust decoder. XML is a recorded-boundary replay, not a live
+Partsong/browser page run. Neither Partsong nor the homr checkout was edited.
+
+Unattended decisions were a host-managed allocation-free pool with rebuilt
+atomic std/private TLS, four-thread corpus runs to limit concurrent CPU use,
+isolated-process counters rather than the contaminated exploratory harness,
+and keeping the GPU result unknown after the observed Chrome SIGABRT. Phone
+ranges are explicitly uncalibrated planning assumptions; no device timing or
+exact GPU whole-model performance is invented. The next iPhone performance
+decision needs the prepared Metal probe and real-device validation. The
+remaining GPU work is the full graph, including exact division/sqrt/GELU and
+Chrome/Safari/device corpus checks; the prototype alone is not a GPU encoder.
+
+All source/tool changes and result numbers are local commits on cx/threads.
+Model weights, recordings, generated outputs, timing samples, XML and browser
+profiles stay in scratch. Nothing was pushed or posted.
