@@ -2161,7 +2161,7 @@ Runners: gpu_encoder_chrome.mjs and the static gpu_encoder.html page with
 gpu_encoder_server.py. The manifest verifies all 88 pages / 627 staffs /
 38,076 native steps, using staff inputs from models_native and context/step
 references from decoder_native_ref. First: production-kernel load tests and
-one million random/edge cases **per primitive**; then one whole staff with
+1,048,576 random/edge cases **per primitive**; then one whole staff with
 all 113 op comparisons; then every staff. Default audit=full maintains a
 separate CPU state and streams **all** CPU div/sqrt and GELU/Erf/inner-exp
 operands through GPU probes, plus compares every op output. CPU audit state
@@ -2206,3 +2206,50 @@ Source freeze for final checks: all host-control tests pass; both guarded and
 diagnostic-unguarded shader modules pass offline validation/Metal translation
 after the scanner and vector-load changes. GPU arithmetic remains pending
 the external runs. No Partsong/homr modifications, pushes or external posts.
+
+Final validation and unattended decisions (cx/gpu):
+
+- `cargo fmt --check`, native all-target/all-feature Clippy with `-D warnings`,
+  and `cargo test --release -j 1` pass (17 library tests, all binary/doc tests).
+- Ordinary strict/fused WASM builds and all eight shared artifacts from
+  `bench/build_encoder_threads.py` pass, including probe/chunk combinations.
+  Ordinary and shared strict/fused WASM Clippy passes with `-D warnings`;
+  shared Clippy includes all features. WASI strict and fused tests each pass
+  15 tests, with one existing panic-abort test ignored.
+- Current guarded and diagnostic-unguarded WGSL modules pass offline Naga
+  validation with no optional capabilities, and Metal translation; this is
+  shader validation, not GPU execution. All new JS/Python syntax checks pass.
+- The ordinary strict, ordinary fused, shared strict (4 threads), and shared
+  fused (4 threads) ABI/CPU-fallback runs each match all 655,360 context words
+  and all 33 native decoder steps on angelus_0/0. Audit-record marshalling
+  also passes. Production imports and the existing encoder/decoder exports
+  remain compatible; pool and worker files require no changes.
+- Final host-only tests cover shared/ordinary memory, guard-result discard,
+  device loss/validation/map failures, serialization and closed handles.
+  Permanent GPU failure frees GPU resources before CPU recomputation. Reports
+  count only complete per-op audits, including after device loss. The load
+  gate now includes both tie parities among 81 scalar known answers, plus
+  the twelve kernel/scanner cases. Final JS checks and host-control tests
+  were repeated after those changes.
+
+The CPU encoder arithmetic is unchanged. The two complete native plan checks
+prove wiring on angelus_0/0 and pdf-1/8; no new CPU or GPU 627-staff corpus
+result is claimed. The Chrome launch attempt terminated with SIGABRT before
+CDP, and Safari cannot execute in this sandbox. Therefore per-op GPU random
+tests, whole-model GPU bit identity, 627-staff contexts/tokens, guard frequency
+and cost, GPU timing and the 100 ms load budget remain external qualification
+work. Decision: retain the fail-closed CPU path and supply reproducible full
+audits rather than qualify this GPU implementation from the old fc1 probe.
+No phone speed estimate is substituted for an unmeasured result.
+
+Run from this clone (the parent directory is the supplied scratchpad):
+
+```
+node bench/gpu_encoder_chrome.mjs .. ../threads_build/encoder-threads-fused.wasm ../gpu-chrome.json
+python3 bench/gpu_encoder_server.py .. ../threads_build/encoder-threads-strict.wasm ../gpu-safari
+```
+
+Open the server's printed URL in Safari; it saves the same-origin `/report`
+JSON locally. Both commands default to all 627 staffs, full independent CPU
+per-op/primitive audits and native decoder-step comparisons. These are
+instructions for the maintainer; no report was posted during this work.

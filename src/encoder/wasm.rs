@@ -142,7 +142,7 @@ pub unsafe extern "C" fn encoder_gpu_math_reference(
     // emulation, rather than the decoder scalar's f64 approximation to fma.
     let mut erfs = Vec::new();
     let mut gelus = Vec::new();
-    for r in records.chunks_exact(4) {
+    for r in records.as_chunks::<4>().0 {
         match r[0] {
             3 => erfs.push(f32::from_bits(r[1])),
             4 => gelus.push(f32::from_bits(r[1])),
@@ -155,7 +155,7 @@ pub unsafe extern "C" fn encoder_gpu_math_reference(
     kernels::erf_in_place(&mut erfs);
     kernels::gelu_in_place(&mut gelus);
     let (mut ei, mut gi) = (0, 0);
-    for (r, out) in records.chunks_exact(4).zip(out) {
+    for (r, out) in records.as_chunks::<4>().0.iter().zip(out) {
         let a = f32::from_bits(r[1]);
         let b = f32::from_bits(r[2]);
         let c = f32::from_bits(r[3]);

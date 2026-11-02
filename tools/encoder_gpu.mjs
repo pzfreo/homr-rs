@@ -70,6 +70,7 @@ export function mathKnownAnswers() {
   add(0,0x3f800001,0x3f7ffffe,0x4b800001); // f64 double-round trap
   add(0,0x80000000,0x3f800000,0x80000000);add(0,0x3f800000,0x3f800000,0xbf800000);
   add(0,0x1c800000,0x1c800000,0x00800000); // product underflows, fused result normal
+  add(0,0x4b800000,0x3f800000,0x3f800000); // exact halfway, even below
   for(const x of [0,0x80000000,0x00800000,0x00800001,0x3effffff,0x3f000000,0x3f7fffff,0x3f800000,0x3f800001,0x3fffffff,0x40000000,0x7f7fffff]) {
     add(1,x,0x3f800000);add(1,x,0x3fc00000,0,(x&0x7fffffff)>0&&(x&0x7fffffff)<0xc00000);
     add(2,x);
@@ -77,6 +78,8 @@ export function mathKnownAnswers() {
   for(const x of [0,0x80000000,0x3e800000,0x3f6bffff,0x3f6c0000,0x3f6c0001,0x3f800000,0x407b3333,0x40800000,0xbf800000,0xc0800000]) {add(3,x);add(4,x);}
   for(const x of [0,0xbf000000,0xbf800000,0xc0800000,0xc1800000]) add(5,x);
   add(6,0x80000000,0x80000000);add(6,0x3f800000,0xbf800000);
+  add(6,0x3f800000,0x33800000);add(6,0x3f800001,0x33800000); // both tie parities
+  add(7,0x3f800002,0x3fa00000); // product halfway, even below
   add(7,0x3f800001,0x3f7ffffe);add(8,0x3f800001,0x3f800000);
   add(0,1,0x3f000000,1,true);add(7,0x17800000,0x17800000,0,true);
   add(0,0x3f800001,0x0c000001,0x8c000002,true); // normal operands -> minsub
@@ -211,7 +214,7 @@ export class EncoderGPU {
     const start=performance.now();let fallingBack=false,scoped=false;
     const fallback=(...args)=>{fallingBack=true;return this.cpu(...args);};
     try {
-      if(!this.enabled) return fallback(image,context,this.status.reason);
+      if(!this.enabled) {if(this.resources?.length)this.releaseGPU();return fallback(image,context,this.status.reason);}
       const input=new Uint32Array(this.e.memory.buffer,image,256*1280);
       pushErrors(this.device);scoped=true;
       // Fresh ordinary ArrayBuffer: works even where writeBuffer rejects SAB views.
@@ -240,9 +243,9 @@ export class EncoderGPU {
         if(!guard&&this.enabled) new Uint8Array(this.e.memory.buffer,context,this.contextBytes).set(new Uint8Array(data,0,this.contextBytes));
       } finally {this.readback.unmap();}
       const stats={guard,gpu_ms,wall_ms:performance.now()-start,raw};
-      if(guard||!this.enabled) return fallback(image,context,guard?'GPU arithmetic guard':this.status.reason,stats);
+      if(guard||!this.enabled) {if(!this.enabled)this.releaseGPU();return fallback(image,context,guard?'GPU arithmetic guard':this.status.reason,stats);}
       return {backend:'gpu',...stats};
-    } catch(error) {if(scoped){scoped=false;try{await popErrors(this.device);}catch{}}if(fallingBack)throw error;this.disable(String(error.stack||error));return fallback(image,context,this.status.reason,{wall_ms:performance.now()-start});}
+    } catch(error) {if(scoped){scoped=false;try{await popErrors(this.device);}catch{}}if(fallingBack)throw error;this.disable(String(error.stack||error));this.releaseGPU();return fallback(image,context,this.status.reason,{wall_ms:performance.now()-start});}
     finally {this.busy=false;}
   }
   // Diagnostic timing control only; never writes a context or affects fallback.

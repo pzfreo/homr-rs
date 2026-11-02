@@ -114,9 +114,9 @@ export async function runGPUEncoder(config,progress=console.log){
     const first=config.staffs[0],firstImage=await load(first.input),firstNative=await load(first.context);
     new Uint8Array(e.memory.buffer,image,firstImage.byteLength).set(new Uint8Array(firstImage));audit.reset(image);
     const single=await gpu.encode(image,context,{captureRaw:true,observe:(...args)=>audit.observe(...args,config.audit!=='none')});
-    report.single_staff={page:first.page,staff:first.staff,backend:single.backend,guard:single.guard,raw:single.raw?bitDifference(single.raw,firstNative):null,effective:bitDifference(new Uint32Array(e.memory.buffer,context,655360),firstNative),ops:audit.rows,math:audit.math,cpu_plan_context:bitDifference(new Uint32Array(e.memory.buffer,audit.slots[6],655360),firstNative)};
+    report.single_staff={page:first.page,staff:first.staff,backend:single.backend,guard:single.guard,audit_complete:audit.rows.length===gpu.meta.ops.length,raw:single.raw?bitDifference(single.raw,firstNative):null,effective:bitDifference(new Uint32Array(e.memory.buffer,context,655360),firstNative),ops:audit.rows,math:audit.math,cpu_plan_context:bitDifference(new Uint32Array(e.memory.buffer,audit.slots[6],655360),firstNative)};
+    if(!gpu.enabled){report.blocker='Device disabled during single-staff qualification: '+gpu.status.reason;return report;}
     if(report.single_staff.cpu_plan_context.bit_differences||audit.math.differences||audit.rows.some(r=>r.bit_differences&&!r.cumulative_guard)) {report.blocker='Single-staff op/CPU-plan qualification failed';return report;}
-    if(!gpu.enabled){report.blocker='Device disabled during single-staff qualification';return report;}
     report.guard_cost=single.backend==='gpu'&&!single.guard&&!report.single_staff.raw?.bit_differences?
       await gpu.measureGuardCost(image,{reference:firstNative}):{available:false,reason:'First staff flagged or drifted; omitting unsafe unguarded control'};
     for(let i=0;i<config.staffs.length;i++){
@@ -130,9 +130,9 @@ export async function runGPUEncoder(config,progress=console.log){
         new Uint32Array(e.memory.buffer,rawContext,655360).set(result.raw);
         try{row.raw_tokens=tokens(e,decoder,rawContext,out,steps);}catch(error){row.raw_tokens={error:String(error)};}
       }else row.raw_tokens=row.raw?row.tokens:null;
-      if(config.audit==='full'||(config.audit==='first'&&i===0)){
+      if(gpu.enabled&&(config.audit==='full'||(config.audit==='first'&&i===0))){
         audit.reset(image);const r=await gpu.encode(image,context,{captureRaw:true,observe:(...args)=>audit.observe(...args,true)});
-        row.audit={backend:r.backend,guard:r.guard,ops:audit.rows,math:audit.math,cpu_plan_context:bitDifference(new Uint32Array(e.memory.buffer,audit.slots[6],655360),native)};
+        row.audit={complete:audit.rows.length===gpu.meta.ops.length,backend:r.backend,guard:r.guard,ops:audit.rows,math:audit.math,cpu_plan_context:bitDifference(new Uint32Array(e.memory.buffer,audit.slots[6],655360),native)};
       }
       report.rows.push(row);progress({stage:'corpus',completed:i+1,total:config.staffs.length,page:row.page,staff:row.staff,backend:row.backend,guard:row.guard,raw_differences:row.raw?.bit_differences,gpu_ms:row.gpu_ms});
       if(!gpu.enabled){report.blocker='Device lost/disabled; stopping GPU qualification after safe CPU fallback';break;}
@@ -143,7 +143,7 @@ export async function runGPUEncoder(config,progress=console.log){
       raw_context_exact:rows.filter(r=>r.raw?.bit_differences===0).length,effective_context_exact:rows.filter(r=>!r.effective.bit_differences).length,
       native_steps:rows.reduce((n,r)=>n+r.tokens.native_steps,0),differing_steps:rows.reduce((n,r)=>n+r.tokens.differing_steps+r.tokens.extra_steps+r.tokens.missing_steps,0),differing_heads:rows.reduce((n,r)=>n+r.tokens.differing_heads,0),
       raw_token_staffs_differing:rows.filter(r=>tokenDiff(r.raw_tokens)).length,median_gpu_ms:median(rows.map(r=>r.gpu_ms)),median_wall_ms:median(rows.map(r=>r.wall_ms)),
-      audited_staffs:rows.filter(r=>r.audit).length,primitive_audit_cases:rows.reduce((n,r)=>n+(r.audit?.math.cases??0),0),primitive_audit_raw_differences:rows.reduce((n,r)=>n+(r.audit?.math.raw_differences??0),0),primitive_audit_unguarded_differences:rows.reduce((n,r)=>n+(r.audit?.math.differences??0),0),
+      audited_staffs:rows.filter(r=>r.audit?.complete).length,primitive_audit_cases:rows.reduce((n,r)=>n+(r.audit?.math.cases??0),0),primitive_audit_raw_differences:rows.reduce((n,r)=>n+(r.audit?.math.raw_differences??0),0),primitive_audit_unguarded_differences:rows.reduce((n,r)=>n+(r.audit?.math.differences??0),0),
       audited_op_values:rows.reduce((n,r)=>n+(r.audit?.ops.reduce((s,o)=>s+o.values,0)??0),0),audited_op_bit_differences:rows.reduce((n,r)=>n+(r.audit?.ops.reduce((s,o)=>s+o.bit_differences,0)??0),0)};
     report.complete=rows.length===config.staffs.length&&report.summary.native_steps===config.native_steps&&!report.blocker;
     report.effective_exact=report.complete&&rows.every(r=>!r.effective.bit_differences&&!tokenDiff(r.tokens))&&!rows.some(r=>r.audit&&(r.audit.cpu_plan_context.bit_differences||r.audit.math.differences||r.audit.ops.some(o=>o.bit_differences&&!o.cumulative_guard)));
