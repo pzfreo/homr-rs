@@ -1945,3 +1945,41 @@ progress for several minutes with the globally configured shared sccache
 wrapper. Reran the checks with per-command `RUSTC_WRAPPER=''` and a separate
 scratch target directory; they completed. Left global configuration and the
 shared cache server alone. The cause of the cache stall was not diagnosed.
+
+### Both dynamic production corpora and XML replay complete
+
+Final independent assertions over comparison.json and every staff record:
+
+| production shared build, four ranks | contexts bit-identical | differing token steps | differing token heads / length steps | MusicXML replay |
+|---|---:|---:|---:|---|
+| fused | 627 / 627 | 0 / 38,076 | 0 / 0 | 75 byte-identical + 13 matching failures |
+| strict | 627 / 627 | 0 / 38,076 | 0 / 0 | 75 byte-identical + 13 matching failures |
+
+Both complete all 88 pages' recorded staff images. Every staff dispatches 89
+jobs and every one of the four ranks enters all 89 jobs. Actual chunk owners
+can vary; no rank is required to own work when other ranks exhaust a cheap
+job first. Both final XML comparison summaries have 88 pages, zero byte
+differences, zero comment-stripped differences and 13 matching failure
+strings, with replay calls consumed. Scratch chunks_corpus.log ends with
+ALL_DYNAMIC_CORPUS_CHECKS_PASSED.
+
+The isolated native-reference Conv, depthwise Conv, MatMul/Gemm, LayerNorm,
+Div and Erf/GELU checks also have zero differing float32 bits for **both
+builds at 1/2/4/6 ranks**, including optimized subgraph probes. Corpus contexts
+and all six token heads are compared directly; there are no hash tests.
+
+Scope: these are full encoder/decoder runs from recorded native staff inputs,
+followed by check_xml replay against the unchanged page fixtures. They are
+not fresh live page segmentation or physical-phone inference. All requested
+implementation, simulated imbalance, instruction, operator, corpus and build
+checks are complete. Physical phone per-rank profiling was not available;
+therefore the Android core-heterogeneity diagnosis and the best device-specific
+thread count remain to be confirmed on the maintainer's device. This does not
+block using the compatible dynamic module at the existing count.
+
+Final unattended decisions: keep the host protocol and library default intact;
+recommend an app thread count capped at eight with an override; use measured
+per-op work budgets and a diagnostic-only sleeping-rank simulation; retain
+all raw data/modules in scratch. No source changed after the passing final
+build checks. No edits to Partsong/homr, data/report dumps in Git, pushes or
+posts. Work is committed locally on cx/chunks.
