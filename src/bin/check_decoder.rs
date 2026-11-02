@@ -7,8 +7,10 @@ use std::{fs, path::Path};
 fn floats(p: &Path) -> Vec<f32> {
     fs::read(p)
         .unwrap()
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect()
 }
 fn run() -> Result<(), String> {
@@ -31,6 +33,8 @@ fn run() -> Result<(), String> {
     let (mut staffs, mut steps, mut differences, mut length_differences) = (0, 0, 0, 0);
     let (mut max_abs, mut total_abs, mut attention_count) = (0.0f64, 0.0f64, 0usize);
     let mut errors = Vec::new();
+    let mut absolute_errors = Vec::new();
+    let mut compared_steps = 0;
     let vocab = Vocab::default();
     for page in pages {
         let src = root.join(&page);
@@ -57,6 +61,7 @@ fn run() -> Result<(), String> {
                 let result = session.step(input)?;
                 let t = result.tokens;
                 if let Some(reference) = refs.get(index) {
+                    compared_steps += 1;
                     let expected: [usize; 6] =
                         std::array::from_fn(|i| reference["tokens"][i].as_u64().unwrap() as usize);
                     if t != expected {
@@ -78,6 +83,7 @@ fn run() -> Result<(), String> {
                         let e = (result.attention[i] as f64
                             - reference["attention"][i].as_f64().unwrap())
                         .abs();
+                        absolute_errors.push(e);
                         max_abs = max_abs.max(e);
                         total_abs += e;
                         attention_count += 1;
@@ -124,7 +130,14 @@ fn run() -> Result<(), String> {
         )
         .unwrap();
     }
-    let report = json!({"staffs":staffs,"steps":steps,"differing_steps":differences,"length_differences":length_differences,"attention_max_abs":max_abs,"attention_mean_abs":total_abs/attention_count as f64,"differences":errors});
+    absolute_errors.sort_by(f64::total_cmp);
+    let percentile = |p: f64| {
+        absolute_errors
+            .get(((absolute_errors.len().saturating_sub(1)) as f64 * p) as usize)
+            .copied()
+            .unwrap_or(0.0)
+    };
+    let report = json!({"staffs":staffs,"steps":steps,"compared_steps":compared_steps,"attention_median_abs":percentile(0.5),"attention_p95_abs":percentile(0.95),"differing_steps":differences,"length_differences":length_differences,"attention_max_abs":max_abs,"attention_mean_abs":total_abs/attention_count as f64,"differences":errors});
     println!("{report}");
     fs::write(
         out.join("comparison.json"),

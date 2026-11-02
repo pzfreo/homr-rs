@@ -6,6 +6,8 @@
 mod activation;
 mod math;
 mod onnx;
+#[cfg(target_arch = "wasm32")]
+mod wasm;
 use activation::{gelu, sigmoid, softmax};
 use math::{norm, Linear, Quantized};
 use onnx::Graph;
@@ -92,7 +94,7 @@ impl Cache {
         self.k.extend_from_slice(k);
         self.v.extend_from_slice(v);
     }
-    fn attend(&self, q: &[f32]) -> Vec<f32> {
+    fn attend(&self, q: &[f32], mut map: Option<&mut [f32]>) -> Vec<f32> {
         let mut out = vec![0.0; DIM];
         let len = self.k.len() / DIM;
         let mut scores = vec![0.0; len];
@@ -105,34 +107,59 @@ impl Cache {
                 ) * 0.125;
             }
             softmax(&mut scores);
+            if let Some(map) = map.as_deref_mut() {
+                map[h * len..(h + 1) * len].copy_from_slice(&scores);
+            }
             for (p, &s) in scores.iter().enumerate() {
-                for d in 0..HD {
-                    out[start + d] = s.mul_add(self.v[p * DIM + start + d], out[start + d]);
-                }
+                weighted_add(
+                    &mut out[start..start + HD],
+                    &self.v[p * DIM + start..p * DIM + start + HD],
+                    s,
+                );
             }
         }
         out
     }
-    fn map(&self, q: &[f32]) -> Vec<f32> {
-        let len = self.k.len() / DIM;
-        let mut avg = vec![0.0; HEADS * len];
-        let mut scores = vec![0.0; len];
-        // The centroid has a separate scaled Einsum/Softmax path in the graph.
-        for h in 0..HEADS {
-            for (p, s) in scores.iter_mut().enumerate() {
-                *s = dot_float(
-                    &q[h * HD..(h + 1) * HD],
-                    &self.k[p * DIM + h * HD..p * DIM + (h + 1) * HD],
-                ) * 0.125;
-            }
-            softmax(&mut scores);
-            avg[h * len..(h + 1) * len].copy_from_slice(&scores);
-        }
-        avg
+}
+#[inline]
+fn weighted_add(out: &mut [f32], values: &[f32], scale: f32) {
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    // SAFETY: both slices are HD (64) floats, a multiple of four.
+    unsafe {
+        weighted_add_simd(out, values, scale);
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+    for (o, &v) in out.iter_mut().zip(values) {
+        *o = activation::fma(scale, v, *o);
+    }
+}
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+unsafe fn weighted_add_simd(out: &mut [f32], values: &[f32], scale: f32) {
+    use core::arch::wasm32::*;
+    let scale = f64x2_splat(scale as f64);
+    for i in (0..out.len()).step_by(4) {
+        let v = v128_load(values.as_ptr().add(i).cast());
+        let o = v128_load(out.as_ptr().add(i).cast());
+        let lo = f64x2_add(
+            f64x2_mul(f64x2_promote_low_f32x4(v), scale),
+            f64x2_promote_low_f32x4(o),
+        );
+        let hi = f64x2_add(
+            f64x2_mul(
+                f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(v, v)),
+                scale,
+            ),
+            f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(o, o)),
+        );
+        let result =
+            i32x4_shuffle::<0, 1, 4, 5>(f32x4_demote_f64x2_zero(lo), f32x4_demote_f64x2_zero(hi));
+        v128_store(out.as_mut_ptr().add(i).cast(), result);
     }
 }
 fn dot_float(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).fold(0.0, |s, (&a, &b)| a.mul_add(b, s))
+    a.iter()
+        .zip(b)
+        .fold(0.0, |s, (&a, &b)| activation::fma(a, b, s))
 }
 struct BlockState {
     self_cache: Cache,
@@ -176,6 +203,11 @@ impl Decoder {
             Embedding::load(&g, "slur")?,
             Embedding::load(&g, "pos")?,
         ];
+        for (e, rows) in embeddings.iter().zip([260, 72, 7, 62, 5, MAX_STEPS]) {
+            if e.rows != rows {
+                return Err("unsupported embedding vocabulary".into());
+            }
+        }
         let mut blocks = Vec::new();
         for b in 0..8 {
             let s = 3 * b;
@@ -225,7 +257,7 @@ impl Decoder {
         if emb_gain.len() != DIM || emb_bias.len() != DIM {
             return Err("embedding normalization shape".into());
         }
-        Ok(Self {
+        let model = Self {
             embeddings,
             emb_gain,
             emb_bias,
@@ -239,7 +271,29 @@ impl Decoder {
                 head("articulations")?,
                 head("slurs")?,
             ],
-        })
+        };
+        for b in &model.blocks {
+            for (matrix, expected) in [
+                (&b.qkv, (DIM, 3 * DIM)),
+                (&b.self_out, (DIM, 2 * DIM)),
+                (&b.q, (DIM, DIM)),
+                (&b.k, (DIM, DIM)),
+                (&b.v, (DIM, DIM)),
+                (&b.cross_out, (DIM, 2 * DIM)),
+                (&b.ff_in, (DIM, 8 * DIM)),
+                (&b.ff_out, (4 * DIM, DIM)),
+            ] {
+                if matrix.shape() != expected {
+                    return Err("unsupported decoder matrix dimensions".into());
+                }
+            }
+        }
+        for (head, n) in model.heads.iter().zip([260, 72, 7, 5, 62, 5]) {
+            if head.shape() != (DIM, n) {
+                return Err("unsupported output head dimensions".into());
+            }
+        }
+        Ok(model)
     }
     pub fn session(&self, context: &[f32]) -> Result<Session<'_>, String> {
         if context.len() != CONTEXT_POSITIONS * DIM || context.iter().any(|x| !x.is_finite()) {
@@ -332,16 +386,21 @@ impl Session<'_> {
             state.self_cache.append(&qkv[DIM..2 * DIM], &qkv[2 * DIM..]);
             residual(
                 &mut x,
-                gated(b.self_out.run(&state.self_cache.attend(&qkv[..DIM]))),
+                gated(b.self_out.run(&state.self_cache.attend(&qkv[..DIM], None))),
             );
             let input = norm(&x, &b.gains[1], None);
             let q = b.q.run(&input);
             if self.position > 0 {
                 state.cross_cache.append(&state.extra_k, &state.extra_v);
             }
-            let a = state.cross_cache.attend(&q);
-            if i >= 5 {
-                maps.push(state.cross_cache.map(&q));
+            let mut map = if i >= 5 {
+                Some(vec![0.0; HEADS * (CONTEXT_POSITIONS + self.position)])
+            } else {
+                None
+            };
+            let a = state.cross_cache.attend(&q, map.as_deref_mut());
+            if let Some(map) = map {
+                maps.push(map);
             }
             residual(&mut x, gated(b.cross_out.run(&a)));
             let input = norm(&x, &b.gains[2], None);
@@ -367,20 +426,24 @@ impl Session<'_> {
             }
             best
         });
-        let (mut sum, mut sx, mut sy) = (0.0f32, 0.0f32, 0.0f32);
+        let mut sums = [[[0.0f32; 4]; 2]; 3];
         for p in 0..CONTEXT_POSITIONS {
             let mut a = 0.0;
             let len = CONTEXT_POSITIONS + self.position;
             for h in 0..HEADS {
                 let j = h * len + p;
-                a += ((maps[0][j] + maps[1][j]) + maps[2][j]) * (1.0 / 3.0);
+                a += ((maps[0][j] + maps[1][j]) + maps[2][j]) / 3.0;
             }
             let a = (a * (1.0 / HEADS as f32)).max(1e-4);
             let a = libm::powf(a, 4.0);
-            sum += a;
-            sx += a * ((p % 80) as f32 + 0.5);
-            sy += a * ((p / 80) as f32 + 0.5);
+            sums[0][p % 8 / 4][p % 4] += a;
+            sums[1][p % 8 / 4][p % 4] += a * ((p % 80) as f32 + 0.5);
+            sums[2][p % 8 / 4][p % 4] += a * ((p / 80) as f32 + 0.5);
         }
+        let [sum, sx, sy] = sums.map(|s| {
+            let v: [f32; 4] = std::array::from_fn(|i| s[0][i] + s[1][i]);
+            (v[0] + v[1]) + (v[2] + v[3])
+        });
         self.position += 1;
         Ok(Step {
             tokens,

@@ -5,7 +5,16 @@
 #![allow(clippy::excessive_precision)]
 #[inline]
 pub(super) fn fma(a: f32, b: f32, c: f32) -> f32 {
-    a.mul_add(b, c)
+    // SIMD128 has no fused float32 multiply-add. Widening preserves the
+    // float32 product, then narrows once; corpus checks bound any double rounding.
+    #[cfg(target_arch = "wasm32")]
+    {
+        (a as f64 * b as f64 + c as f64) as f32
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        a.mul_add(b, c)
+    }
 }
 fn horner(x: f32, coefficients: &[f32]) -> f32 {
     coefficients[1..]
@@ -39,7 +48,7 @@ pub(super) fn sigmoid(x: f32) -> f32 {
     (p / q + 0.5).clamp(0.0, 1.0)
 }
 fn exp_reduced(x: f32, coefficients: &[f32]) -> f32 {
-    let biased = fma(x, 1.44269504088896341, 12582912.0);
+    let biased = fma(x, std::f32::consts::LOG2_E, 12582912.0);
     let m = biased - 12582912.0;
     let r = fma(m, -6.93145752e-1, x);
     let r = fma(m, -1.42860677e-6, r);
@@ -109,7 +118,7 @@ pub(super) fn softmax(x: &mut [f32]) {
     let max = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let mut lanes = [0.0f32; 4];
     let bulk = x.len() / 4 * 4;
-    for chunk in x[..bulk].chunks_exact_mut(4) {
+    for chunk in x[..bulk].as_chunks_mut::<4>().0 {
         for (s, v) in lanes.iter_mut().zip(chunk) {
             *v = exp(*v - max);
             *s += *v;

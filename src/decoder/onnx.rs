@@ -8,13 +8,15 @@ pub(super) struct Tensor {
 }
 impl Tensor {
     pub fn floats(&self) -> Result<Vec<f32>, String> {
-        if self.kind != 1 || self.data.len() % 4 != 0 {
+        if self.kind != 1 || !self.data.len().is_multiple_of(4) {
             return Err("expected float32 initializer".into());
         }
         Ok(self
             .data
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect())
     }
     pub fn scalar(&self) -> Result<f32, String> {
