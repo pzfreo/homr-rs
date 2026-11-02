@@ -14,7 +14,11 @@ pub struct Gray {
 
 impl Gray {
     pub fn new(w: usize, h: usize, fill: u8) -> Gray {
-        Gray { w, h, data: vec![fill; w * h] }
+        Gray {
+            w,
+            h,
+            data: vec![fill; w * h],
+        }
     }
     pub fn at(&self, x: usize, y: usize) -> u8 {
         self.data[y * self.w + x]
@@ -22,11 +26,17 @@ impl Gray {
     /// numpy slicing image[y0:y1, x0:x1] (bounds clamped as numpy does).
     pub fn slice(&self, x0: i64, y0: i64, x1: i64, y1: i64) -> Gray {
         let cl = |v: i64, n: usize| v.clamp(0, n as i64) as usize;
-        let (x0, x1, y0, y1) = (cl(x0, self.w), cl(x1, self.w), cl(y0, self.h), cl(y1, self.h));
+        let (x0, x1, y0, y1) = (
+            cl(x0, self.w),
+            cl(x1, self.w),
+            cl(y0, self.h),
+            cl(y1, self.h),
+        );
         let (w, h) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
         let mut out = Gray::new(w, h, 0);
         for y in 0..h {
-            out.data[y * w..(y + 1) * w].copy_from_slice(&self.data[(y0 + y) * self.w + x0..(y0 + y) * self.w + x0 + w]);
+            out.data[y * w..(y + 1) * w]
+                .copy_from_slice(&self.data[(y0 + y) * self.w + x0..(y0 + y) * self.w + x0 + w]);
         }
         out
     }
@@ -43,7 +53,15 @@ pub fn resize(src: &Gray, dw: usize, dh: usize) -> Gray {
 
 /// The part [x0, x1) x [y0, y1) of cv2.resize(img, (dw, dh)), computed alone
 /// (each output pixel only depends on the source pixels around it).
-pub fn resize_region(src: &Gray, dw: usize, dh: usize, x0: usize, y0: usize, x1: usize, y1: usize) -> Gray {
+pub fn resize_region(
+    src: &Gray,
+    dw: usize,
+    dh: usize,
+    x0: usize,
+    y0: usize,
+    x1: usize,
+    y1: usize,
+) -> Gray {
     let (x1, y1) = (x1.min(dw), y1.min(dh));
     let (ow, oh) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
     if dw == src.w && dh == src.h {
@@ -55,7 +73,8 @@ pub fn resize_region(src: &Gray, dw: usize, dh: usize, x0: usize, y0: usize, x1:
     let scale_y = 1.0 / inv_scale_y;
     let iscale_x = scale_x.round_ties_even() as i64;
     let iscale_y = scale_y.round_ties_even() as i64;
-    let is_area_fast = (scale_x - iscale_x as f64).abs() < f64::EPSILON && (scale_y - iscale_y as f64).abs() < f64::EPSILON;
+    let is_area_fast = (scale_x - iscale_x as f64).abs() < f64::EPSILON
+        && (scale_y - iscale_y as f64).abs() < f64::EPSILON;
     if is_area_fast && iscale_x == 2 && iscale_y == 2 {
         return resize_area_fast_2x(src, dw, dh).slice(x0 as i64, y0 as i64, x1 as i64, y1 as i64);
     }
@@ -118,7 +137,17 @@ pub fn resize_region(src: &Gray, dw: usize, dh: usize, x0: usize, y0: usize, x1:
         }
         out
     };
-    let clip = |y: i64| if y >= 0 { if y < sh { y } else { sh - 1 } } else { 0 };
+    let clip = |y: i64| {
+        if y >= 0 {
+            if y < sh {
+                y
+            } else {
+                sh - 1
+            }
+        } else {
+            0
+        }
+    };
     let mut dst = Gray::new(ow, oh, 0);
     let mut cache: Vec<(i64, Vec<i32>)> = Vec::new();
     for i in 0..oh {
@@ -151,8 +180,13 @@ fn resize_area_fast_2x(src: &Gray, dw: usize, dh: usize) -> Gray {
         for dx in 0..dw {
             let sx0 = dx * 2;
             if sy0 + 2 <= src.h && sx0 + 2 <= src.w {
-                let s = src.at(sx0, sy0) as i32 + src.at(sx0 + 1, sy0) as i32 + src.at(sx0, sy0 + 1) as i32 + src.at(sx0 + 1, sy0 + 1) as i32;
-                dst.data[dy * dw + dx] = ((s as f32 * 0.25f32) as f64).round_ties_even().clamp(0.0, 255.0) as u8;
+                let s = src.at(sx0, sy0) as i32
+                    + src.at(sx0 + 1, sy0) as i32
+                    + src.at(sx0, sy0 + 1) as i32
+                    + src.at(sx0 + 1, sy0 + 1) as i32;
+                dst.data[dy * dw + dx] = ((s as f32 * 0.25f32) as f64)
+                    .round_ties_even()
+                    .clamp(0.0, 255.0) as u8;
             } else {
                 let (mut sum, mut count) = (0i32, 0i32);
                 for sy in sy0..(sy0 + 2).min(src.h) {
@@ -161,7 +195,13 @@ fn resize_area_fast_2x(src: &Gray, dw: usize, dh: usize) -> Gray {
                         count += 1;
                     }
                 }
-                dst.data[dy * dw + dx] = if count > 0 { ((sum as f32 / count as f32) as f64).round_ties_even().clamp(0.0, 255.0) as u8 } else { 0 };
+                dst.data[dy * dw + dx] = if count > 0 {
+                    ((sum as f32 / count as f32) as f64)
+                        .round_ties_even()
+                        .clamp(0.0, 255.0) as u8
+                } else {
+                    0
+                };
             }
         }
     }
@@ -247,7 +287,8 @@ pub fn warp_affine(src: &Gray, m0: &[f64; 6], dw: usize, dh: usize, fill: u8) ->
     const AB_SCALE: f64 = 1024.0;
     const INTER_BITS: i32 = 5;
     const TAB: i32 = 32;
-    let sat = |v: f64| -> i64 { v.round_ties_even().clamp(i32::MIN as f64, i32::MAX as f64) as i64 };
+    let sat =
+        |v: f64| -> i64 { v.round_ties_even().clamp(i32::MIN as f64, i32::MAX as f64) as i64 };
     let adelta: Vec<i64> = (0..dw).map(|x| sat(m[0] * x as f64 * AB_SCALE)).collect();
     let bdelta: Vec<i64> = (0..dw).map(|x| sat(m[3] * x as f64 * AB_SCALE)).collect();
     let round_delta = (AB_SCALE as i64) / TAB as i64 / 2;
@@ -264,7 +305,13 @@ pub fn warp_affine(src: &Gray, m0: &[f64; 6], dw: usize, dh: usize, fill: u8) ->
             let sy = s16(yy >> INTER_BITS);
             let fx = xx & (TAB as i64 - 1);
             let fy = yy & (TAB as i64 - 1);
-            let w = [(TAB as i64 - fx) * (TAB as i64 - fy), fx * (TAB as i64 - fy), (TAB as i64 - fx) * fy, fx * fy].map(|v| v * 32);
+            let w = [
+                (TAB as i64 - fx) * (TAB as i64 - fy),
+                fx * (TAB as i64 - fy),
+                (TAB as i64 - fx) * fy,
+                fx * fy,
+            ]
+            .map(|v| v * 32);
             let px = |xx: i64, yy: i64| -> i64 {
                 if xx >= 0 && yy >= 0 && xx < sw && yy < sh {
                     src.at(xx as usize, yy as usize) as i64
@@ -272,14 +319,30 @@ pub fn warp_affine(src: &Gray, m0: &[f64; 6], dw: usize, dh: usize, fill: u8) ->
                     fill as i64
                 }
             };
-            let v = if (sx as u64) < (sw - 1).max(0) as u64 && (sy as u64) < (sh - 1).max(0) as u64 && sx >= 0 && sy >= 0 {
+            let v = if (sx as u64) < (sw - 1).max(0) as u64
+                && (sy as u64) < (sh - 1).max(0) as u64
+                && sx >= 0
+                && sy >= 0
+            {
                 let sxu = sx as usize;
                 let syu = sy as usize;
-                ((src.at(sxu, syu) as i64 * w[0] + src.at(sxu + 1, syu) as i64 * w[1] + src.at(sxu, syu + 1) as i64 * w[2] + src.at(sxu + 1, syu + 1) as i64 * w[3] + (1 << 14)) >> 15).clamp(0, 255)
+                ((src.at(sxu, syu) as i64 * w[0]
+                    + src.at(sxu + 1, syu) as i64 * w[1]
+                    + src.at(sxu, syu + 1) as i64 * w[2]
+                    + src.at(sxu + 1, syu + 1) as i64 * w[3]
+                    + (1 << 14))
+                    >> 15)
+                    .clamp(0, 255)
             } else if sx >= sw || sx + 1 < 0 || sy >= sh || sy + 1 < 0 {
                 fill as i64
             } else {
-                ((px(sx, sy) * w[0] + px(sx + 1, sy) * w[1] + px(sx, sy + 1) * w[2] + px(sx + 1, sy + 1) * w[3] + (1 << 14)) >> 15).clamp(0, 255)
+                ((px(sx, sy) * w[0]
+                    + px(sx + 1, sy) * w[1]
+                    + px(sx, sy + 1) * w[2]
+                    + px(sx + 1, sy + 1) * w[3]
+                    + (1 << 14))
+                    >> 15)
+                    .clamp(0, 255)
             };
             dst.data[y * dw + x] = v as u8;
         }
@@ -293,7 +356,12 @@ pub fn bounding_rect_f(pts: &[[f32; 2]]) -> (i64, i64, i64, i64) {
     let xmax = pts.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max);
     let ymin = pts.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
     let ymax = pts.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max);
-    let (x0, x1, y0, y1) = (cv_floor(xmin as f64), cv_floor(xmax as f64), cv_floor(ymin as f64), cv_floor(ymax as f64));
+    let (x0, x1, y0, y1) = (
+        cv_floor(xmin as f64),
+        cv_floor(xmax as f64),
+        cv_floor(ymin as f64),
+        cv_floor(ymax as f64),
+    );
     (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
 }
 
@@ -328,7 +396,8 @@ pub struct Subdiv2D {
 }
 
 fn triangle_area(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f64 {
-    (b[0] as f64 - a[0] as f64) * (c[1] as f64 - a[1] as f64) - (b[1] as f64 - a[1] as f64) * (c[0] as f64 - a[0] as f64)
+    (b[0] as f64 - a[0] as f64) * (c[1] as f64 - a[1] as f64)
+        - (b[1] as f64 - a[1] as f64) * (c[0] as f64 - a[0] as f64)
 }
 
 fn in_circle(pt: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> i32 {
@@ -353,8 +422,15 @@ impl Subdiv2D {
         let big = 3.0f32 * (rect.2.max(rect.3) as f32);
         let (rx, ry) = (rect.0 as f32, rect.1 as f32);
         let mut s = Subdiv2D {
-            qedges: vec![QuadEdge { next: [0; 4], pt: [0; 4] }],
-            vtx: vec![Vertex { first_edge: 0, kind: -1, pt: [0.0, 0.0] }],
+            qedges: vec![QuadEdge {
+                next: [0; 4],
+                pt: [0; 4],
+            }],
+            vtx: vec![Vertex {
+                first_edge: 0,
+                kind: -1,
+                pt: [0.0, 0.0],
+            }],
             free_qedge: 0,
             free_point: 0,
             recent_edge: 0,
@@ -442,12 +518,18 @@ impl Subdiv2D {
     }
     fn new_edge(&mut self) -> i32 {
         if self.free_qedge <= 0 {
-            self.qedges.push(QuadEdge { next: [0; 4], pt: [0; 4] });
+            self.qedges.push(QuadEdge {
+                next: [0; 4],
+                pt: [0; 4],
+            });
             self.free_qedge = self.qedges.len() as i32 - 1;
         }
         let edge = self.free_qedge * 4;
         self.free_qedge = self.qedges[(edge >> 2) as usize].next[1];
-        self.qedges[(edge >> 2) as usize] = QuadEdge { next: [edge, edge + 3, edge + 2, edge + 1], pt: [0; 4] };
+        self.qedges[(edge >> 2) as usize] = QuadEdge {
+            next: [edge, edge + 3, edge + 2, edge + 1],
+            pt: [0; 4],
+        };
         edge
     }
     fn delete_edge(&mut self, edge: i32) {
@@ -463,12 +545,20 @@ impl Subdiv2D {
     }
     fn new_point(&mut self, pt: [f32; 2], is_virtual: bool, first_edge: i32) -> i32 {
         if self.free_point == 0 {
-            self.vtx.push(Vertex { first_edge: 0, kind: -1, pt: [0.0, 0.0] });
+            self.vtx.push(Vertex {
+                first_edge: 0,
+                kind: -1,
+                pt: [0.0, 0.0],
+            });
             self.free_point = self.vtx.len() as i32 - 1;
         }
         let v = self.free_point;
         self.free_point = self.vtx[v as usize].first_edge;
-        self.vtx[v as usize] = Vertex { first_edge, kind: is_virtual as i32, pt };
+        self.vtx[v as usize] = Vertex {
+            first_edge,
+            kind: is_virtual as i32,
+            pt,
+        };
         v
     }
     /// locate: (location, edge, vertex); location 0 inside, 1 vertex, 2 on edge, -2 error.
@@ -481,7 +571,11 @@ impl Subdiv2D {
         if self.qedges.len() < 4 {
             return Err("Subdivision is empty".into());
         }
-        if pt[0] < self.top_left[0] || pt[1] < self.top_left[1] || pt[0] >= self.bottom_right[0] || pt[1] >= self.bottom_right[1] {
+        if pt[0] < self.top_left[0]
+            || pt[1] < self.top_left[1]
+            || pt[0] >= self.bottom_right[0]
+            || pt[1] >= self.bottom_right[1]
+        {
             return Err("point outside the subdivision (OpenCV raises StsOutOfRange)".into());
         }
         let mut edge = self.recent_edge;
@@ -578,7 +672,14 @@ impl Subdiv2D {
             let temp_dst = self.dst(temp_edge);
             let curr_org = self.org(curr_edge);
             let curr_dst = self.dst(curr_edge);
-            if self.is_right_of(self.pt(temp_dst), curr_edge) > 0 && in_circle(self.pt(curr_org), self.pt(temp_dst), self.pt(curr_dst), self.pt(curr_point)) < 0 {
+            if self.is_right_of(self.pt(temp_dst), curr_edge) > 0
+                && in_circle(
+                    self.pt(curr_org),
+                    self.pt(temp_dst),
+                    self.pt(curr_dst),
+                    self.pt(curr_point),
+                ) < 0
+            {
                 self.swap_edges(curr_edge);
                 curr_edge = self.get_edge(curr_edge, PREV_AROUND_ORG);
             } else if curr_org == first_point {

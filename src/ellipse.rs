@@ -14,7 +14,10 @@ fn lstsq(a: &[f64], rows: usize, cols: usize, b: &[f64]) -> Vec<f64> {
     let mut a = a.to_vec();
     let mut b = b.to_vec();
     for k in 0..cols {
-        let norm = (k..rows).map(|i| a[i * cols + k].powi(2)).sum::<f64>().sqrt();
+        let norm = (k..rows)
+            .map(|i| a[i * cols + k].powi(2))
+            .sum::<f64>()
+            .sqrt();
         if norm == 0.0 {
             continue;
         }
@@ -42,7 +45,11 @@ fn lstsq(a: &[f64], rows: usize, cols: usize, b: &[f64]) -> Vec<f64> {
     for k in (0..cols).rev() {
         let s: f64 = (k + 1..cols).map(|j| a[k * cols + j] * x[j]).sum();
         let d = a[k * cols + k];
-        x[k] = if d.abs() > 1e-300 { (b[k] - s) / d } else { 0.0 };
+        x[k] = if d.abs() > 1e-300 {
+            (b[k] - s) / d
+        } else {
+            0.0
+        };
     }
     x
 }
@@ -95,7 +102,10 @@ fn singular_values(a: &[f64], rows: usize, cols: usize) -> Vec<f64> {
 }
 
 fn ofs(i: usize, eps: f32) -> [f32; 2] {
-    [((i & 1) as i32 * 2 - 1) as f32 * eps, ((i & 2) as i32 - 1) as f32 * eps]
+    [
+        ((i & 1) as i32 * 2 - 1) as f32 * eps,
+        ((i & 2) as i32 - 1) as f32 * eps,
+    ]
 }
 
 /// (cx, cy, w, h, angle) as OpenCV returns them (float32), for a contour of >= 5 points.
@@ -146,17 +156,33 @@ fn fit_no_direct(points: &[[i32; 2]]) -> (f32, f32, f32, f32, f32) {
     // centre: [[2a, c], [c, 2b]] x = [d, e]
     let (m00, m01, m11) = (2.0 * gfp[0], gfp[2], 2.0 * gfp[1]);
     let det = m00 * m11 - m01 * m01;
-    let rp0 = if det != 0.0 { (gfp[3] * m11 - m01 * gfp[4]) / det } else { 0.0 };
-    let rp1 = if det != 0.0 { (m00 * gfp[4] - m01 * gfp[3]) / det } else { 0.0 };
+    let rp0 = if det != 0.0 {
+        (gfp[3] * m11 - m01 * gfp[4]) / det
+    } else {
+        0.0
+    };
+    let rp1 = if det != 0.0 {
+        (m00 * gfp[4] - m01 * gfp[3]) / det
+    } else {
+        0.0
+    };
     let mut a3 = vec![0.0; n * 3];
     for (i, p) in pts.iter().enumerate() {
         let px = (p[0] - c[0]) as f64 * scale;
         let py = (p[1] - c[1]) as f64 * scale;
-        a3[i * 3..i * 3 + 3].copy_from_slice(&[(px - rp0) * (px - rp0), (py - rp1) * (py - rp1), (px - rp0) * (py - rp1)]);
+        a3[i * 3..i * 3 + 3].copy_from_slice(&[
+            (px - rp0) * (px - rp0),
+            (py - rp1) * (py - rp1),
+            (px - rp0) * (py - rp1),
+        ]);
     }
     let g = lstsq(&a3, n, 3, &vec![1.0; n]);
     let rp4 = -0.5 * libm::atan2(g[2], g[1] - g[0]);
-    let t = if g[2].abs() > 1e-8 { g[2] / libm::sin(-2.0 * rp4) } else { g[1] - g[0] };
+    let t = if g[2].abs() > 1e-8 {
+        g[2] / libm::sin(-2.0 * rp4)
+    } else {
+        g[1] - g[0]
+    };
     let mut rp2 = (g[0] + g[1] - t).abs();
     if rp2 > 1e-8 {
         rp2 = (2.0 / rp2).sqrt();
@@ -184,13 +210,17 @@ fn fit_no_direct(points: &[[i32; 2]]) -> (f32, f32, f32, f32, f32) {
 }
 
 fn det3(m: &[[f64; 3]; 3]) -> f64 {
-    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
 }
 
 /// Real eigenvectors of a 3x3 matrix (None if it has complex eigenvalues).
 fn eigvecs3(m: &[[f64; 3]; 3]) -> Option<Vec<[f64; 3]>> {
     let tr = m[0][0] + m[1][1] + m[2][2];
-    let c2 = m[0][0] * m[1][1] - m[0][1] * m[1][0] + m[0][0] * m[2][2] - m[0][2] * m[2][0] + m[1][1] * m[2][2] - m[1][2] * m[2][1];
+    let c2 = m[0][0] * m[1][1] - m[0][1] * m[1][0] + m[0][0] * m[2][2] - m[0][2] * m[2][0]
+        + m[1][1] * m[2][2]
+        - m[1][2] * m[2][1];
     let d = det3(m);
     // l^3 - tr l^2 + c2 l - d = 0, via the trigonometric method
     let p = c2 - tr * tr / 3.0;
@@ -200,14 +230,36 @@ fn eigvecs3(m: &[[f64; 3]; 3]) -> Option<Vec<[f64; 3]>> {
         return None;
     }
     let r = (-p / 3.0).max(0.0).sqrt();
-    let phi = if r == 0.0 { 0.0 } else { libm::acos(((3.0 * q) / (2.0 * p * r)).clamp(-1.0, 1.0)) / 3.0 };
+    let phi = if r == 0.0 {
+        0.0
+    } else {
+        libm::acos(((3.0 * q) / (2.0 * p * r)).clamp(-1.0, 1.0)) / 3.0
+    };
     let mut out = Vec::new();
     for k in 0..3 {
         let l = 2.0 * r * libm::cos(phi - 2.0 * std::f64::consts::PI * k as f64 / 3.0) + tr / 3.0;
-        let a = [[m[0][0] - l, m[0][1], m[0][2]], [m[1][0], m[1][1] - l, m[1][2]], [m[2][0], m[2][1], m[2][2] - l]];
-        let cross = |u: [f64; 3], v: [f64; 3]| [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+        let a = [
+            [m[0][0] - l, m[0][1], m[0][2]],
+            [m[1][0], m[1][1] - l, m[1][2]],
+            [m[2][0], m[2][1], m[2][2] - l],
+        ];
+        let cross = |u: [f64; 3], v: [f64; 3]| {
+            [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ]
+        };
         let cands = [cross(a[0], a[1]), cross(a[0], a[2]), cross(a[1], a[2])];
-        let best = cands.iter().cloned().max_by(|x, y| (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).partial_cmp(&(y[0] * y[0] + y[1] * y[1] + y[2] * y[2])).unwrap()).unwrap();
+        let best = cands
+            .iter()
+            .cloned()
+            .max_by(|x, y| {
+                (x[0] * x[0] + x[1] * x[1] + x[2] * x[2])
+                    .partial_cmp(&(y[0] * y[0] + y[1] * y[1] + y[2] * y[2]))
+                    .unwrap()
+            })
+            .unwrap();
         out.push(best);
     }
     Some(out)
@@ -248,16 +300,43 @@ fn fit_direct(points: &[[i32; 2]]) -> Option<(f32, f32, f32, f32, f32)> {
         let d = |i: usize, j: usize| dm[i][j];
         let mut tm = [[0f64; 3]; 3];
         for k in 0..3 {
-            tm[0][k] = d(k, 5) * d(3, 5) * d(4, 4) - d(k, 5) * d(3, 4) * d(4, 5) - d(k, 4) * d(3, 5) * d(5, 4) + d(k, 3) * d(4, 5) * d(5, 4) + d(k, 4) * d(3, 4) * d(5, 5) - d(k, 3) * d(4, 4) * d(5, 5);
-            tm[1][k] = d(k, 5) * d(3, 3) * d(4, 5) - d(k, 5) * d(3, 5) * d(4, 3) + d(k, 4) * d(3, 5) * d(5, 3) - d(k, 3) * d(4, 5) * d(5, 3) - d(k, 4) * d(3, 3) * d(5, 5) + d(k, 3) * d(4, 3) * d(5, 5);
-            tm[2][k] = d(k, 5) * d(3, 4) * d(4, 3) - d(k, 5) * d(3, 3) * d(4, 4) - d(k, 4) * d(3, 4) * d(5, 3) + d(k, 3) * d(4, 4) * d(5, 3) + d(k, 4) * d(3, 3) * d(5, 4) - d(k, 3) * d(4, 3) * d(5, 4);
+            let t0 = d(k, 5) * d(3, 5) * d(4, 4)
+                - d(k, 5) * d(3, 4) * d(4, 5)
+                - d(k, 4) * d(3, 5) * d(5, 4)
+                + d(k, 3) * d(4, 5) * d(5, 4)
+                + d(k, 4) * d(3, 4) * d(5, 5)
+                - d(k, 3) * d(4, 4) * d(5, 5);
+            let t1 = d(k, 5) * d(3, 3) * d(4, 5) - d(k, 5) * d(3, 5) * d(4, 3)
+                + d(k, 4) * d(3, 5) * d(5, 3)
+                - d(k, 3) * d(4, 5) * d(5, 3)
+                - d(k, 4) * d(3, 3) * d(5, 5)
+                + d(k, 3) * d(4, 3) * d(5, 5);
+            let t2 = d(k, 5) * d(3, 4) * d(4, 3)
+                - d(k, 5) * d(3, 3) * d(4, 4)
+                - d(k, 4) * d(3, 4) * d(5, 3)
+                + d(k, 3) * d(4, 4) * d(5, 3)
+                + d(k, 4) * d(3, 3) * d(5, 4)
+                - d(k, 3) * d(4, 3) * d(5, 4);
+            for (row, value) in tm.iter_mut().zip([t0, t1, t2]) {
+                row[k] = value;
+            }
         }
-        let ts = -(d(3, 5) * d(4, 4) * d(5, 3)) + d(3, 4) * d(4, 5) * d(5, 3) + d(3, 5) * d(4, 3) * d(5, 4) - d(3, 3) * d(4, 5) * d(5, 4) - d(3, 4) * d(4, 3) * d(5, 5) + d(3, 3) * d(4, 4) * d(5, 5);
+        let ts = -(d(3, 5) * d(4, 4) * d(5, 3))
+            + d(3, 4) * d(4, 5) * d(5, 3)
+            + d(3, 5) * d(4, 3) * d(5, 4)
+            - d(3, 3) * d(4, 5) * d(5, 4)
+            - d(3, 4) * d(4, 3) * d(5, 5)
+            + d(3, 3) * d(4, 4) * d(5, 5);
         let mut m = [[0f64; 3]; 3];
         for k in 0..3 {
-            m[0][k] = (d(2, k) + (d(2, 3) * tm[0][k] + d(2, 4) * tm[1][k] + d(2, 5) * tm[2][k]) / ts) / 2.0;
-            m[1][k] = -d(1, k) - (d(1, 3) * tm[0][k] + d(1, 4) * tm[1][k] + d(1, 5) * tm[2][k]) / ts;
-            m[2][k] = (d(0, k) + (d(0, 3) * tm[0][k] + d(0, 4) * tm[1][k] + d(0, 5) * tm[2][k]) / ts) / 2.0;
+            m[0][k] = (d(2, k)
+                + (d(2, 3) * tm[0][k] + d(2, 4) * tm[1][k] + d(2, 5) * tm[2][k]) / ts)
+                / 2.0;
+            m[1][k] =
+                -d(1, k) - (d(1, 3) * tm[0][k] + d(1, 4) * tm[1][k] + d(1, 5) * tm[2][k]) / ts;
+            m[2][k] = (d(0, k)
+                + (d(0, 3) * tm[0][k] + d(0, 4) * tm[1][k] + d(0, 5) * tm[2][k]) / ts)
+                / 2.0;
         }
         if det3(&m).abs() <= 1.0e-10 {
             eps = (s / (n * 2) as f64 * 1e-2) as f32;
@@ -265,7 +344,17 @@ fn fit_direct(points: &[[i32; 2]]) -> Option<(f32, f32, f32, f32, f32)> {
         }
         let ev = eigvecs3(&m)?;
         let cond: Vec<f64> = ev.iter().map(|e| 4.0 * e[0] * e[2] - e[1] * e[1]).collect();
-        let i = if cond[0] < cond[1] { if cond[1] < cond[2] { 2 } else { 1 } } else if cond[0] < cond[2] { 2 } else { 0 };
+        let i = if cond[0] < cond[1] {
+            if cond[1] < cond[2] {
+                2
+            } else {
+                1
+            }
+        } else if cond[0] < cond[2] {
+            2
+        } else {
+            0
+        };
         let e = ev[i];
         let mut norm = (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt();
         let sg = |v: f64| if v < 0.0 { -1.0 } else { 1.0 };
@@ -278,7 +367,8 @@ fn fit_direct(points: &[[i32; 2]]) -> Option<(f32, f32, f32, f32, f32)> {
             (tm[1][0] * pv[0] + tm[1][1] * pv[1] + tm[1][2] * pv[2]) / ts,
             (tm[2][0] * pv[0] + tm[2][1] * pv[1] + tm[2][2] * pv[2]) / ts,
         ];
-        let u1 = pv[2] * q[0] * q[0] - pv[1] * q[0] * q[1] + pv[0] * q[1] * q[1] + pv[1] * pv[1] * q[2];
+        let u1 =
+            pv[2] * q[0] * q[0] - pv[1] * q[0] * q[1] + pv[0] * q[1] * q[1] + pv[1] * pv[1] * q[2];
         let u2 = pv[0] * pv[2] * q[2];
         let l1 = (pv[1] * pv[1] + (pv[0] - pv[2]) * (pv[0] - pv[2])).sqrt();
         let l2 = pv[0] + pv[2];
@@ -288,17 +378,25 @@ fn fit_direct(points: &[[i32; 2]]) -> Option<(f32, f32, f32, f32, f32)> {
         let x0 = (p1 / l3 / scale) + c[0];
         let y0 = (p2 / l3 / scale) + c[1];
         let a = 2f64.sqrt() * ((u1 - 4.0 * u2) / ((l1 - l2) * l3)).sqrt() / scale;
-        let b = 2f64.sqrt() * (-1.0 * ((u1 - 4.0 * u2) / ((l1 + l2) * l3))).sqrt() / scale;
+        let b = 2f64.sqrt() * (-((u1 - 4.0 * u2) / ((l1 + l2) * l3))).sqrt() / scale;
         let pi = std::f64::consts::PI;
-        let theta = if pv[1] == 0.0 { if pv[0] < pv[2] { 0.0 } else { pi / 2.0 } } else { pi / 2.0 + 0.5 * libm::atan2(pv[1], pv[0] - pv[2]) };
-        let (mut w, mut h) = ((2.0 * a) as f32, (2.0 * b) as f32);
-        let angle;
-        if w > h {
-            std::mem::swap(&mut w, &mut h);
-            angle = ((90.0 + theta * 180.0 / pi) % 180.0) as f32;
+        let theta = if pv[1] == 0.0 {
+            if pv[0] < pv[2] {
+                0.0
+            } else {
+                pi / 2.0
+            }
         } else {
-            angle = ((theta * 180.0 / pi) % 180.0) as f32;
-        }
+            pi / 2.0 + 0.5 * libm::atan2(pv[1], pv[0] - pv[2])
+        };
+        let (mut w, mut h) = ((2.0 * a) as f32, (2.0 * b) as f32);
+
+        let angle = if w > h {
+            std::mem::swap(&mut w, &mut h);
+            ((90.0 + theta * 180.0 / pi) % 180.0) as f32
+        } else {
+            ((theta * 180.0 / pi) % 180.0) as f32
+        };
         return Some((x0 as f32, y0 as f32, w, h, angle));
     }
     None

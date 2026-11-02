@@ -1,11 +1,12 @@
 //! Prototype Rust port of homr (https://github.com/liebharc/homr).
 pub mod braces;
 pub mod contours;
-pub mod page;
+pub mod decoder;
 pub mod ellipse;
 pub mod geom;
 pub mod musicxml;
 pub mod npmath;
+pub mod page;
 pub mod polygon;
 pub mod preprocess;
 pub mod raster;

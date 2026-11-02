@@ -39,7 +39,10 @@ impl Symbol {
     }
     /// str(symbol)
     pub fn key(&self) -> String {
-        format!("{} {} {} {} {} {}", self.rhythm, self.pitch, self.lift, self.articulation, self.slur, self.position)
+        format!(
+            "{} {} {} {} {} {}",
+            self.rhythm, self.pitch, self.lift, self.articulation, self.slur, self.position
+        )
     }
     pub fn duration(&self) -> Duration {
         if !(self.rhythm.starts_with("note") || self.rhythm.starts_with("rest")) {
@@ -112,7 +115,13 @@ impl Duration {
         if actual_notes != normal_notes {
             dur = dur * Frac::new(normal_notes, actual_notes);
         }
-        Duration { dots, actual_notes, normal_notes, fraction: dur, kern }
+        Duration {
+            dots,
+            actual_notes,
+            normal_notes,
+            fraction: dur,
+            kern,
+        }
     }
 }
 
@@ -130,7 +139,11 @@ pub fn kern_duration(kern: &str) -> Duration {
     }
     let digits: String = kern.chars().take_while(|c| c.is_ascii_digit()).collect();
     let rest = &kern[digits.len()..];
-    let base: i64 = if digits.is_empty() { 4 } else { digits.parse().unwrap() };
+    let base: i64 = if digits.is_empty() {
+        4
+    } else {
+        digits.parse().unwrap()
+    };
     let dots = rest.matches('.').count() as i64;
     if kern.contains('G') {
         return Duration::new(Frac::ZERO, dots, 1, 1, base);
@@ -185,7 +198,8 @@ fn group_into_measures(chords: Vec<Vec<Symbol>>) -> Vec<Vec<Vec<Symbol>>> {
     let mut measures = Vec::new();
     let mut current = Vec::new();
     for chord in chords {
-        let ends = !chord.is_empty() && (chord[0].rhythm.contains("barline") || chord[0].rhythm.contains("repeat"));
+        let ends = !chord.is_empty()
+            && (chord[0].rhythm.contains("barline") || chord[0].rhythm.contains("repeat"));
         current.push(chord);
         if ends {
             measures.push(std::mem::take(&mut current));
@@ -226,7 +240,10 @@ fn fix_over_eager_tuplets(chords: Vec<Vec<Symbol>>) -> Vec<Vec<Symbol>> {
     let mut out = Vec::new();
     for m in measures {
         if measure_duration(&m) < mean {
-            out.extend(m.iter().map(|c| c.iter().map(|s| s.remove_tuplet()).collect::<Vec<_>>()));
+            out.extend(
+                m.iter()
+                    .map(|c| c.iter().map(|s| s.remove_tuplet()).collect::<Vec<_>>()),
+            );
         } else {
             out.extend(m);
         }
@@ -273,7 +290,8 @@ fn remove_duplicated_pitches(chord: Vec<Symbol>) -> Vec<Symbol> {
 }
 
 fn remove_redundant_clefs_keys_times(chords: Vec<Vec<Symbol>>) -> Vec<Vec<Symbol>> {
-    let (mut clef_upper, mut clef_lower, mut key, mut time) = (String::new(), String::new(), String::new(), String::new());
+    let (mut clef_upper, mut clef_lower, mut key, mut time) =
+        (String::new(), String::new(), String::new(), String::new());
     chords
         .into_iter()
         .map(|chord| {
@@ -322,7 +340,7 @@ pub fn remove_duplicated_symbols(symbols: &[Symbol]) -> Vec<Symbol> {
 pub fn sort_token_chords(symbols: &[Symbol]) -> Vec<Vec<Symbol>> {
     let mut chords = group_into_chords(symbols);
     for c in &mut chords {
-        c.sort_by(|a, b| b.key().cmp(&a.key()));
+        c.sort_by_key(|a| std::cmp::Reverse(a.key()));
     }
     chords
 }
@@ -333,13 +351,34 @@ const TIME_DENOMINATORS: [i64; 10] = [1, 2, 3, 4, 6, 8, 12, 16, 32, 48];
 
 /// build_rhythm(): the rhythm tokens in order (index = token number).
 pub fn rhythm_vocab() -> Vec<String> {
-    let mut r: Vec<String> = ["PAD", "BOS", "EOS", "chord", "barline", "doublebarline", "bolddoublebarline", "repeatStart", "repeatEnd", "repeatEndStart", "voltaStart", "voltaStop", "voltaDiscontinue"].iter().map(|s| s.to_string()).collect();
+    let mut r: Vec<String> = [
+        "PAD",
+        "BOS",
+        "EOS",
+        "chord",
+        "barline",
+        "doublebarline",
+        "bolddoublebarline",
+        "repeatStart",
+        "repeatEnd",
+        "repeatEndStart",
+        "voltaStart",
+        "voltaStop",
+        "voltaDiscontinue",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     r.extend((3..6).map(|c| format!("clef_F{c}")));
     r.extend((1..6).map(|c| format!("clef_C{c}")));
     r.extend((1..3).map(|c| format!("clef_G{c}")));
     r.push("clef_TAB5".into());
     r.extend((-7..8).map(|c| format!("keySignature_{c}")));
-    r.extend(TIME_DENOMINATORS.iter().map(|c| format!("timeSignature/{c}")));
+    r.extend(
+        TIME_DENOMINATORS
+            .iter()
+            .map(|c| format!("timeSignature/{c}")),
+    );
     r.extend((2..11).map(|c| format!("rest_{c}m")));
     let bases = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 32, 64, 128];
     let mut kern = Vec::new();
@@ -350,7 +389,9 @@ pub fn rhythm_vocab() -> Vec<String> {
             }
         }
     }
-    let irregular = [7, 11, 13, 18, 20, 21, 22, 24, 26, 28, 30, 34, 36, 40, 48, 56, 96];
+    let irregular = [
+        7, 11, 13, 18, 20, 21, 22, 24, 26, 28, 30, 34, 36, 40, 48, 56, 96,
+    ];
     r.extend(kern.iter().map(|k| format!("note_{k}")));
     r.extend(irregular.iter().map(|k| format!("note_{k}")));
     r.extend(kern.iter().map(|k| format!("rest_{k}")));
@@ -359,15 +400,24 @@ pub fn rhythm_vocab() -> Vec<String> {
 }
 
 pub fn lift_vocab() -> Vec<String> {
-    [NONOTE, EMPTY, "#", "##", "N", "b", "bb"].iter().map(|s| s.to_string()).collect()
+    [NONOTE, EMPTY, "#", "##", "N", "b", "bb"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 pub fn position_vocab() -> Vec<String> {
-    [NONOTE, "upper", "upper2", "lower", "lower2"].iter().map(|s| s.to_string()).collect()
+    [NONOTE, "upper", "upper2", "lower", "lower2"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 pub fn slur_vocab() -> Vec<String> {
-    [NONOTE, EMPTY, "slurStart_slurStop", "slurStart", "slurStop"].iter().map(|s| s.to_string()).collect()
+    [NONOTE, EMPTY, "slurStart_slurStop", "slurStart", "slurStop"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 pub fn pitch_vocab() -> Vec<String> {
@@ -403,7 +453,14 @@ pub struct Vocab {
 
 impl Default for Vocab {
     fn default() -> Self {
-        Vocab { rhythm: rhythm_vocab(), pitch: pitch_vocab(), lift: lift_vocab(), position: position_vocab(), articulation: articulation_vocab(), slur: slur_vocab() }
+        Vocab {
+            rhythm: rhythm_vocab(),
+            pitch: pitch_vocab(),
+            lift: lift_vocab(),
+            position: position_vocab(),
+            articulation: articulation_vocab(),
+            slur: slur_vocab(),
+        }
     }
 }
 

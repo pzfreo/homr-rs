@@ -39,9 +39,22 @@ impl Staff {
         if grid.is_empty() {
             return Err("empty staff grid (homr raises IndexError)".into());
         }
-        let min_y = grid.iter().map(|p| p.y.iter().cloned().fold(f64::INFINITY, f64::min)).fold(f64::INFINITY, f64::min);
-        let max_y = grid.iter().map(|p| p.y.iter().cloned().fold(f64::NEG_INFINITY, f64::max)).fold(f64::NEG_INFINITY, f64::max);
-        Ok(Staff { min_x: grid[0].x, max_x: grid[grid.len() - 1].x, min_y, max_y, grid, halves: None })
+        let min_y = grid
+            .iter()
+            .map(|p| p.y.iter().cloned().fold(f64::INFINITY, f64::min))
+            .fold(f64::INFINITY, f64::min);
+        let max_y = grid
+            .iter()
+            .map(|p| p.y.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+            .fold(f64::NEG_INFINITY, f64::max);
+        Ok(Staff {
+            min_x: grid[0].x,
+            max_x: grid[grid.len() - 1].x,
+            min_y,
+            max_y,
+            grid,
+            halves: None,
+        })
     }
 }
 
@@ -58,12 +71,30 @@ struct Segment {
 impl Segment {
     fn new(mut frags: Vec<usize>, f: &Fragments) -> Segment {
         let b = f.boxes;
-        let min_x = frags.iter().map(|&i| b[i].cx - b[i].w / 2.0).fold(f64::INFINITY, f64::min);
-        let max_x = frags.iter().map(|&i| b[i].cx + b[i].w / 2.0).fold(f64::NEG_INFINITY, f64::max);
-        let min_y = frags.iter().map(|&i| b[i].cy - b[i].h / 2.0).fold(f64::INFINITY, f64::min);
-        let max_y = frags.iter().map(|&i| b[i].cy + b[i].h / 2.0).fold(f64::NEG_INFINITY, f64::max);
+        let min_x = frags
+            .iter()
+            .map(|&i| b[i].cx - b[i].w / 2.0)
+            .fold(f64::INFINITY, f64::min);
+        let max_x = frags
+            .iter()
+            .map(|&i| b[i].cx + b[i].w / 2.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let min_y = frags
+            .iter()
+            .map(|&i| b[i].cy - b[i].h / 2.0)
+            .fold(f64::INFINITY, f64::min);
+        let max_y = frags
+            .iter()
+            .map(|&i| b[i].cy + b[i].h / 2.0)
+            .fold(f64::NEG_INFINITY, f64::max);
         frags.sort_by(|&p, &q| b[p].cx.partial_cmp(&b[q].cx).unwrap());
-        Segment { frags, min_x, max_x, min_y, max_y }
+        Segment {
+            frags,
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+        }
     }
     fn merge(&self, other: &Segment, f: &Fragments) -> Segment {
         let mut lines = self.frags.clone();
@@ -95,14 +126,32 @@ struct Anchor {
 
 impl Anchor {
     fn new(lines: Vec<Segment>, symbol: RBox, f: &Fragments) -> Anchor {
-        let mut ys: Vec<f64> = lines.iter().map(|l| f.boxes[l.frags[0]].center_at(symbol.cx)).collect();
+        let mut ys: Vec<f64> = lines
+            .iter()
+            .map(|l| f.boxes[l.frags[0]].center_at(symbol.cx))
+            .collect();
         ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let deltas: Vec<f64> = ys.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
-        let avg_unit = if deltas.is_empty() { 0.0 } else { np_mean(&deltas) };
-        let max_y = lines.iter().map(|l| l.max_y).fold(f64::NEG_INFINITY, f64::max);
+        let avg_unit = if deltas.is_empty() {
+            0.0
+        } else {
+            np_mean(&deltas)
+        };
+        let max_y = lines
+            .iter()
+            .map(|l| l.max_y)
+            .fold(f64::NEG_INFINITY, f64::max);
         let min_y = lines.iter().map(|l| l.min_y).fold(f64::INFINITY, f64::min);
-        let zone = (py_int(min_y - 5.0 * avg_unit), py_int(max_y + 5.0 * avg_unit));
-        Anchor { lines, symbol, avg_unit, zone }
+        let zone = (
+            py_int(min_y - 5.0 * avg_unit),
+            py_int(max_y + 5.0 * avg_unit),
+        );
+        Anchor {
+            lines,
+            symbol,
+            avg_unit,
+            zone,
+        }
     }
 }
 
@@ -120,7 +169,11 @@ impl RawStaff {
                 pts.extend_from_slice(&f.contours[g]);
             }
         }
-        RawStaff { rect: min_area_rect(&pts), lines, anchors }
+        RawStaff {
+            rect: min_area_rect(&pts),
+            lines,
+            anchors,
+        }
     }
     fn min_x(&self) -> f64 {
         self.rect.cx - self.rect.w / 2.0
@@ -129,7 +182,12 @@ impl RawStaff {
         self.rect.cx + self.rect.w / 2.0
     }
     fn merge(&self, other: &RawStaff, f: &Fragments) -> RawStaff {
-        let lines = self.lines.iter().enumerate().map(|(i, l)| other.lines[i].merge(l, f)).collect();
+        let lines = self
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(i, l)| other.lines[i].merge(l, f))
+            .collect();
         let mut anchors = self.anchors.clone();
         anchors.extend_from_slice(&other.anchors);
         RawStaff::new(lines, anchors, f)
@@ -200,23 +258,47 @@ fn are_lines_parallel(lines: &[Segment], unit: f64, f: &Fragments) -> bool {
     }
     let angles: Vec<f64> = all.iter().map(|&g| f.boxes[g].angle).collect();
     let avg = np_mean(&angles);
-    !all.iter().any(|&g| (f.boxes[g].angle - avg).abs() > 10.0 && f.boxes[g].w > 2.0 * unit)
+    !all.iter()
+        .any(|&g| (f.boxes[g].angle - avg).abs() > 10.0 && f.boxes[g].w > 2.0 * unit)
 }
 
-fn begins_or_ends_on_one_staff_line(sym: &RBox, lines: &[Segment], unit: f64, f: &Fragments) -> bool {
+fn begins_or_ends_on_one_staff_line(
+    sym: &RBox,
+    lines: &[Segment],
+    unit: f64,
+    f: &Fragments,
+) -> bool {
     lines.iter().any(|l| match l.get_at(sym.cx, f) {
         Some(g) => (f.boxes[g].center_at(sym.cx) - sym.cy).abs() < unit,
         None => false,
     })
 }
 
-fn find_staff_anchors_for(lines: &[usize], center: &RBox, are_clefs: bool, f: &Fragments, out: &mut Vec<Anchor>) {
-    let shifts: &[f64] = if are_clefs { &[-10.0, 0.0, 10.0, 30.0, 60.0, 80.0] } else { &[-10.0, -5.0, 0.0, 5.0, 10.0] };
+fn find_staff_anchors_for(
+    lines: &[usize],
+    center: &RBox,
+    are_clefs: bool,
+    f: &Fragments,
+    out: &mut Vec<Anchor>,
+) {
+    let shifts: &[f64] = if are_clefs {
+        &[-10.0, 0.0, 10.0, 30.0, 60.0, 80.0]
+    } else {
+        &[-10.0, -5.0, 0.0, 5.0, 10.0]
+    };
     for &dx in shifts {
-        let sym = if dx == 0.0 { center.clone() } else { center.move_x(dx) };
+        let sym = if dx == 0.0 {
+            center.clone()
+        } else {
+            center.move_x(dx)
+        };
         let unit = py_round(sym.h / 4.0) as f64;
         let thick = sym.taller(unit);
-        let overlapping: Vec<usize> = lines.iter().copied().filter(|&g| f.boxes[g].is_intersecting(&thick)).collect();
+        let overlapping: Vec<usize> = lines
+            .iter()
+            .copied()
+            .filter(|&g| f.boxes[g].is_intersecting(&thick))
+            .collect();
         let mut connected = connect_staff_lines(&overlapping, unit, f);
         if connected.len() > LINES {
             connected.retain(|l| (l.max_x - l.min_x) > 2.0 * unit);
@@ -236,7 +318,12 @@ fn find_staff_anchors_for(lines: &[usize], center: &RBox, are_clefs: bool, f: &F
 
 /// find_staff_anchors with Partsong's prefilter: only fragments near enough
 /// to touch any moved/taller copy of the symbol are tested exactly.
-fn find_staff_anchors(lines: &[usize], symbols: &[RBox], are_clefs: bool, f: &Fragments) -> Vec<Anchor> {
+fn find_staff_anchors(
+    lines: &[usize],
+    symbols: &[RBox],
+    are_clefs: bool,
+    f: &Fragments,
+) -> Vec<Anchor> {
     let mut out = Vec::new();
     let shift = if are_clefs { 80.0 } else { 10.0 };
     for s in symbols {
@@ -263,7 +350,7 @@ pub fn find_peaks(x: &[f64], height: f64, distance: f64, prominence: f64) -> Vec
     let mut peaks: Vec<usize> = Vec::new();
     let mut i = 1;
     while i < n - 1 {
-        if x[i] > x[i - 1] || x[i] == x[i - 1] {
+        if x[i] >= x[i - 1] {
             let mut j = i;
             while j < n - 1 && x[j] == x[j + 1] {
                 j += 1;
@@ -301,7 +388,10 @@ pub fn find_peaks(x: &[f64], height: f64, distance: f64, prominence: f64) -> Vec
         order.reverse();
         let mut keep: Vec<usize> = Vec::new();
         for p in order {
-            if keep.iter().all(|&k| (k as f64 - p as f64).abs() >= distance) {
+            if keep
+                .iter()
+                .all(|&k| (k as f64 - p as f64).abs() >= distance)
+            {
                 keep.push(p);
             }
         }
@@ -311,16 +401,28 @@ pub fn find_peaks(x: &[f64], height: f64, distance: f64, prominence: f64) -> Vec
     peaks.into_iter().map(|p| p as i64).collect()
 }
 
-fn find_horizontal_lines(image: &[u8], h: usize, w: usize, zone: (i64, i64), unit: f64) -> Result<Vec<Vec<i64>>, String> {
+fn find_horizontal_lines(
+    image: &[u8],
+    h: usize,
+    w: usize,
+    zone: (i64, i64),
+    unit: f64,
+) -> Result<Vec<Vec<i64>>, String> {
     let mut count = vec![0.0f64; h + 2];
     for y in 0..h {
         let row = &image[y * w..(y + 1) * w];
-        count[y + 1] = row[zone.0 as usize..zone.1 as usize].iter().filter(|&&v| v > 0).count() as f64;
+        count[y + 1] = row[zone.0 as usize..zone.1 as usize]
+            .iter()
+            .filter(|&&v| v > 0)
+            .count() as f64;
     }
     let mean = np_mean(&count);
     let std = np_std(&count);
     let norm: Vec<f64> = count.iter().map(|&c| (c - mean) / std).collect();
-    let centers: Vec<i64> = find_peaks(&norm, 0.0, 0.7 * unit, 1.0).into_iter().map(|c| c - 1).collect();
+    let centers: Vec<i64> = find_peaks(&norm, 0.0, 0.7 * unit, 1.0)
+        .into_iter()
+        .map(|c| c - 1)
+        .collect();
     if centers.is_empty() {
         return Err("no line peaks (homr raises IndexError)".into());
     }
@@ -329,7 +431,11 @@ fn find_horizontal_lines(image: &[u8], h: usize, w: usize, zone: (i64, i64), uni
     gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let take = 5.max(py_round(centers.len() as f64 * 0.2)) as usize;
     let smallest = &gaps[..take.min(gaps.len())];
-    let approx = if smallest.is_empty() { f64::NAN } else { np_mean(smallest) };
+    let approx = if smallest.is_empty() {
+        f64::NAN
+    } else {
+        np_mean(smallest)
+    };
     let max_gap = approx * 1.5;
     let mut ext: Vec<f64> = vec![centers[0] as f64 - max_gap - 1.0];
     ext.extend(centers.iter().map(|&c| c as f64));
@@ -361,7 +467,12 @@ fn find_horizontal_lines(image: &[u8], h: usize, w: usize, zone: (i64, i64), uni
         .collect())
 }
 
-fn predict_other_anchors_from_clefs(clefs: &[Anchor], image: &[u8], h: usize, w: usize) -> Result<Vec<RBox>, String> {
+fn predict_other_anchors_from_clefs(
+    clefs: &[Anchor],
+    image: &[u8],
+    h: usize,
+    w: usize,
+) -> Result<Vec<RBox>, String> {
     if clefs.is_empty() {
         return Ok(vec![]);
     }
@@ -369,7 +480,12 @@ fn predict_other_anchors_from_clefs(clefs: &[Anchor], image: &[u8], h: usize, w:
     // init_zone
     let mut ranges: Vec<(i64, i64)> = clefs
         .iter()
-        .map(|c| (py_int(c.symbol.left_x()).max(0), py_int(c.symbol.right_x() + 10.0).min(w as i64)))
+        .map(|c| {
+            (
+                py_int(c.symbol.left_x()).max(0),
+                py_int(c.symbol.right_x() + 10.0).min(w as i64),
+            )
+        })
         .collect();
     ranges.sort_by_key(|r| r.0);
     let mut zones: Vec<(i64, i64)> = Vec::new();
@@ -396,20 +512,29 @@ fn predict_other_anchors_from_clefs(clefs: &[Anchor], image: &[u8], h: usize, w:
             ));
         }
     }
-    Ok(result.into_iter().filter(|r| !clefs.iter().any(|c| r.is_overlapping(&c.symbol))).collect())
+    Ok(result
+        .into_iter()
+        .filter(|r| !clefs.iter().any(|c| r.is_overlapping(&c.symbol)))
+        .collect())
 }
 
 fn find_raw_staffs(anchors: &[Anchor], f: &Fragments) -> Vec<RawStaff> {
     let mut staffs: Vec<RawStaff> = Vec::new();
     let all: Vec<usize> = (0..f.boxes.len()).collect();
     for (ai, anchor) in anchors.iter().enumerate() {
-        let existing = staffs
-            .iter()
-            .position(|s| anchor.lines.iter().enumerate().any(|(i, al)| s.lines[i].contains_all(al)));
+        let existing = staffs.iter().position(|s| {
+            anchor
+                .lines
+                .iter()
+                .enumerate()
+                .any(|(i, al)| s.lines[i].contains_all(al))
+        });
         let frags: Vec<usize> = all
             .iter()
             .copied()
-            .filter(|&g| f.boxes[g].cy >= anchor.zone.0 as f64 && f.boxes[g].cy <= anchor.zone.1 as f64)
+            .filter(|&g| {
+                f.boxes[g].cy >= anchor.zone.0 as f64 && f.boxes[g].cy <= anchor.zone.1 as f64
+            })
             .collect();
         let connected = connect_staff_lines(&frags, anchor.avg_unit, f);
         let lines: Vec<Segment> = anchor
@@ -417,7 +542,11 @@ fn find_raw_staffs(anchors: &[Anchor], f: &Fragments) -> Vec<RawStaff> {
             .iter()
             .map(|al| {
                 let m: Vec<&Segment> = connected.iter().filter(|l| l.contains_all(al)).collect();
-                if m.len() == 1 { m[0].clone() } else { al.clone() }
+                if m.len() == 1 {
+                    m[0].clone()
+                } else {
+                    al.clone()
+                }
             })
             .collect();
         let new = RawStaff::new(lines, vec![ai], f);
@@ -435,7 +564,9 @@ fn find_raw_staffs(anchors: &[Anchor], f: &Fragments) -> Vec<RawStaff> {
 fn remove_duplicate_staffs(staffs: Vec<RawStaff>) -> Vec<RawStaff> {
     let mut result: Vec<RawStaff> = Vec::new();
     for s in staffs {
-        let overlapping: Vec<usize> = (0..result.len()).filter(|&k| s.rect.is_overlapping(&result[k].rect)).collect();
+        let overlapping: Vec<usize> = (0..result.len())
+            .filter(|&k| s.rect.is_overlapping(&result[k].rect))
+            .collect();
         if overlapping.is_empty() {
             result.push(s);
         } else if overlapping.len() == 1 && result[overlapping[0]].anchors.len() < s.anchors.len() {
@@ -446,7 +577,12 @@ fn remove_duplicate_staffs(staffs: Vec<RawStaff>) -> Vec<RawStaff> {
     result
 }
 
-fn resample_segment(anchor: &Anchor, staff: &RawStaff, xs: impl Iterator<Item = i64>, f: &Fragments) -> Vec<StaffPoint> {
+fn resample_segment(
+    anchor: &Anchor,
+    staff: &RawStaff,
+    xs: impl Iterator<Item = i64>,
+    f: &Fragments,
+) -> Vec<StaffPoint> {
     let x0 = anchor.symbol.cx;
     let firsts: Vec<&RBox> = anchor.lines.iter().map(|l| &f.boxes[l.frags[0]]).collect();
     let mut prev = StaffPoint {
@@ -459,7 +595,10 @@ fn resample_segment(anchor: &Anchor, staff: &RawStaff, xs: impl Iterator<Item = 
     for xi in xs {
         let x = xi as f64;
         let lines: Vec<Option<usize>> = staff.lines.iter().map(|l| l.get_at(x, f)).collect();
-        let mut c: Vec<Option<f64>> = lines.iter().map(|g| g.map(|g| f.boxes[g].center_at(x))).collect();
+        let mut c: Vec<Option<f64>> = lines
+            .iter()
+            .map(|g| g.map(|g| f.boxes[g].center_at(x)))
+            .collect();
         let values: Vec<f64> = c.iter().flatten().copied().collect();
         if values.is_empty() {
             continue;
@@ -493,7 +632,11 @@ fn resample_segment(anchor: &Anchor, staff: &RawStaff, xs: impl Iterator<Item = 
             continue;
         }
         let angles: Vec<f64> = lines.iter().flatten().map(|&g| f.boxes[g].angle).collect();
-        prev = StaffPoint { x, y: c.into_iter().flatten().collect(), angle: np_mean(&angles) };
+        prev = StaffPoint {
+            x,
+            y: c.into_iter().flatten().collect(),
+            angle: np_mean(&angles),
+        };
         out.push(prev.clone());
     }
     out
@@ -510,7 +653,10 @@ fn resample_staff(staff: &RawStaff, anchors: &[Anchor], f: &Fragments) -> Result
     for (i, a) in l2r.iter().enumerate() {
         let to_left = py_range(rtd(x), rtd(a.symbol.cx), 10);
         let (rs, re) = if i + 1 < l2r.len() {
-            (py_int(a.symbol.cx), py_int((a.symbol.cx + l2r[i + 1].symbol.cx) / 2.0))
+            (
+                py_int(a.symbol.cx),
+                py_int((a.symbol.cx + l2r[i + 1].symbol.cx) / 2.0),
+            )
         } else {
             (rtd(a.symbol.cx), rtd(stop))
         };
@@ -518,7 +664,12 @@ fn resample_staff(staff: &RawStaff, anchors: &[Anchor], f: &Fragments) -> Result
         let mut left = resample_segment(a, staff, to_left.into_iter().rev(), f);
         left.reverse();
         grid.extend(left);
-        grid.extend(resample_segment(a, staff, py_range(rs, re, 10).into_iter(), f));
+        grid.extend(resample_segment(
+            a,
+            staff,
+            py_range(rs, re, 10).into_iter(),
+            f,
+        ));
     }
     Staff::new(grid)
 }
@@ -529,7 +680,12 @@ fn filter_unusual_anchors(anchors: Vec<Anchor>) -> Vec<Anchor> {
     }
     let units: Vec<f64> = anchors.iter().map(|a| a.avg_unit).collect();
     let (mean, std) = (np_mean(&units), np_std(&units));
-    anchors.into_iter().filter(|a| !((a.avg_unit - mean).abs() > 3.0 * std)).collect()
+    anchors
+        .into_iter()
+        .filter(|a| {
+            (a.avg_unit - mean).abs().partial_cmp(&(3.0 * std)) != Some(std::cmp::Ordering::Greater)
+        })
+        .collect()
 }
 
 fn filter_edge_of_vision(staffs: Vec<Staff>, h: usize, w: usize) -> Vec<Staff> {
@@ -558,7 +714,14 @@ pub struct Mid {
 }
 
 /// homr's detect_staff. `image` is the segmentation's staff mask (h x w).
-pub fn detect_staff(image: &[u8], h: usize, w: usize, f: &Fragments, clefs: &[RBox], bars: &[RBox]) -> Result<Vec<Staff>, String> {
+pub fn detect_staff(
+    image: &[u8],
+    h: usize,
+    w: usize,
+    f: &Fragments,
+    clefs: &[RBox],
+    bars: &[RBox],
+) -> Result<Vec<Staff>, String> {
     detect_staff_mid(image, h, w, f, clefs, bars, &mut None)
 }
 
@@ -566,7 +729,15 @@ fn b5(b: &RBox) -> [f64; 5] {
     [b.cx, b.cy, b.w, b.h, b.angle]
 }
 
-pub fn detect_staff_mid(image: &[u8], h: usize, w: usize, f: &Fragments, clefs: &[RBox], bars: &[RBox], mid: &mut Option<Mid>) -> Result<Vec<Staff>, String> {
+pub fn detect_staff_mid(
+    image: &[u8],
+    h: usize,
+    w: usize,
+    f: &Fragments,
+    clefs: &[RBox],
+    bars: &[RBox],
+    mid: &mut Option<Mid>,
+) -> Result<Vec<Staff>, String> {
     let all: Vec<usize> = (0..f.boxes.len()).collect();
     let mut anchors = find_staff_anchors(&all, clefs, true, f);
     let others = predict_other_anchors_from_clefs(&anchors, image, h, w)?;
@@ -577,13 +748,31 @@ pub fn detect_staff_mid(image: &[u8], h: usize, w: usize, f: &Fragments, clefs: 
     anchors.extend(find_staff_anchors(&all, bars, false, f));
     let anchors = filter_unusual_anchors(anchors);
     if let Some(m) = mid.as_mut() {
-        m.anchors = anchors.iter().map(|a| (b5(&a.symbol), a.avg_unit, a.zone.0, a.zone.1)).collect();
+        m.anchors = anchors
+            .iter()
+            .map(|a| (b5(&a.symbol), a.avg_unit, a.zone.0, a.zone.1))
+            .collect();
     }
     let raw = remove_duplicate_staffs(find_raw_staffs(&anchors, f));
     if let Some(m) = mid.as_mut() {
-        m.raw = raw.iter().map(|s| (s.min_x(), s.max_x(), s.rect.cy - s.rect.h / 2.0, s.rect.cy + s.rect.h / 2.0, s.anchors.len(), b5(&s.rect))).collect();
+        m.raw = raw
+            .iter()
+            .map(|s| {
+                (
+                    s.min_x(),
+                    s.max_x(),
+                    s.rect.cy - s.rect.h / 2.0,
+                    s.rect.cy + s.rect.h / 2.0,
+                    s.anchors.len(),
+                    b5(&s.rect),
+                )
+            })
+            .collect();
     }
-    let staffs = raw.iter().map(|s| resample_staff(s, &anchors, f)).collect::<Result<Vec<_>, _>>()?;
+    let staffs = raw
+        .iter()
+        .map(|s| resample_staff(s, &anchors, f))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut staffs = filter_edge_of_vision(staffs, h, w);
     staffs.sort_by(|a, b| a.min_y.partial_cmp(&b.min_y).unwrap());
     Ok(staffs)
@@ -595,11 +784,22 @@ pub fn debug_symbol(sym: &RBox, f: &Fragments) -> Vec<(f64, Vec<usize>, Vec<Vec<
     [-10.0, -5.0, 0.0, 5.0, 10.0]
         .iter()
         .map(|&dx| {
-            let m = if dx == 0.0 { sym.clone() } else { sym.move_x(dx) };
+            let m = if dx == 0.0 {
+                sym.clone()
+            } else {
+                sym.move_x(dx)
+            };
             let unit = py_round(m.h / 4.0) as f64;
             let thick = m.taller(unit);
-            let ov: Vec<usize> = all.iter().copied().filter(|&g| f.boxes[g].is_intersecting(&thick)).collect();
-            let con = connect_staff_lines(&ov, unit, f).into_iter().map(|s| s.frags).collect();
+            let ov: Vec<usize> = all
+                .iter()
+                .copied()
+                .filter(|&g| f.boxes[g].is_intersecting(&thick))
+                .collect();
+            let con = connect_staff_lines(&ov, unit, f)
+                .into_iter()
+                .map(|s| s.frags)
+                .collect();
             (dx, ov, con)
         })
         .collect()

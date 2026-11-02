@@ -38,30 +38,67 @@ fn normalise(w: f64, h: f64, angle: f64) -> (f64, f64, f64) {
 
 impl Shape {
     pub fn rect(raw: [f64; 5], contour: Vec<[i32; 2]>) -> Shape {
-        let poly = box_points_f32(raw[0], raw[1], raw[2], raw[3], raw[4]).iter().map(|p| [p[0] as f64 as i64, p[1] as f64 as i64]).collect();
+        let poly = box_points_f32(raw[0], raw[1], raw[2], raw[3], raw[4])
+            .iter()
+            .map(|p| [p[0] as f64 as i64, p[1] as f64 as i64])
+            .collect();
         let (w, h, angle) = normalise(raw[2], raw[3], raw[4]);
-        Shape { raw, cx: raw[0], cy: raw[1], w, h, angle, poly, contour, ellipse: false }
+        Shape {
+            raw,
+            cx: raw[0],
+            cy: raw[1],
+            w,
+            h,
+            angle,
+            poly,
+            contour,
+            ellipse: false,
+        }
     }
     pub fn ellipse(raw: [f64; 5], contour: Vec<[i32; 2]>) -> Shape {
         let t = |v: f64| v.trunc() as i64;
-        let poly = ellipse2poly([t(raw[0]), t(raw[1])], [t(raw[2] / 2.0), t(raw[3] / 2.0)], t(raw[4]));
+        let poly = ellipse2poly(
+            [t(raw[0]), t(raw[1])],
+            [t(raw[2] / 2.0), t(raw[3] / 2.0)],
+            t(raw[4]),
+        );
         let (w, h, angle) = normalise(raw[2], raw[3], raw[4]);
-        Shape { raw, cx: raw[0], cy: raw[1], w, h, angle, poly, contour, ellipse: true }
+        Shape {
+            raw,
+            cx: raw[0],
+            cy: raw[1],
+            w,
+            h,
+            angle,
+            poly,
+            contour,
+            ellipse: true,
+        }
     }
     fn can_touch(&self, o: &Shape) -> bool {
         let d = ((self.cx - o.cx).powi(2) + (self.cy - o.cy).powi(2)).sqrt();
-        !(d > self.w.max(self.h) + o.w.max(o.h))
+        d.partial_cmp(&(self.w.max(self.h) + o.w.max(o.h))) != Some(std::cmp::Ordering::Greater)
     }
     pub fn is_overlapping(&self, o: &Shape) -> bool {
         self.can_touch(o) && polygons_overlap(&self.poly, &o.poly)
     }
     /// BoundingEllipse.make_box_thicker (from the normalised box).
     fn thicker_ellipse(&self, t: f64) -> Shape {
-        Shape::ellipse([self.cx, self.cy, self.w + t, self.h + t, self.angle], self.contour.clone())
+        Shape::ellipse(
+            [self.cx, self.cy, self.w + t, self.h + t, self.angle],
+            self.contour.clone(),
+        )
     }
     /// As the staff detection's RBox (polygon from the box as OpenCV gave it).
     pub fn to_rbox(&self, frag: usize) -> RBox {
-        RBox::new(self.raw[0], self.raw[1], self.raw[2], self.raw[3], self.raw[4], frag)
+        RBox::new(
+            self.raw[0],
+            self.raw[1],
+            self.raw[2],
+            self.raw[3],
+            self.raw[4],
+            frag,
+        )
     }
 }
 
@@ -79,7 +116,7 @@ fn rect_of(points: &[[i32; 2]]) -> [f64; 5] {
 fn merge_groups(boxes: &[Shape]) -> Vec<Vec<usize>> {
     let n = boxes.len();
     let mut parent: Vec<usize> = (0..n).collect();
-    fn find(p: &mut Vec<usize>, x: usize) -> usize {
+    fn find(p: &mut [usize], x: usize) -> usize {
         let mut r = x;
         while p[r] != r {
             r = p[r];
@@ -127,15 +164,29 @@ fn whole_group(boxes: &[Shape], groups: Vec<Vec<usize>>, ellipse: bool) -> Vec<S
     groups
         .into_iter()
         .map(|g| {
-            let contour: Vec<[i32; 2]> = g.iter().flat_map(|&i| boxes[i].contour.iter().copied()).collect();
+            let contour: Vec<[i32; 2]> = g
+                .iter()
+                .flat_map(|&i| boxes[i].contour.iter().copied())
+                .collect();
             let raw = rect_of(&contour);
-            if ellipse { Shape::ellipse(raw, contour) } else { Shape::rect(raw, contour) }
+            if ellipse {
+                Shape::ellipse(raw, contour)
+            } else {
+                Shape::rect(raw, contour)
+            }
         })
         .collect()
 }
 
 /// create_rotated_bounding_boxes
-pub fn rotated_boxes(mask: &[u8], h: usize, w: usize, skip_merging: bool, min_size: Option<(f64, f64)>, max_size: Option<(f64, f64)>) -> Vec<Shape> {
+pub fn rotated_boxes(
+    mask: &[u8],
+    h: usize,
+    w: usize,
+    skip_merging: bool,
+    min_size: Option<(f64, f64)>,
+    max_size: Option<(f64, f64)>,
+) -> Vec<Shape> {
     let mut boxes = Vec::new();
     for c in find_contours(mask, h, w) {
         let raw = rect_of(&c);
@@ -191,8 +242,18 @@ pub fn break_wide_fragments(fragments: Vec<Shape>, limit: f64) -> Vec<Shape> {
         let mut rem = f;
         while rem.w > limit {
             let min_x = rem.contour.iter().map(|p| p[0]).min().unwrap() as f64;
-            let mut left: Vec<[i32; 2]> = rem.contour.iter().copied().filter(|p| (p[0] as f64) < min_x + limit).collect();
-            let mut right: Vec<[i32; 2]> = rem.contour.iter().copied().filter(|p| (p[0] as f64) >= min_x + limit).collect();
+            let mut left: Vec<[i32; 2]> = rem
+                .contour
+                .iter()
+                .copied()
+                .filter(|p| (p[0] as f64) < min_x + limit)
+                .collect();
+            let mut right: Vec<[i32; 2]> = rem
+                .contour
+                .iter()
+                .copied()
+                .filter(|p| (p[0] as f64) >= min_x + limit)
+                .collect();
             left.sort_by_key(|p| p[0]);
             right.sort_by_key(|p| p[0]);
             if left.is_empty() || right.is_empty() {
@@ -220,7 +281,10 @@ pub struct NoteheadWithStem {
 }
 
 /// combine_noteheads_with_stems
-pub fn combine_noteheads_with_stems(mut noteheads: Vec<Shape>, stems: &[Shape]) -> Vec<NoteheadWithStem> {
+pub fn combine_noteheads_with_stems(
+    mut noteheads: Vec<Shape>,
+    stems: &[Shape],
+) -> Vec<NoteheadWithStem> {
     noteheads.sort_by(|a, b| a.cy.partial_cmp(&b.cy).unwrap());
     noteheads
         .into_iter()
@@ -229,9 +293,17 @@ pub fn combine_noteheads_with_stems(mut noteheads: Vec<Shape>, stems: &[Shape]) 
             match stems.iter().position(|s| s.is_overlapping(&thick)) {
                 Some(k) => {
                     let up = stems[k].cy < n.cy;
-                    NoteheadWithStem { notehead: n, stem: Some(k), stem_up: Some(up) }
+                    NoteheadWithStem {
+                        notehead: n,
+                        stem: Some(k),
+                        stem_up: Some(up),
+                    }
                 }
-                None => NoteheadWithStem { notehead: n, stem: None, stem_up: None },
+                None => NoteheadWithStem {
+                    notehead: n,
+                    stem: None,
+                    stem_up: None,
+                },
             }
         })
         .collect()
@@ -257,7 +329,11 @@ pub struct PageSymbols {
 fn median(mut v: Vec<f64>) -> f64 {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = v.len();
-    if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 }
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2.0
+    }
 }
 
 /// predict_symbols, break_wide_fragments, combine_noteheads_with_stems and
@@ -265,8 +341,22 @@ fn median(mut v: Vec<f64>) -> f64 {
 pub fn page_symbols(m: &Masks) -> Result<PageSymbols, String> {
     let (h, w) = (m.h, m.w);
     let noteheads = bounding_ellipses(m.notehead, h, w, (4.0, 4.0));
-    let fragments = rotated_boxes(m.staff, h, w, true, Some((5.0, 1.0)), Some((10000.0, 100.0)));
-    let clefs_keys = rotated_boxes(m.clefs_keys, h, w, false, Some((20.0, 40.0)), Some((1000.0, 1000.0)));
+    let fragments = rotated_boxes(
+        m.staff,
+        h,
+        w,
+        true,
+        Some((5.0, 1.0)),
+        Some((10000.0, 100.0)),
+    );
+    let clefs_keys = rotated_boxes(
+        m.clefs_keys,
+        h,
+        w,
+        false,
+        Some((20.0, 40.0)),
+        Some((1000.0, 1000.0)),
+    );
     let stems_rest = rotated_boxes(m.stem_rests, h, w, false, None, None);
     let bar_img = dilate_5x3(m.stem_rests, h, w);
     let bar_candidates = rotated_boxes(&bar_img, h, w, true, Some((1.0, 5.0)), None);
@@ -276,11 +366,26 @@ pub fn page_symbols(m: &Masks) -> Result<PageSymbols, String> {
         return Err("No noteheads found".into());
     }
     let unit = median(noteheads.iter().map(|n| n.notehead.h).collect());
-    let stems: Vec<&Shape> = noteheads.iter().filter_map(|n| n.stem.map(|k| &stems_rest[k])).collect();
+    let stems: Vec<&Shape> = noteheads
+        .iter()
+        .filter_map(|n| n.stem.map(|k| &stems_rest[k]))
+        .collect();
     let bar_lines = bar_candidates
         .into_iter()
-        .filter(|l| !noteheads.iter().any(|n| l.is_overlapping(&n.notehead)) && !stems.iter().any(|s| l.is_overlapping(s)))
-        .filter(|l| !(l.h < 3.0 * unit) && !(l.w > 2.0 * unit))
+        .filter(|l| {
+            !noteheads.iter().any(|n| l.is_overlapping(&n.notehead))
+                && !stems.iter().any(|s| l.is_overlapping(s))
+        })
+        .filter(|l| {
+            l.h.partial_cmp(&(3.0 * unit)) != Some(std::cmp::Ordering::Less)
+                && l.w.partial_cmp(&(2.0 * unit)) != Some(std::cmp::Ordering::Greater)
+        })
         .collect();
-    Ok(PageSymbols { fragments, clefs_keys, stems_rest, noteheads, bar_lines })
+    Ok(PageSymbols {
+        fragments,
+        clefs_keys,
+        stems_rest,
+        noteheads,
+        bar_lines,
+    })
 }

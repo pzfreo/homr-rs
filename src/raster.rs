@@ -16,7 +16,8 @@ pub fn ellipse_kernel(width: usize, height: usize) -> Vec<Vec<u8>> {
             let mut row = vec![0u8; width];
             let dy = i - r;
             if dy.abs() <= r {
-                let dx = (c as f64 * (((r * r - dy * dy) as f64) * inv_r2).sqrt()).round_ties_even() as i64;
+                let dx = (c as f64 * (((r * r - dy * dy) as f64) * inv_r2).sqrt()).round_ties_even()
+                    as i64;
                 let j1 = (c - dx).max(0) as usize;
                 let j2 = (c + dx + 1).min(width as i64) as usize;
                 for v in &mut row[j1..j2] {
@@ -39,17 +40,31 @@ fn range_extreme(src: &[u8], a: i64, b: i64, dilate: bool, out: &mut [u8]) {
         while next <= hi {
             let v = src[next as usize];
             while let Some(&k) = dq.back() {
-                if better(v, src[k]) { dq.pop_back(); } else { break; }
+                if better(v, src[k]) {
+                    dq.pop_back();
+                } else {
+                    break;
+                }
             }
             dq.push_back(next as usize);
             next += 1;
         }
         while let Some(&k) = dq.front() {
-            if (k as i64) < lo { dq.pop_front(); } else { break; }
+            if (k as i64) < lo {
+                dq.pop_front();
+            } else {
+                break;
+            }
         }
         out[i as usize] = match dq.front() {
             Some(&k) if lo <= hi => src[k],
-            _ => if dilate { 0 } else { 255 },
+            _ => {
+                if dilate {
+                    0
+                } else {
+                    255
+                }
+            }
         };
     }
 }
@@ -69,7 +84,10 @@ pub fn morph(img: &[u8], h: usize, w: usize, kernel: &[Vec<u8>], dilate: bool) -
         let j1 = row.iter().position(|&v| v != 0);
         let Some(j1) = j1 else { continue };
         let j2 = row.iter().rposition(|&v| v != 0).unwrap() + 1;
-        assert!(row[j1..j2].iter().all(|&v| v != 0), "kernel rows must be contiguous");
+        assert!(
+            row[j1..j2].iter().all(|&v| v != 0),
+            "kernel rows must be contiguous"
+        );
         let (j1, j2) = (j1 as i64, j2 as i64);
         match segs.last_mut() {
             Some(s) if s.1 == i - ay - 1 && s.2 == j1 - ax && s.3 == j2 - 1 - ax => s.1 = i - ay,
@@ -88,7 +106,13 @@ pub fn morph(img: &[u8], h: usize, w: usize, kernel: &[Vec<u8>], dilate: bool) -
     for &(dy0, dy1, a, b) in &segs {
         if done_span != Some((a, b)) {
             for y in 0..h {
-                range_extreme(&img[y * w..(y + 1) * w], a, b, dilate, &mut hor[y * w..(y + 1) * w]);
+                range_extreme(
+                    &img[y * w..(y + 1) * w],
+                    a,
+                    b,
+                    dilate,
+                    &mut hor[y * w..(y + 1) * w],
+                );
             }
             done_span = Some((a, b));
         }
@@ -99,7 +123,11 @@ pub fn morph(img: &[u8], h: usize, w: usize, kernel: &[Vec<u8>], dilate: bool) -
             range_extreme(&col, dy0, dy1, dilate, &mut colout);
             for y in 0..h {
                 let o = &mut out[y * w + x];
-                *o = if dilate { (*o).max(colout[y]) } else { (*o).min(colout[y]) };
+                *o = if dilate {
+                    (*o).max(colout[y])
+                } else {
+                    (*o).min(colout[y])
+                };
             }
         }
     }
@@ -124,12 +152,20 @@ fn binary_value(img: &[u8]) -> Option<u8> {
 /// morph for images of 0s and one other value v, on bit-packed rows (64
 /// pixels a word): a window dilates to v if it holds any v, erodes to v if
 /// all its in-image pixels are v. Same result as the byte-wise version.
-fn morph_binary(img: &[u8], h: usize, w: usize, segs: &[(i64, i64, i64, i64)], dilate: bool, v: u8) -> Vec<u8> {
+fn morph_binary(
+    img: &[u8],
+    h: usize,
+    w: usize,
+    segs: &[(i64, i64, i64, i64)],
+    dilate: bool,
+    v: u8,
+) -> Vec<u8> {
     let words = w.div_ceil(64);
     // 8 bytes -> 8 bits (bit i set if byte i is nonzero)
     let pack8 = |b: &[u8]| -> u64 {
         let x = u64::from_le_bytes(b.try_into().unwrap());
-        let hi = ((x & 0x7f7f7f7f7f7f7f7f).wrapping_add(0x7f7f7f7f7f7f7f7f) | x) & 0x8080808080808080;
+        let hi =
+            ((x & 0x7f7f7f7f7f7f7f7f).wrapping_add(0x7f7f7f7f7f7f7f7f) | x) & 0x8080808080808080;
         (hi >> 7).wrapping_mul(0x0102040810204080) >> 56
     };
     let pack = |row: &[u8]| -> Vec<u64> {
@@ -147,7 +183,11 @@ fn morph_binary(img: &[u8], h: usize, w: usize, segs: &[(i64, i64, i64, i64)], d
     };
     let rows: Vec<Vec<u64>> = (0..h).map(|y| pack(&img[y * w..(y + 1) * w])).collect();
     // bits beyond the image width: for erode they count as set (outside is ignored)
-    let tail_mask = if w % 64 == 0 { !0u64 } else { (1u64 << (w % 64)) - 1 };
+    let tail_mask = if w.is_multiple_of(64) {
+        !0u64
+    } else {
+        (1u64 << (w % 64)) - 1
+    };
     let full = |r: &mut Vec<u64>| {
         if !dilate {
             let last = r.len() - 1;
@@ -159,16 +199,27 @@ fn morph_binary(img: &[u8], h: usize, w: usize, segs: &[(i64, i64, i64, i64)], d
         let fillw = if fill { !0u64 } else { 0 };
         let n = words as i64;
         let (q, rem) = (k.div_euclid(64), k.rem_euclid(64) as u32);
-        let get = |i: i64| -> u64 { if i < 0 || i >= n { fillw } else { r[i as usize] } };
+        let get = |i: i64| -> u64 {
+            if i < 0 || i >= n {
+                fillw
+            } else {
+                r[i as usize]
+            }
+        };
         for (i, x) in acc.iter_mut().enumerate() {
             let i = i as i64;
             let lo = get(i + q);
-            let s = if rem == 0 { lo } else { (lo >> rem) | (get(i + q + 1) << (64 - rem)) };
+            let s = if rem == 0 {
+                lo
+            } else {
+                (lo >> rem) | (get(i + q + 1) << (64 - rem))
+            };
             *x = if dilate { *x | s } else { *x & s };
         }
     };
     let mut out: Vec<Vec<u64>> = vec![vec![if dilate { 0 } else { !0u64 }; words]; h];
-    let mut cache: Vec<((i64, i64), Vec<Vec<u64>>)> = Vec::new();
+    type ShiftCache = Vec<((i64, i64), Vec<Vec<u64>>)>;
+    let mut cache: ShiftCache = Vec::new();
     for &(dy0, dy1, a, b) in segs {
         if !cache.iter().any(|c| c.0 == (a, b)) {
             let mut r = vec![0u64; words];
@@ -205,7 +256,17 @@ fn morph_binary(img: &[u8], h: usize, w: usize, segs: &[(i64, i64, i64, i64)], d
         }
     }
     // 8 bits -> 8 bytes of v or 0
-    let table: Vec<u64> = (0..256u64).map(|b| (0..8).fold(0u64, |t, i| if (b >> i) & 1 == 1 { t | (v as u64) << (8 * i) } else { t })).collect();
+    let table: Vec<u64> = (0..256u64)
+        .map(|b| {
+            (0..8).fold(0u64, |t, i| {
+                if (b >> i) & 1 == 1 {
+                    t | (v as u64) << (8 * i)
+                } else {
+                    t
+                }
+            })
+        })
+        .collect();
     let spread = |b: u64| table[b as usize];
     let mut res = vec![0u8; h * w];
     for y in 0..h {
@@ -228,7 +289,10 @@ fn morph_binary(img: &[u8], h: usize, w: usize, segs: &[(i64, i64, i64, i64)], d
 
 /// cv2.subtract for uint8 (saturating).
 pub fn subtract(a: &[u8], b: &[u8]) -> Vec<u8> {
-    a.iter().zip(b).map(|(&x, &y)| x.saturating_sub(y)).collect()
+    a.iter()
+        .zip(b)
+        .map(|(&x, &y)| x.saturating_sub(y))
+        .collect()
 }
 
 const XY_SHIFT: i64 = 16;
@@ -240,7 +304,9 @@ pub fn clip_line(w: i64, h: i64, p1: &mut (i64, i64), p2: &mut (i64, i64)) -> bo
     if w <= 0 || h <= 0 {
         return false;
     }
-    let code = |x: i64, y: i64| (x < 0) as i32 + (x > right) as i32 * 2 + (y < 0) as i32 * 4 + (y > bottom) as i32 * 8;
+    let code = |x: i64, y: i64| {
+        (x < 0) as i32 + (x > right) as i32 * 2 + (y < 0) as i32 * 4 + (y > bottom) as i32 * 8
+    };
     let (mut x1, mut y1, mut x2, mut y2) = (p1.0, p1.1, p2.0, p2.1);
     let mut c1 = code(x1, y1);
     let mut c2 = code(x2, y2);
@@ -305,7 +371,8 @@ fn line(img: &mut [u8], h: usize, w: usize, p1: (i64, i64), p2: (i64, i64), colo
     let mut err = dx - (dy + dy);
     let plus_delta = dx + dx;
     let minus_delta = -(dy + dy);
-    let (mut minus_shift, mut plus_shift, mut minus_step, mut plus_step) = (delta_x, 0i64, 0i64, delta_y);
+    let (mut minus_shift, mut plus_shift, mut minus_step, mut plus_step) =
+        (delta_x, 0i64, 0i64, delta_y);
     if vert {
         std::mem::swap(&mut plus_step, &mut plus_shift);
         std::mem::swap(&mut minus_step, &mut minus_shift);
@@ -341,7 +408,14 @@ pub fn fill_convex_poly(img: &mut [u8], h: usize, w: usize, v: &[[i64; 2]], colo
         xmax = xmax.max(q[0]);
         xmin = xmin.min(q[0]);
         let p = (q[0] << XY_SHIFT, q[1] << XY_SHIFT);
-        line(img, h, w, (p0.0 >> XY_SHIFT, p0.1 >> XY_SHIFT), (p.0 >> XY_SHIFT, p.1 >> XY_SHIFT), color);
+        line(
+            img,
+            h,
+            w,
+            (p0.0 >> XY_SHIFT, p0.1 >> XY_SHIFT),
+            (p.0 >> XY_SHIFT, p.1 >> XY_SHIFT),
+            color,
+        );
         p0 = p;
     }
     if npts < 3 || xmax < 0 || ymax < 0 || xmin >= w as i64 || ymin >= h as i64 {
@@ -356,7 +430,22 @@ pub fn fill_convex_poly(img: &mut [u8], h: usize, w: usize, v: &[[i64; 2]], colo
         dx: i64,
         ye: i64,
     }
-    let mut edge = [E { idx: imin, di: 1, x: -XY_ONE, dx: 0, ye: ymin }, E { idx: imin, di: npts - 1, x: -XY_ONE, dx: 0, ye: ymin }];
+    let mut edge = [
+        E {
+            idx: imin,
+            di: 1,
+            x: -XY_ONE,
+            dx: 0,
+            ye: ymin,
+        },
+        E {
+            idx: imin,
+            di: npts - 1,
+            x: -XY_ONE,
+            dx: 0,
+            ye: ymin,
+        },
+    ];
     let mut edges = npts as i64;
     let mut y = ymin;
     loop {
@@ -395,7 +484,11 @@ pub fn fill_convex_poly(img: &mut [u8], h: usize, w: usize, v: &[[i64; 2]], colo
             break;
         }
         if y >= 0 {
-            let (left, right) = if edge[0].x > edge[1].x { (1, 0) } else { (0, 1) };
+            let (left, right) = if edge[0].x > edge[1].x {
+                (1, 0)
+            } else {
+                (0, 1)
+            };
             let mut xx1 = (edge[left].x + delta1) >> XY_SHIFT;
             let mut xx2 = (edge[right].x + delta2) >> XY_SHIFT;
             if xx2 >= 0 && xx1 < w as i64 {
@@ -442,9 +535,21 @@ pub fn fill_poly(img: &mut [u8], h: usize, w: usize, pts: &[[i64; 2]], color: u8
         if pt0.1 != pt1.1 {
             let dx = (pt1c.0 - pt0c.0) / (pt1c.1 - pt0c.1);
             let e = if pt0.1 < pt1.1 {
-                Edge { y0: pt0.1, y1: pt1.1, x: pt0c.0 + (pt0.1 - pt0c.1) * dx, dx, next: usize::MAX }
+                Edge {
+                    y0: pt0.1,
+                    y1: pt1.1,
+                    x: pt0c.0 + (pt0.1 - pt0c.1) * dx,
+                    dx,
+                    next: usize::MAX,
+                }
             } else {
-                Edge { y0: pt1.1, y1: pt0.1, x: pt1c.0 + (pt1.1 - pt1c.1) * dx, dx, next: usize::MAX }
+                Edge {
+                    y0: pt1.1,
+                    y1: pt0.1,
+                    x: pt1c.0 + (pt1.1 - pt1c.1) * dx,
+                    dx,
+                    next: usize::MAX,
+                }
             };
             edges.push(e);
         }
@@ -472,11 +577,23 @@ fn fill_edges(img: &mut [u8], h: usize, w: usize, mut edges: Vec<Edge>, color: u
     }
     // CmpEdges: by y0, then x, then dx (std::sort; ties of all three keep no particular order,
     // but such edges are identical for filling)
-    edges.sort_by(|a, b| (a.y0, a.x, a.dx).cmp(&(b.y0, b.x, b.dx)));
-    edges.push(Edge { y0: i64::MAX, y1: 0, x: 0, dx: 0, next: usize::MAX });
+    edges.sort_by_key(|a| (a.y0, a.x, a.dx));
+    edges.push(Edge {
+        y0: i64::MAX,
+        y1: 0,
+        x: 0,
+        dx: 0,
+        next: usize::MAX,
+    });
     const TMP: usize = usize::MAX - 1; // the list head ("tmp" in OpenCV)
     let mut tmp_next: usize = usize::MAX;
-    let next_of = |edges: &Vec<Edge>, tmp_next: usize, i: usize| if i == TMP { tmp_next } else { edges[i].next };
+    let next_of = |edges: &Vec<Edge>, tmp_next: usize, i: usize| {
+        if i == TMP {
+            tmp_next
+        } else {
+            edges[i].next
+        }
+    };
     let delta = XY_ONE - 1;
     let mut i = 0usize;
     let y_max = y_max.min(h as i64);
@@ -520,7 +637,11 @@ fn fill_edges(img: &mut [u8], h: usize, w: usize, mut edges: Vec<Edge>, color: u
             if draw {
                 if !clipline {
                     let (kx, px) = (edges[keep_prelast].x, edges[prelast].x);
-                    let (mut x1, mut x2) = if kx > px { ((px + delta) >> XY_SHIFT, kx >> XY_SHIFT) } else { ((kx + delta) >> XY_SHIFT, px >> XY_SHIFT) };
+                    let (mut x1, mut x2) = if kx > px {
+                        ((px + delta) >> XY_SHIFT, kx >> XY_SHIFT)
+                    } else {
+                        ((kx + delta) >> XY_SHIFT, px >> XY_SHIFT)
+                    };
                     if x1 < w as i64 && x2 >= 0 {
                         x1 = x1.max(0);
                         x2 = x2.min(w as i64 - 1);

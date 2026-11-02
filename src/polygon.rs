@@ -8,7 +8,8 @@ use crate::sintable::SIN_TABLE;
 type P = [f32; 2];
 
 fn area_sign(a: P, b: P, c: P) -> i32 {
-    let area2 = (b[0] - a[0]) as f64 * (c[1] - a[1]) as f64 - (c[0] - a[0]) as f64 * (b[1] - a[1]) as f64;
+    let area2 =
+        (b[0] - a[0]) as f64 * (c[1] - a[1]) as f64 - (c[0] - a[0]) as f64 * (b[1] - a[1]) as f64;
     if area2 > 1e-5 {
         1
     } else if area2 < -1e-5 {
@@ -61,15 +62,21 @@ fn parallel_int(a: P, b: P, c: P, d: P, p: &mut P, q: &mut P) -> Ls {
 }
 
 fn intersect_segments(a: P, b: P, c: P, d: P, p: &mut P, q: &mut P) -> Ls {
-    let denom = (a[0] - b[0]) as f64 * (d[1] - c[1]) as f64 - (a[1] - b[1]) as f64 * (d[0] - c[0]) as f64;
+    let denom =
+        (a[0] - b[0]) as f64 * (d[1] - c[1]) as f64 - (a[1] - b[1]) as f64 * (d[0] - c[0]) as f64;
     if denom == 0.0 {
         return parallel_int(a, b, c, d, p, q);
     }
-    let num = (d[1] - a[1]) as f64 * (a[0] - c[0]) as f64 + (a[0] - d[0]) as f64 * (a[1] - c[1]) as f64;
+    let num =
+        (d[1] - a[1]) as f64 * (a[0] - c[0]) as f64 + (a[0] - d[0]) as f64 * (a[1] - c[1]) as f64;
     let s = num / denom;
-    let num = (b[1] - a[1]) as f64 * (a[0] - c[0]) as f64 + (c[1] - a[1]) as f64 * (b[0] - a[0]) as f64;
+    let num =
+        (b[1] - a[1]) as f64 * (a[0] - c[0]) as f64 + (c[1] - a[1]) as f64 * (b[0] - a[0]) as f64;
     let t = num / denom;
-    *p = [(a[0] as f64 + s * (b[0] - a[0]) as f64) as f32, (a[1] as f64 + s * (b[1] - a[1]) as f64) as f32];
+    *p = [
+        (a[0] as f64 + s * (b[0] - a[0]) as f64) as f32,
+        (a[1] as f64 + s * (b[1] - a[1]) as f64) as f32,
+    ];
     *q = *p;
     if s < 0.0 || s > 1.0 || t < 0.0 || t > 1.0 {
         Ls::None
@@ -119,7 +126,13 @@ fn intersect_cc(pp: &[P], qq: &[P], result_size: usize) -> (i64, f32) {
                 result.push(p);
             }
             push_new(&mut result, p);
-            inflag = if a_hb > 0 { In::P } else if b_ha > 0 { In::Q } else { inflag };
+            inflag = if a_hb > 0 {
+                In::P
+            } else if b_ha > 0 {
+                In::Q
+            } else {
+                inflag
+            };
         }
         let dot = av[0] as f64 * bv[0] as f64 + av[1] as f64 * bv[1] as f64;
         if code == Ls::Overlap && dot < 0.0 {
@@ -160,7 +173,8 @@ fn intersect_cc(pp: &[P], qq: &[P], result_size: usize) -> (i64, f32) {
         } else {
             advance_a(&mut a, &mut aa, inflag == In::P, &mut result);
         }
-        if !(((aa < n) || (ba < m)) && (aa < 2 * n) && (ba < 2 * m) && result.len() <= result_size) {
+        if !(((aa < n) || (ba < m)) && (aa < 2 * n) && (ba < 2 * m) && result.len() <= result_size)
+        {
             break;
         }
     }
@@ -188,13 +202,22 @@ fn point_polygon_test_f(contour: &[P], pt: P) -> i32 {
     for &c in contour {
         let v0 = v;
         v = c;
-        if (v0[1] <= pt[1] && v[1] <= pt[1]) || (v0[1] > pt[1] && v[1] > pt[1]) || (v0[0] < pt[0] && v[0] < pt[0]) {
-            if pt[1] == v[1] && (pt[0] == v[0] || (pt[1] == v0[1] && ((v0[0] <= pt[0] && pt[0] <= v[0]) || (v[0] <= pt[0] && pt[0] <= v0[0])))) {
+        if (v0[1] <= pt[1] && v[1] <= pt[1])
+            || (v0[1] > pt[1] && v[1] > pt[1])
+            || (v0[0] < pt[0] && v[0] < pt[0])
+        {
+            if pt[1] == v[1]
+                && (pt[0] == v[0]
+                    || (pt[1] == v0[1]
+                        && ((v0[0] <= pt[0] && pt[0] <= v[0])
+                            || (v[0] <= pt[0] && pt[0] <= v0[0]))))
+            {
                 return 0;
             }
             continue;
         }
-        let mut dist = (pt[1] - v0[1]) as f64 * (v[0] - v0[0]) as f64 - (pt[0] - v0[0]) as f64 * (v[1] - v0[1]) as f64;
+        let mut dist = (pt[1] - v0[1]) as f64 * (v[0] - v0[0]) as f64
+            - (pt[0] - v0[0]) as f64 * (v[1] - v0[1]) as f64;
         if dist == 0.0 {
             return 0;
         }
@@ -217,8 +240,16 @@ pub fn point_polygon_test_i(contour: &[[i64; 2]], pt: [i64; 2]) -> i32 {
     for &c in contour {
         let v0 = v;
         v = c;
-        if (v0[1] <= pt[1] && v[1] <= pt[1]) || (v0[1] > pt[1] && v[1] > pt[1]) || (v0[0] < pt[0] && v[0] < pt[0]) {
-            if pt[1] == v[1] && (pt[0] == v[0] || (pt[1] == v0[1] && ((v0[0] <= pt[0] && pt[0] <= v[0]) || (v[0] <= pt[0] && pt[0] <= v0[0])))) {
+        if (v0[1] <= pt[1] && v[1] <= pt[1])
+            || (v0[1] > pt[1] && v[1] > pt[1])
+            || (v0[0] < pt[0] && v[0] < pt[0])
+        {
+            if pt[1] == v[1]
+                && (pt[0] == v[0]
+                    || (pt[1] == v0[1]
+                        && ((v0[0] <= pt[0] && pt[0] <= v[0])
+                            || (v[0] <= pt[0] && pt[0] <= v0[0]))))
+            {
                 return 0;
             }
             continue;
@@ -293,7 +324,8 @@ pub fn polygons_overlap(a: &[[i64; 2]], b: &[[i64; 2]]) -> bool {
     if intersect_convex_convex(a, b) > 0.0 {
         return true;
     }
-    a.iter().any(|&p| point_polygon_test_i(b, p) >= 0) || b.iter().any(|&p| point_polygon_test_i(a, p) >= 0)
+    a.iter().any(|&p| point_polygon_test_i(b, p) >= 0)
+        || b.iter().any(|&p| point_polygon_test_i(a, p) >= 0)
 }
 
 /// cv2.ellipse2Poly(center, axes, angle, 0, 360, 1) with integer arguments.

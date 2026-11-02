@@ -9,7 +9,11 @@ use crate::symbols::{rotated_boxes, Shape};
 fn median(mut v: Vec<f64>) -> f64 {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = v.len();
-    if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 }
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2.0
+    }
 }
 
 pub fn point_unit(p: &StaffPoint) -> f64 {
@@ -25,7 +29,7 @@ pub fn unit_size(s: &Staff) -> f64 {
 pub fn get_at(s: &Staff, x: f64) -> Option<&StaffPoint> {
     let mut best: Option<&StaffPoint> = None;
     for p in &s.grid {
-        if best.map_or(true, |b| (p.x - x).abs() < (b.x - x).abs()) {
+        if best.is_none_or(|b| (p.x - x).abs() < (b.x - x).abs()) {
             best = Some(p);
         }
     }
@@ -35,7 +39,11 @@ pub fn get_at(s: &Staff, x: f64) -> Option<&StaffPoint> {
 fn y_distance_to(s: &Staff, pt: (f64, f64)) -> f64 {
     match get_at(s, pt.0) {
         None => 1e10,
-        Some(p) => p.y.iter().map(|y| (y - pt.1).abs()).fold(f64::INFINITY, f64::min),
+        Some(p) => {
+            p.y.iter()
+                .map(|y| (y - pt.1).abs())
+                .fold(f64::INFINITY, f64::min)
+        }
     }
 }
 
@@ -49,18 +57,28 @@ pub fn brace_dot_image(symbols: &[u8], staff: &[u8], h: usize, w: usize) -> Vec<
 /// _trim_symbol_to_core_span
 fn trim(s: &Shape) -> Shape {
     let c = &s.contour;
-    let (x, y) = (c.iter().map(|p| p[0]).min().unwrap() as i64, c.iter().map(|p| p[1]).min().unwrap() as i64);
+    let (x, y) = (
+        c.iter().map(|p| p[0]).min().unwrap() as i64,
+        c.iter().map(|p| p[1]).min().unwrap() as i64,
+    );
     let w = (c.iter().map(|p| p[0]).max().unwrap() as i64 - x + 1) as usize;
     let h = (c.iter().map(|p| p[1]).max().unwrap() as i64 - y + 1) as usize;
     let mut mask = vec![0u8; w * h];
-    let pts: Vec<[i64; 2]> = c.iter().map(|p| [p[0] as i64 - x, p[1] as i64 - y]).collect();
+    let pts: Vec<[i64; 2]> = c
+        .iter()
+        .map(|p| [p[0] as i64 - x, p[1] as i64 - y])
+        .collect();
     fill_poly(&mut mask, h, w, &pts, 255);
-    let widths: Vec<usize> = (0..h).map(|r| mask[r * w..(r + 1) * w].iter().filter(|&&v| v > 0).count()).collect();
+    let widths: Vec<usize> = (0..h)
+        .map(|r| mask[r * w..(r + 1) * w].iter().filter(|&&v| v > 0).count())
+        .collect();
     let max_width = *widths.iter().max().unwrap();
     if max_width == 0 {
         return s.clone();
     }
-    let core: Vec<usize> = (0..h).filter(|&r| widths[r] as f64 >= max_width as f64 * 0.5).collect();
+    let core: Vec<usize> = (0..h)
+        .filter(|&r| widths[r] as f64 >= max_width as f64 * 0.5)
+        .collect();
     if core.is_empty() {
         return s.clone();
     }
@@ -68,7 +86,16 @@ fn trim(s: &Shape) -> Shape {
     if cmax - cmin <= 0 {
         return s.clone();
     }
-    Shape::rect([s.cx, (cmin + cmax) as f64 / 2.0, s.w, (cmax - cmin) as f64, s.angle], s.contour.clone())
+    Shape::rect(
+        [
+            s.cx,
+            (cmin + cmax) as f64 / 2.0,
+            s.w,
+            (cmax - cmin) as f64,
+            s.angle,
+        ],
+        s.contour.clone(),
+    )
 }
 
 fn filter_tall(brace_dot: Vec<Shape>, staffs: &[Staff], units: &[f64]) -> Vec<Shape> {
@@ -96,7 +123,10 @@ fn thicker(s: &Shape, t: i64) -> Shape {
     if t <= 0 {
         return s.clone();
     }
-    Shape::rect([s.cx, s.cy, s.w + t as f64, s.h + t as f64, s.angle], vec![])
+    Shape::rect(
+        [s.cx, s.cy, s.w + t as f64, s.h + t as f64, s.angle],
+        vec![],
+    )
 }
 
 /// StaffPoint.to_bounding_box: a zero-width box from the top to the bottom line.
@@ -116,7 +146,9 @@ fn connections_at_lines(s1: &Staff, s2: &Staff, u1: f64, brace_dot: &[Shape]) ->
             let sym = &brace_dot[k];
             let th = thicker(sym, t);
             match (get_at(s1, sym.cx), get_at(s2, sym.cx)) {
-                (Some(p1), Some(p2)) => th.is_overlapping(&point_box(p1)) && th.is_overlapping(&point_box(p2)),
+                (Some(p1), Some(p2)) => {
+                    th.is_overlapping(&point_box(p1)) && th.is_overlapping(&point_box(p2))
+                }
                 _ => false,
             }
         })
@@ -143,12 +175,18 @@ pub fn merge_staffs(a: &Staff, b: &Staff) -> Result<Staff, String> {
     }
     let grid: Vec<StaffPoint> = ga
         .iter()
-        .filter_map(|(k, pa)| gb.get(k).map(|pb| {
-            let mut y = pa.y.clone();
-            y.extend_from_slice(&pb.y);
-            y.sort_by(|u, v| u.partial_cmp(v).unwrap());
-            StaffPoint { x: pa.x, y, angle: (pa.angle + pb.angle) / 2.0 }
-        }))
+        .filter_map(|(k, pa)| {
+            gb.get(k).map(|pb| {
+                let mut y = pa.y.clone();
+                y.extend_from_slice(&pb.y);
+                y.sort_by(|u, v| u.partial_cmp(v).unwrap());
+                StaffPoint {
+                    x: pa.x,
+                    y,
+                    angle: (pa.angle + pb.angle) / 2.0,
+                }
+            })
+        })
         .collect();
     let mut s = Staff::from_grid(grid)?;
     s.halves = Some(Box::new((a.clone(), b.clone())));
@@ -156,7 +194,13 @@ pub fn merge_staffs(a: &Staff, b: &Staff) -> Result<Staff, String> {
 }
 
 /// find_braces_brackets_and_grand_staff_lines: staffs (top to bottom) into MultiStaffs.
-pub fn multi_staffs(staffs: &[Staff], symbols: &[u8], staff_mask: &[u8], h: usize, w: usize) -> Result<Vec<MultiStaff>, String> {
+pub fn multi_staffs(
+    staffs: &[Staff],
+    symbols: &[u8],
+    staff_mask: &[u8],
+    h: usize,
+    w: usize,
+) -> Result<Vec<MultiStaff>, String> {
     let img = brace_dot_image(symbols, staff_mask, h, w);
     let brace_dot = rotated_boxes(&img, h, w, true, None, Some((100.0, -1.0)));
     let brace_dot: Vec<Shape> = brace_dot.iter().map(trim).collect();
@@ -190,7 +234,10 @@ pub fn multi_staffs(staffs: &[Staff], symbols: &[u8], staff_mask: &[u8], h: usiz
     // _merge_multi_staff_if_they_share_a_staff
     let mut merged: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
     for ms in result {
-        match merged.iter().position(|ex| ex.0.iter().any(|s| ms.0.contains(s))) {
+        match merged
+            .iter()
+            .position(|ex| ex.0.iter().any(|s| ms.0.contains(s)))
+        {
             Some(k) => {
                 let ex = merged.remove(k);
                 let mut st = ex.0.clone();
@@ -211,14 +258,25 @@ pub fn multi_staffs(staffs: &[Staff], symbols: &[u8], staff_mask: &[u8], h: usiz
             None => merged.push(ms),
         }
     }
-    merged.into_iter().map(|(idx, _)| create_grandstaffs(&idx, staffs, &units, &brace_dot)).collect()
+    merged
+        .into_iter()
+        .map(|(idx, _)| create_grandstaffs(&idx, staffs, &units, &brace_dot))
+        .collect()
 }
 
 fn same_box(a: &Shape, b: &Shape) -> bool {
     (a.cx, a.cy, a.w, a.h, a.angle) == (b.cx, b.cy, b.w, b.h, b.angle)
 }
 
-fn score(sym: &Shape, upper: &Staff, lower: &Staff, uu: f64, ul: f64, above: Option<&Staff>, below: Option<&Staff>) -> f64 {
+fn score(
+    sym: &Shape,
+    upper: &Staff,
+    lower: &Staff,
+    uu: f64,
+    ul: f64,
+    above: Option<&Staff>,
+    below: Option<&Staff>,
+) -> f64 {
     let unit = (uu + ul) / 2.0;
     let x_thr = 5.0 * unit;
     let y_thr = 0.5 * sym.h;
@@ -234,7 +292,9 @@ fn score(sym: &Shape, upper: &Staff, lower: &Staff, uu: f64, ul: f64, above: Opt
             return 0.0;
         }
     }
-    let x_distance = (upper.min_x - sym.cx).abs().min((lower.min_x - sym.cx).abs());
+    let x_distance = (upper.min_x - sym.cx)
+        .abs()
+        .min((lower.min_x - sym.cx).abs());
     let y_overlap = smax.min(lower.max_y) - smin.max(upper.min_y);
     if !(x_distance < x_thr && y_overlap > y_thr && y_overlap > x_distance) {
         return 0.0;
@@ -244,8 +304,16 @@ fn score(sym: &Shape, upper: &Staff, lower: &Staff, uu: f64, ul: f64, above: Opt
     iou - x_distance / x_thr
 }
 
-fn create_grandstaffs(idx: &[usize], staffs: &[Staff], units: &[f64], brace_dot: &[Shape]) -> Result<MultiStaff, String> {
-    let plain = || MultiStaff { staffs: idx.iter().map(|&i| staffs[i].clone()).collect(), grand: vec![false; idx.len()] };
+fn create_grandstaffs(
+    idx: &[usize],
+    staffs: &[Staff],
+    units: &[f64],
+    brace_dot: &[Shape],
+) -> Result<MultiStaff, String> {
+    let plain = || MultiStaff {
+        staffs: idx.iter().map(|&i| staffs[i].clone()).collect(),
+        grand: vec![false; idx.len()],
+    };
     if idx.len() < 2 {
         return Ok(plain());
     }
@@ -254,11 +322,29 @@ fn create_grandstaffs(idx: &[usize], staffs: &[Staff], units: &[f64], brace_dot:
     }
     let mut pairs: Vec<(usize, f64)> = Vec::new();
     for i in 0..idx.len() - 1 {
-        let above = if i > 0 { Some(&staffs[idx[i - 1]]) } else { None };
-        let below = if i + 2 < idx.len() { Some(&staffs[idx[i + 2]]) } else { None };
+        let above = if i > 0 {
+            Some(&staffs[idx[i - 1]])
+        } else {
+            None
+        };
+        let below = if i + 2 < idx.len() {
+            Some(&staffs[idx[i + 2]])
+        } else {
+            None
+        };
         let best = brace_dot
             .iter()
-            .map(|s| score(s, &staffs[idx[i]], &staffs[idx[i + 1]], units[idx[i]], units[idx[i + 1]], above, below))
+            .map(|s| {
+                score(
+                    s,
+                    &staffs[idx[i]],
+                    &staffs[idx[i + 1]],
+                    units[idx[i]],
+                    units[idx[i + 1]],
+                    above,
+                    below,
+                )
+            })
             .fold(f64::NEG_INFINITY, f64::max);
         if best > 0.0 {
             pairs.push((i, best));
@@ -279,11 +365,15 @@ fn create_grandstaffs(idx: &[usize], staffs: &[Staff], units: &[f64], brace_dot:
     if chosen.is_empty() {
         return Ok(plain());
     }
-    let mut out = MultiStaff { staffs: vec![], grand: vec![] };
+    let mut out = MultiStaff {
+        staffs: vec![],
+        grand: vec![],
+    };
     let mut i = 0;
     while i < idx.len() {
         if chosen.iter().any(|&c| c == i || c + 1 == i) {
-            out.staffs.push(merge_staffs(&staffs[idx[i]], &staffs[idx[i + 1]])?);
+            out.staffs
+                .push(merge_staffs(&staffs[idx[i]], &staffs[idx[i + 1]])?);
             out.grand.push(true);
             i += 2;
             continue;
@@ -295,5 +385,8 @@ fn create_grandstaffs(idx: &[usize], staffs: &[Staff], units: &[f64], brace_dot:
     // MultiStaff(...) sorts its staffs by min_y
     let mut z: Vec<(Staff, bool)> = out.staffs.into_iter().zip(out.grand).collect();
     z.sort_by(|a, b| a.0.min_y.partial_cmp(&b.0.min_y).unwrap());
-    Ok(MultiStaff { staffs: z.iter().map(|p| p.0.clone()).collect(), grand: z.iter().map(|p| p.1).collect() })
+    Ok(MultiStaff {
+        staffs: z.iter().map(|p| p.0.clone()).collect(),
+        grand: z.iter().map(|p| p.1).collect(),
+    })
 }
