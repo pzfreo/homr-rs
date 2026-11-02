@@ -1241,3 +1241,27 @@ zero differing heads/steps/lengths**, including all native failure-page staffs.
 No JS context copy is required for the decoder. Full fused XML replay is being
 checked separately. Four balanced strict workers now execute the retained
 normal strict artifact; no diagnostic/profile imports are used in those runs.
+
+### API validation and final build checks
+
+Fused XML replay completed: **75 byte-identical results and 13 matching native
+AssertionErrors**, with zero byte-different pages. The single-call
+encoder_decode ABI also matches the native 121-step follow-3 staff, with a
+separately checked bit-identical context. Existing decoder exports remain
+present. No changes were made to decoder arithmetic or its stopping rules.
+
+Added checked dimension products before unsafe encoder SIMD entry points,
+including a release-mode overflow regression test. These integer guards and
+a Clippy iterator rewrite leave valid-image arithmetic and accumulation order
+unchanged. Full strict corpus runs use the frozen normal batch-kernel artifact;
+fresh guarded-source artifacts are built separately for final checks and speed.
+The native optimized graph records 114 outputs; **70 named computational
+boundaries** are observed and compared by the Rust trace (the recording also
+contains reshape-shape constants and other fused-graph outputs). The trace
+harness now fails its process on any bit difference or an empty observation.
+
+Native release tests pass all **11** library tests and all binary/doc targets.
+Strict and fused WASI runs each pass **10** tests; WASI's aborting panic runtime
+ignores the should-panic dimension-overflow test, which passes natively.
+Native all-target/all-feature and both WASM all-feature Clippy checks pass
+with -D warnings. No user answers or new authorization were needed.

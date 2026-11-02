@@ -1,6 +1,12 @@
 //! Ordered float32 kernels. Arithmetic follows ORT/MLAS (MIT, Microsoft).
 #![allow(clippy::too_many_arguments)]
 
+fn elements(dims: &[usize]) -> usize {
+    dims.iter()
+        .try_fold(1usize, |n, &d| n.checked_mul(d))
+        .expect("kernel shape overflow")
+}
+
 #[inline]
 pub fn fma(a: f32, b: f32, c: f32) -> f32 {
     #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
@@ -54,6 +60,10 @@ pub fn layer_norm(
     bias: &[f32],
     epsilon: f32,
 ) -> Vec<f32> {
+    assert!(channels > 0);
+    assert_eq!(scale.len(), channels);
+    assert_eq!(bias.len(), channels);
+    assert!(x.len().is_multiple_of(channels));
     let mut out = vec![0.0; x.len()];
     for (row, dst) in x.chunks_exact(channels).zip(out.chunks_exact_mut(channels)) {
         let (mut mean, mut m2) = (0.0, 0.0);
@@ -90,12 +100,12 @@ fn product(
     bias: Option<&[f32]>,
     bias_start: bool,
 ) -> Vec<f32> {
-    assert_eq!(a.len(), m * k);
-    assert_eq!(b.len(), k * n);
+    assert_eq!(a.len(), elements(&[m, k]));
+    assert_eq!(b.len(), elements(&[k, n]));
     if let Some(b) = bias {
         assert_eq!(b.len(), n);
     }
-    let mut out = vec![0.0; m * n];
+    let mut out = vec![0.0; elements(&[m, n])];
     #[cfg(any(target_arch = "wasm32", target_arch = "aarch64"))]
     if m.is_multiple_of(4) && n.is_multiple_of(16) {
         // SAFETY: lengths and tile divisibility are checked above.
@@ -161,10 +171,19 @@ pub fn conv(
     stride: usize,
     pad: usize,
 ) -> Vec<f32> {
-    let oh = (h + 2 * pad - kernel) / stride + 1;
-    let ow = (w + 2 * pad - kernel) / stride + 1;
-    let k = c * kernel * kernel;
-    let mut patches = vec![0.0; oh * ow * k];
+    assert!(kernel > 0 && stride > 0);
+    let padding = pad.checked_mul(2).expect("kernel shape overflow");
+    let ph = h.checked_add(padding).expect("kernel shape overflow");
+    let pw = w.checked_add(padding).expect("kernel shape overflow");
+    assert!(kernel <= ph && kernel <= pw);
+    assert_eq!(x.len(), elements(&[h, w, c]));
+    assert_eq!(weights.len(), elements(&[n, c, kernel, kernel]));
+    assert_eq!(bias.len(), n);
+    let oh = (ph - kernel) / stride + 1;
+    let ow = (pw - kernel) / stride + 1;
+    let k = elements(&[c, kernel, kernel]);
+    let m = elements(&[oh, ow]);
+    let mut patches = vec![0.0; elements(&[m, k])];
     for y in 0..oh {
         for xx in 0..ow {
             for ch in 0..c {
@@ -181,7 +200,7 @@ pub fn conv(
             }
         }
     }
-    let mut b = vec![0.0; k * n];
+    let mut b = vec![0.0; elements(&[k, n])];
     for j in 0..n {
         for p in 0..k {
             b[p * n + j] = weights[j * k + p];
@@ -230,8 +249,18 @@ pub fn depthwise(
     kernel: usize,
     pad: usize,
 ) -> Vec<f32> {
-    assert_eq!(x.len(), h * w * c);
-    assert_eq!(weights.len(), c * kernel * kernel);
+    let padding = pad.checked_mul(2).expect("kernel shape overflow");
+    assert_eq!(
+        kernel,
+        padding.checked_add(1).expect("kernel shape overflow")
+    );
+    elements(&[
+        h.checked_add(padding).expect("kernel shape overflow"),
+        w.checked_add(padding).expect("kernel shape overflow"),
+        c,
+    ]);
+    assert_eq!(x.len(), elements(&[h, w, c]));
+    assert_eq!(weights.len(), elements(&[c, kernel, kernel]));
     assert_eq!(bias.len(), c);
     #[cfg(any(target_arch = "aarch64", target_arch = "wasm32"))]
     if c.is_multiple_of(4) {
@@ -295,5 +324,10 @@ mod tests {
         let result = conv(&[tiny; 4], 1, 4, 1, &[0.5; 16], &[tiny; 16], 16, 1, 1, 0);
         // minsub + minsub/2 is halfway, rounding to the even second subnormal.
         assert!(result.iter().all(|v| v.to_bits() == 2));
+    }
+    #[test]
+    #[should_panic(expected = "kernel shape overflow")]
+    fn rejects_wrapped_matrix_dimensions_before_simd() {
+        matmul(&[], &[0.0; 32], usize::MAX / 2 + 1, 2, 16, None);
     }
 }

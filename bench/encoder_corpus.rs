@@ -11,6 +11,7 @@ fn floats(p: &Path) -> Vec<f32> {
         .map(|b| f32::from_le_bytes(*b))
         .collect()
 }
+#[cfg(target_os = "macos")]
 fn instructions() -> u64 {
     unsafe {
         extern "C" {
@@ -46,6 +47,10 @@ fn phase(name: &str) -> &'static str {
     } else {
         "residual"
     }
+}
+#[cfg(not(target_os = "macos"))]
+fn instructions() -> u64 {
+    panic!("retired-instruction benchmark requires macOS proc_pid_rusage")
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let a: Vec<_> = std::env::args().collect();

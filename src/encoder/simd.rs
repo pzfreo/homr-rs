@@ -468,9 +468,9 @@ unsafe fn product_normal_batched(
                     f64x2_splat(*a.get_unchecked((row + 1) * k + p) as f64),
                 ];
                 let mut weights = [[f64x2_splat(0.0); 2]; 2];
-                for j in 0..2 {
+                for (j, weight) in weights.iter_mut().enumerate() {
                     let v = v128_load(b.as_ptr().add(p * n + col + j * 4).cast());
-                    weights[j] = [
+                    *weight = [
                         f64x2_promote_low_f32x4(v),
                         f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(v, v)),
                     ];
