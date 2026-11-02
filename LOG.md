@@ -1920,3 +1920,28 @@ matching native failures**. Production exports contain no encoder_bench_ entry
 points, and imports remain only env.memory and encoder_threads.dispatch.
 The strict production corpus is now running. Host pool/worker sources remain
 byte-unchanged from main; no Partsong or homr edits, push or posting occurred.
+
+### Final build and compatibility checks
+
+`cargo fmt --check`, all-target/all-feature Clippy `-D warnings`, and
+`cargo test --release -j1` pass (13 library tests, including concurrent
+exactly-once/tail chunk coverage and exhaustion without integer wrap). Both
+WASI SIMD variants also pass their applicable tests. Both nonshared WASM
+builds pass combined encoder/decoder smoke checks; both shared builds pass
+the same checks with a one-rank pool. These four checks retain 121 native
+token steps and bit-identical contexts. The original single-thread API and
+the threaded one-rank path remain working.
+
+Rebuilt every shared configuration with `bench/build_encoder_threads.py`:
+strict/fused production, probes, chunk diagnostics, and probes plus chunk
+diagnostics. The six frozen production/probe/diagnostic artifacts reproduce
+the measured modules byte for byte; the two combined probe/diagnostic
+artifacts also build successfully. This is artifact provenance only: op/corpus comparisons use
+actual float32 output bytes and token sequences, not hashes. WASM Clippy
+passes for strict/fused production and diagnostic features.
+
+Decision during validation: a fresh nonshared build made no visible dependency
+progress for several minutes with the globally configured shared sccache
+wrapper. Reran the checks with per-command `RUSTC_WRAPPER=''` and a separate
+scratch target directory; they completed. Left global configuration and the
+shared cache server alone. The cause of the cache stall was not diagnosed.
