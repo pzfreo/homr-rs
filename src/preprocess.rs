@@ -19,22 +19,45 @@ pub struct Bgr {
 
 /// cvtColor(BGR2GRAY): fixed point, (B*3735 + G*19235 + R*9798 + 2^14) >> 15.
 pub fn bgr_to_gray(img: &Bgr) -> Gray {
-    let data = img.data.chunks_exact(3).map(|p| ((p[0] as u32 * 3735 + p[1] as u32 * 19235 + p[2] as u32 * 9798 + (1 << 14)) >> 15) as u8).collect();
-    Gray { w: img.w, h: img.h, data }
+    let data = img
+        .data
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|p| {
+            ((p[0] as u32 * 3735 + p[1] as u32 * 19235 + p[2] as u32 * 9798 + (1 << 14)) >> 15)
+                as u8
+        })
+        .collect();
+    Gray {
+        w: img.w,
+        h: img.h,
+        data,
+    }
 }
 
 /// autocrop_with_offset: the page cut out of a photo, and its top-left corner.
 pub fn autocrop(img: &Bgr) -> (Bgr, (usize, usize)) {
     let gray = bgr_to_gray(img);
     let mut hist = [0u64; 256];
-    for p in img.data.chunks_exact(3) {
+    for p in img.data.as_chunks::<3>().0 {
         hist[p[0] as usize] += 1;
     }
     let dominant = (0..256).fold(0, |b, i| if hist[i] > hist[b] { i } else { b }) as i64;
     let t = dominant - 30;
-    let thresh: Vec<u8> = gray.data.iter().map(|&v| if (v as i64) > t { 255 } else { 0 }).collect();
+    let thresh: Vec<u8> = gray
+        .data
+        .iter()
+        .map(|&v| if (v as i64) > t { 255 } else { 0 })
+        .collect();
     let ones = |n: usize| vec![vec![1u8; n]; n];
-    let closed = morph(&morph(&thresh, img.h, img.w, &ones(7), true), img.h, img.w, &ones(7), false);
+    let closed = morph(
+        &morph(&thresh, img.h, img.w, &ones(7), true),
+        img.h,
+        img.w,
+        &ones(7),
+        false,
+    );
     let eroded = morph(&closed, img.h, img.w, &ones(9), false);
     let mut best: Option<Vec<[i32; 2]>> = None;
     let mut best_area = 0.0f64;
@@ -42,7 +65,8 @@ pub fn autocrop(img: &Bgr) -> (Bgr, (usize, usize)) {
         let mut a = 0f64;
         let mut prev = c[c.len() - 1];
         for &p in &c {
-            a += prev[0] as f32 as f64 * p[1] as f32 as f64 - prev[1] as f32 as f64 * p[0] as f32 as f64;
+            a += prev[0] as f32 as f64 * p[1] as f32 as f64
+                - prev[1] as f32 as f64 * p[0] as f32 as f64;
             prev = p;
         }
         let area = (a * 0.5).abs();
@@ -51,7 +75,9 @@ pub fn autocrop(img: &Bgr) -> (Bgr, (usize, usize)) {
             best = Some(c);
         }
     }
-    let Some(c) = best else { return (img.clone(), (0, 0)) };
+    let Some(c) = best else {
+        return (img.clone(), (0, 0));
+    };
     let x = c.iter().map(|p| p[0]).min().unwrap() as usize;
     let y = c.iter().map(|p| p[1]).min().unwrap() as usize;
     let w = c.iter().map(|p| p[0]).max().unwrap() as usize - x + 1;
@@ -91,14 +117,25 @@ fn coeffs(in_size: usize, out_size: usize) -> (Vec<(usize, usize)>, Vec<Vec<i32>
         let ss = 1.0 / filterscale;
         let xmin = ((center - support + 0.5) as i64).max(0);
         let xmax = ((center + support + 0.5) as i64).min(in_size as i64) - xmin;
-        let mut k: Vec<f64> = (0..xmax).map(|x| bicubic((x as f64 + xmin as f64 - center + 0.5) * ss)).collect();
+        let mut k: Vec<f64> = (0..xmax)
+            .map(|x| bicubic((x as f64 + xmin as f64 - center + 0.5) * ss))
+            .collect();
         let ww: f64 = k.iter().fold(0.0, |s, v| s + v);
         if ww != 0.0 {
             for v in &mut k {
                 *v /= ww;
             }
         }
-        let ki: Vec<i32> = k.iter().map(|&v| if v < 0.0 { (-0.5 + v * (1 << 22) as f64) as i32 } else { (0.5 + v * (1 << 22) as f64) as i32 }).collect();
+        let ki: Vec<i32> = k
+            .iter()
+            .map(|&v| {
+                if v < 0.0 {
+                    (-0.5 + v * (1 << 22) as f64) as i32
+                } else {
+                    (0.5 + v * (1 << 22) as f64) as i32
+                }
+            })
+            .collect();
         bounds.push((xmin as usize, xmax as usize));
         kk.push(ki);
     }
@@ -128,7 +165,7 @@ pub fn pil_resize(img: &Bgr, tw: usize, th: usize) -> Bgr {
                 let k = &hk[xx][..xmax];
                 let px = &src[xmin * 3..(xmin + xmax) * 3];
                 let (mut s0, mut s1, mut s2) = (1i32 << 21, 1i32 << 21, 1i32 << 21);
-                for (p, &kv) in px.chunks_exact(3).zip(k) {
+                for (p, &kv) in px.as_chunks::<3>().0.iter().zip(k) {
                     s0 = s0.wrapping_add(p[0] as i32 * kv);
                     s1 = s1.wrapping_add(p[1] as i32 * kv);
                     s2 = s2.wrapping_add(p[2] as i32 * kv);
@@ -138,15 +175,22 @@ pub fn pil_resize(img: &Bgr, tw: usize, th: usize) -> Bgr {
                 dst[xx * 3 + 2] = clip8(s2);
             }
         }
-        let cur = Bgr { w: tw, h: rows, data: out };
+        let cur = Bgr {
+            w: tw,
+            h: rows,
+            data: out,
+        };
         let vb2: Vec<(usize, usize)> = vb.iter().map(|&(a, b)| (a - first, b)).collect();
         return vertical(&cur, th, if need_v { Some((&vb2, &vk)) } else { None });
     }
     vertical(img, th, if need_v { Some((&vb, &vk)) } else { None })
 }
 
-fn vertical(img: &Bgr, th: usize, k: Option<(&Vec<(usize, usize)>, &Vec<Vec<i32>>)>) -> Bgr {
-    let Some((vb, vk)) = k else { return img.clone() };
+type ResizeKernel<'a> = (&'a Vec<(usize, usize)>, &'a Vec<Vec<i32>>);
+fn vertical(img: &Bgr, th: usize, k: Option<ResizeKernel<'_>>) -> Bgr {
+    let Some((vb, vk)) = k else {
+        return img.clone();
+    };
     let row = img.w * 3;
     let mut out = vec![0u8; row * th];
     let mut acc = vec![0i32; row];
@@ -163,12 +207,23 @@ fn vertical(img: &Bgr, th: usize, k: Option<(&Vec<(usize, usize)>, &Vec<Vec<i32>
             *o = clip8(a);
         }
     }
-    Bgr { w: img.w, h: th, data: out }
+    Bgr {
+        w: img.w,
+        h: th,
+        data: out,
+    }
 }
 
 /// resize_image: 1920 wide, aspect kept (height rounded half to even).
 pub fn resize_image(img: &Bgr) -> Bgr {
-    let (tw, th) = if img.w == 1920 { (img.w, img.h) } else { (1920, (img.h as f64 * (1920.0 / img.w as f64)).round_ties_even() as usize) };
+    let (tw, th) = if img.w == 1920 {
+        (img.w, img.h)
+    } else {
+        (
+            1920,
+            (img.h as f64 * (1920.0 / img.w as f64)).round_ties_even() as usize,
+        )
+    };
     if tw == img.w && th == img.h {
         return img.clone();
     }
@@ -195,19 +250,27 @@ fn reflect101(p: i64, n: i64) -> i64 {
 /// createCLAHE(clipLimit=1.0, tileGridSize=(8, 8)).apply(gray)
 pub fn clahe(src: &Gray) -> Gray {
     let (tiles_x, tiles_y) = (8usize, 8usize);
-    let (ew, eh) = if src.w % tiles_x == 0 && src.h % tiles_y == 0 {
+    let (ew, eh) = if src.w.is_multiple_of(tiles_x) && src.h.is_multiple_of(tiles_y) {
         (src.w, src.h)
     } else {
-        (src.w + tiles_x - src.w % tiles_x, src.h + tiles_y - src.h % tiles_y)
+        (
+            src.w + tiles_x - src.w % tiles_x,
+            src.h + tiles_y - src.h % tiles_y,
+        )
     };
     // the image extended (bottom and right) by reflection, for the lookup tables
-    let ext = |x: usize, y: usize| src.at(reflect101(x as i64, src.w as i64) as usize, reflect101(y as i64, src.h as i64) as usize);
+    let ext = |x: usize, y: usize| {
+        src.at(
+            reflect101(x as i64, src.w as i64) as usize,
+            reflect101(y as i64, src.h as i64) as usize,
+        )
+    };
     let (tw, th) = (ew / tiles_x, eh / tiles_y);
     let total = (tw * th) as i64;
     let lut_scale = 255.0f32 / total as f32;
     let clip_limit = ((1.0 * total as f64 / 256.0) as i64).max(1);
     let mut lut = vec![[0u8; 256]; tiles_x * tiles_y];
-    for k in 0..tiles_x * tiles_y {
+    for (k, table) in lut.iter_mut().enumerate() {
         let (ty, tx) = (k / tiles_x, k % tiles_x);
         let mut hist = [0i64; 256];
         for y in ty * th..(ty + 1) * th {
@@ -239,7 +302,9 @@ pub fn clahe(src: &Gray) -> Gray {
         let mut sum = 0i64;
         for i in 0..256 {
             sum += hist[i];
-            lut[k][i] = ((sum as f32 * lut_scale) as f64).round_ties_even().clamp(0.0, 255.0) as u8;
+            table[i] = ((sum as f32 * lut_scale) as f64)
+                .round_ties_even()
+                .clamp(0.0, 255.0) as u8;
         }
     }
     let inv_tw = 1.0f32 / tw as f32;
@@ -249,7 +314,12 @@ pub fn clahe(src: &Gray) -> Gray {
             let txf = x as f32 * inv_tw - 0.5f32;
             let tx1 = (txf as f64).floor() as i64;
             let xa = txf - tx1 as f32;
-            ((tx1.max(0)) as usize, ((tx1 + 1).min(tiles_x as i64 - 1)) as usize, xa, 1.0f32 - xa)
+            (
+                (tx1.max(0)) as usize,
+                ((tx1 + 1).min(tiles_x as i64 - 1)) as usize,
+                xa,
+                1.0f32 - xa,
+            )
         })
         .collect();
     let mut out = Gray::new(src.w, src.h, 0);
@@ -258,12 +328,15 @@ pub fn clahe(src: &Gray) -> Gray {
         let ty1 = (tyf as f64).floor() as i64;
         let ya = tyf - ty1 as f32;
         let ya1 = 1.0f32 - ya;
-        let (t1, t2) = (ty1.max(0) as usize, (ty1 + 1).min(tiles_y as i64 - 1) as usize);
-        for x in 0..src.w {
+        let (t1, t2) = (
+            ty1.max(0) as usize,
+            (ty1 + 1).min(tiles_y as i64 - 1) as usize,
+        );
+        for (x, &(i1, i2, xa, xa1)) in xs.iter().enumerate() {
             let v = src.at(x, y) as usize;
-            let (i1, i2, xa, xa1) = xs[x];
             let (p1, p2) = (&lut[t1 * tiles_x..], &lut[t2 * tiles_x..]);
-            let res = (p1[i1][v] as f32 * xa1 + p1[i2][v] as f32 * xa) * ya1 + (p2[i1][v] as f32 * xa1 + p2[i2][v] as f32 * xa) * ya;
+            let res = (p1[i1][v] as f32 * xa1 + p1[i2][v] as f32 * xa) * ya1
+                + (p2[i1][v] as f32 * xa1 + p2[i2][v] as f32 * xa) * ya;
             out.data[y * src.w + x] = (res as f64).round_ties_even().clamp(0.0, 255.0) as u8;
         }
     }
@@ -309,7 +382,10 @@ pub fn tile_origins(h: usize, w: usize) -> Vec<(i64, i64)> {
 pub fn tile_input(gray: &Gray, y: i64, x: i64) -> Vec<f32> {
     let mut out = vec![255f32; 3 * WIN * WIN];
     let (y0, x0) = (y.max(0) as usize, x.max(0) as usize);
-    let (y1, x1) = (((y + WIN as i64) as usize).min(gray.h), ((x + WIN as i64) as usize).min(gray.w));
+    let (y1, x1) = (
+        ((y + WIN as i64) as usize).min(gray.h),
+        ((x + WIN as i64) as usize).min(gray.w),
+    );
     for c in 0..3 {
         for yy in y0..y1 {
             for xx in x0..x1 {
@@ -346,7 +422,10 @@ pub fn merge_tiles(classes: &[Vec<u8>], h: usize, w: usize) -> Vec<u8> {
         }
         iy += WIN;
     }
-    acc.iter().zip(&weight).map(|(&a, &wt)| (a / if wt == 0.0 { 1.0 } else { wt }) as i64 as u8).collect()
+    acc.iter()
+        .zip(&weight)
+        .map(|(&a, &wt)| (a / if wt == 0.0 { 1.0 } else { wt }) as i64 as u8)
+        .collect()
 }
 
 pub struct SegMasks {
@@ -362,19 +441,48 @@ pub struct SegMasks {
 /// The class map split into homr's masks (1 stems/rests, 2 noteheads, 3 clefs/keys, 4 staff, 5 symbols).
 pub fn masks(merged: &[u8], h: usize, w: usize) -> SegMasks {
     let m = |c: u8| merged.iter().map(|&v| (v == c) as u8).collect::<Vec<u8>>();
-    SegMasks { h, w, stems_rest: m(1), notehead: m(2), clefs_keys: m(3), staff: m(4), symbols: m(5) }
+    SegMasks {
+        h,
+        w,
+        stems_rest: m(1),
+        notehead: m(2),
+        clefs_keys: m(3),
+        staff: m(4),
+        symbols: m(5),
+    }
 }
 
 /// estimate_noise: sum |Laplacian-like filter2D| / area (BORDER_REFLECT_101).
 fn estimate_noise(tile: &[u8], h: usize, w: usize) -> f64 {
-    let xs: Vec<[usize; 3]> = (0..w as i64).map(|x| [reflect101(x - 1, w as i64) as usize, x as usize, reflect101(x + 1, w as i64) as usize]).collect();
+    let xs: Vec<[usize; 3]> = (0..w as i64)
+        .map(|x| {
+            [
+                reflect101(x - 1, w as i64) as usize,
+                x as usize,
+                reflect101(x + 1, w as i64) as usize,
+            ]
+        })
+        .collect();
     let mut sum = 0u64;
     for y in 0..h as i64 {
-        let r = [reflect101(y - 1, h as i64) as usize, y as usize, reflect101(y + 1, h as i64) as usize];
-        let (a, b, c) = (&tile[r[0] * w..r[0] * w + w], &tile[r[1] * w..r[1] * w + w], &tile[r[2] * w..r[2] * w + w]);
+        let r = [
+            reflect101(y - 1, h as i64) as usize,
+            y as usize,
+            reflect101(y + 1, h as i64) as usize,
+        ];
+        let (a, b, c) = (
+            &tile[r[0] * w..r[0] * w + w],
+            &tile[r[1] * w..r[1] * w + w],
+            &tile[r[2] * w..r[2] * w + w],
+        );
         for x in &xs {
             // [[1, -2, 1], [-2, 4, -2], [1, -2, 1]]
-            let v = a[x[0]] as i32 - 2 * a[x[1]] as i32 + a[x[2]] as i32 - 2 * b[x[0]] as i32 + 4 * b[x[1]] as i32 - 2 * b[x[2]] as i32 + c[x[0]] as i32 - 2 * c[x[1]] as i32 + c[x[2]] as i32;
+            let v = a[x[0]] as i32 - 2 * a[x[1]] as i32 + a[x[2]] as i32 - 2 * b[x[0]] as i32
+                + 4 * b[x[1]] as i32
+                - 2 * b[x[2]] as i32
+                + c[x[0]] as i32
+                - 2 * c[x[1]] as i32
+                + c[x[2]] as i32;
             sum += v.unsigned_abs() as u64;
         }
     }
@@ -439,7 +547,13 @@ pub fn noise_mask(staff: &[u8], h: usize, w: usize) -> Option<Vec<u8>> {
 /// applied to the preprocessed image) and make_lines_stronger on the staff.
 pub fn postprocess(mut m: SegMasks, gray: &mut Gray) -> SegMasks {
     if let Some(mask) = noise_mask(&m.staff, m.h, m.w) {
-        for v in [&mut m.staff, &mut m.symbols, &mut m.stems_rest, &mut m.notehead, &mut m.clefs_keys] {
+        for v in [
+            &mut m.staff,
+            &mut m.symbols,
+            &mut m.stems_rest,
+            &mut m.notehead,
+            &mut m.clefs_keys,
+        ] {
             for (p, &k) in v.iter_mut().zip(&mask) {
                 if k == 0 {
                     *p = 0;

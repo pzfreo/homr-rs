@@ -28,7 +28,15 @@ pub struct Tree {
 
 impl Tree {
     pub fn el(&mut self, tag: &str, attrs: &[(&str, &str)]) -> usize {
-        self.els.push(El { tag: tag.into(), attrs: attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), text: None, children: vec![] });
+        self.els.push(El {
+            tag: tag.into(),
+            attrs: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            text: None,
+            children: vec![],
+        });
         self.els.len() - 1
     }
     pub fn sub(&mut self, parent: usize, tag: &str, attrs: &[(&str, &str)]) -> usize {
@@ -49,12 +57,20 @@ impl Tree {
         self.els[parent].children.insert(i, Child::E(child));
     }
     pub fn remove(&mut self, parent: usize, child: usize) {
-        let pos = self.els[parent].children.iter().position(|c| matches!(c, Child::E(e) if *e == child)).expect("remove: not a child");
+        let pos = self.els[parent]
+            .children
+            .iter()
+            .position(|c| matches!(c, Child::E(e) if *e == child))
+            .expect("remove: not a child");
         self.els[parent].children.remove(pos);
     }
     /// child elements (comments excluded: they don't match tags; but list(el) includes them)
     pub fn elems(&self, e: usize) -> Vec<usize> {
-        self.els[e].children.iter().filter_map(|c| if let Child::E(i) = c { Some(*i) } else { None }).collect()
+        self.els[e]
+            .children
+            .iter()
+            .filter_map(|c| if let Child::E(i) = c { Some(*i) } else { None })
+            .collect()
     }
     pub fn len(&self, e: usize) -> usize {
         self.els[e].children.len()
@@ -63,7 +79,10 @@ impl Tree {
         self.elems(e).into_iter().find(|&c| self.els[c].tag == tag)
     }
     pub fn findall(&self, e: usize, tag: &str) -> Vec<usize> {
-        self.elems(e).into_iter().filter(|&c| self.els[c].tag == tag).collect()
+        self.elems(e)
+            .into_iter()
+            .filter(|&c| self.els[c].tag == tag)
+            .collect()
     }
     pub fn findtext(&self, e: usize, tag: &str, default: &str) -> String {
         match self.find(e, tag) {
@@ -72,11 +91,19 @@ impl Tree {
         }
     }
     pub fn get(&self, e: usize, attr: &str) -> Option<&str> {
-        self.els[e].attrs.iter().find(|(k, _)| k == attr).map(|(_, v)| v.as_str())
+        self.els[e]
+            .attrs
+            .iter()
+            .find(|(k, _)| k == attr)
+            .map(|(_, v)| v.as_str())
     }
     /// list(element).index(child)
     pub fn index_of(&self, parent: usize, child: usize) -> usize {
-        self.els[parent].children.iter().position(|c| matches!(c, Child::E(e) if *e == child)).unwrap()
+        self.els[parent]
+            .children
+            .iter()
+            .position(|c| matches!(c, Child::E(e) if *e == child))
+            .unwrap()
     }
 
     pub fn serialize(&self, e: usize, out: &mut String) {
@@ -112,11 +139,19 @@ impl Tree {
 }
 
 fn escape_cdata(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn escape_attrib(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\r', "&#13;").replace('\n', "&#10;").replace('\t', "&#09;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\r', "&#13;")
+        .replace('\n', "&#10;")
+        .replace('\t', "&#09;")
 }
 
 /// ET.ElementTree(root).write(f, encoding="unicode", xml_declaration=True)
@@ -165,7 +200,11 @@ impl State {
     }
     fn toggle_tremolo(&mut self) -> &'static str {
         self.tremolo_start = !self.tremolo_start;
-        if self.tremolo_start { "start" } else { "stop" }
+        if self.tremolo_start {
+            "start"
+        } else {
+            "stop"
+        }
     }
 }
 
@@ -181,12 +220,19 @@ fn nr(r: &str) -> bool {
 
 impl Chord {
     fn is_barline(&self) -> bool {
-        !self.symbols.is_empty() && (self.symbols[0].rhythm.contains("barline") || self.symbols[0].rhythm.contains("repeat"))
+        !self.symbols.is_empty()
+            && (self.symbols[0].rhythm.contains("barline")
+                || self.symbols[0].rhythm.contains("repeat"))
     }
     fn duration(&self) -> Frac {
-        self.symbols.iter().filter(|s| nr(&s.rhythm)).map(|s| s.duration().fraction).min().unwrap_or(Frac::ZERO)
+        self.symbols
+            .iter()
+            .filter(|s| nr(&s.rhythm))
+            .map(|s| s.duration().fraction)
+            .min()
+            .unwrap_or(Frac::ZERO)
     }
-    fn into_positions(&self) -> Vec<Chord> {
+    fn to_positions(&self) -> Vec<Chord> {
         let mut keys: Vec<String> = Vec::new();
         let mut buckets: Vec<Vec<Symbol>> = Vec::new();
         for s in &self.symbols {
@@ -198,7 +244,13 @@ impl Chord {
                 }
             }
         }
-        let mut chords: Vec<Chord> = buckets.into_iter().map(|b| Chord { symbols: b, tuplet_mark: self.tuplet_mark.clone() }).collect();
+        let mut chords: Vec<Chord> = buckets
+            .into_iter()
+            .map(|b| Chord {
+                symbols: b,
+                tuplet_mark: self.tuplet_mark.clone(),
+            })
+            .collect();
         // sort(key=all rests, reverse=True), stable
         chords.sort_by_key(|c| !c.symbols.iter().all(|s| s.rhythm.starts_with("rest")));
         chords
@@ -206,7 +258,11 @@ impl Chord {
 }
 
 fn staff_of(s: &Symbol) -> i64 {
-    if is_lower(&s.position) { 2 } else { 1 }
+    if is_lower(&s.position) {
+        2
+    } else {
+        1
+    }
 }
 
 fn xml_voice(staff: i64, layer: i64) -> i64 {
@@ -244,7 +300,13 @@ fn py_round_int(v: f64) -> i64 {
     v.round_ties_even() as i64
 }
 
-fn build_articulations(t: &mut Tree, note: usize, arts: &str, tuplet_mark: &str, st: &mut State) -> XmlResult<()> {
+fn build_articulations(
+    t: &mut Tree,
+    note: usize,
+    arts: &str,
+    tuplet_mark: &str,
+    st: &mut State,
+) -> XmlResult<()> {
     let notation = t.sub(note, "notations", &[]);
     let mut xa: Vec<usize> = Vec::new();
     let mut xo: Vec<usize> = Vec::new();
@@ -258,7 +320,9 @@ fn build_articulations(t: &mut Tree, note: usize, arts: &str, tuplet_mark: &str,
             "arpeggiate" => {
                 t.sub(notation, "arpeggiate", &[]);
             }
-            "accent" | "mordent" | "staccato" | "staccatissimo" | "tenuto" | "caesura" | "doit" => xa.push(t.el(a, &[])),
+            "accent" | "mordent" | "staccato" | "staccatissimo" | "tenuto" | "caesura" | "doit" => {
+                xa.push(t.el(a, &[]))
+            }
             "breathMark" => xa.push(t.el("breath-mark", &[])),
             "tremolo" => {
                 let ty = st.toggle_tremolo();
@@ -324,7 +388,14 @@ fn build_slurs(t: &mut Tree, note: usize, slurs: &str, number: i64) -> XmlResult
     Ok(())
 }
 
-fn build_note_or_rest(t: &mut Tree, s: &Symbol, layer: i64, is_chord: bool, st: &mut State, tuplet_mark: &str) -> XmlResult<usize> {
+fn build_note_or_rest(
+    t: &mut Tree,
+    s: &Symbol,
+    layer: i64,
+    is_chord: bool,
+    st: &mut State,
+    tuplet_mark: &str,
+) -> XmlResult<usize> {
     let note = t.el("note", &[]);
     if is_chord {
         t.sub(note, "chord", &[]);
@@ -355,7 +426,14 @@ fn build_note_or_rest(t: &mut Tree, s: &Symbol, layer: i64, is_chord: bool, st: 
         t.sub_text(note, "type", duration_name(d.kern)?);
     } else if d.fraction.n > 0 {
         let base = if d.kern == 0 { 1 } else { d.kern };
-        t.sub_text(note, "duration", &(d.fraction * Frac::int(st.division)).trunc().max(1).to_string());
+        t.sub_text(
+            note,
+            "duration",
+            &(d.fraction * Frac::int(st.division))
+                .trunc()
+                .max(1)
+                .to_string(),
+        );
         t.sub_text(note, "type", duration_name(base)?);
     } else {
         t.sub_text(note, "duration", &st.beats.to_string());
@@ -375,7 +453,11 @@ fn build_note_or_rest(t: &mut Tree, s: &Symbol, layer: i64, is_chord: bool, st: 
     build_articulations(t, note, &s.articulation, tuplet_mark, st)?;
     build_slurs(t, note, &s.slur, staff)?;
     if let Some((x, y)) = s.image_coordinates {
-        t.els[note].children.push(Child::Comment(format!(" imgpos: {}, {} ", py_round_int(x), py_round_int(y))));
+        t.els[note].children.push(Child::Comment(format!(
+            " imgpos: {}, {} ",
+            py_round_int(x),
+            py_round_int(y)
+        )));
     }
     if let Some(f) = st.opts.note_comments {
         for c in f(s) {
@@ -390,7 +472,11 @@ fn build_backup(t: &mut Tree, d: Frac, st: &State) -> XmlResult<usize> {
         return Err("AssertionError: Backup duration must be positive".into());
     }
     let b = t.el("backup", &[]);
-    t.sub_text(b, "duration", &(d * Frac::int(st.division)).trunc().max(1).to_string());
+    t.sub_text(
+        b,
+        "duration",
+        &(d * Frac::int(st.division)).trunc().max(1).to_string(),
+    );
     Ok(b)
 }
 
@@ -399,23 +485,53 @@ fn group_notes(notes: &[Symbol]) -> BTreeMap<Frac, Vec<Symbol>> {
     let mut g: BTreeMap<Frac, Vec<Symbol>> = BTreeMap::new();
     for n in notes {
         let d = n.duration();
-        let f = if n.rhythm.contains('G') { Frac::ZERO } else if d.fraction.n == 0 { max } else { d.fraction };
+        let f = if n.rhythm.contains('G') {
+            Frac::ZERO
+        } else if d.fraction.n == 0 {
+            max
+        } else {
+            d.fraction
+        };
         g.entry(f).or_default().push(n.clone());
     }
     g
 }
 
-fn build_note_chord(t: &mut Tree, chord: &Chord, st: &mut State, chord_duration: Frac) -> XmlResult<Vec<usize>> {
+fn build_note_chord(
+    t: &mut Tree,
+    chord: &Chord,
+    st: &mut State,
+    chord_duration: Frac,
+) -> XmlResult<Vec<usize>> {
     if st.opts.drop_zero_rests {
         let groups = group_notes(&chord.symbols);
-        let zero: Vec<Symbol> = groups.get(&Frac::ZERO).map(|g| g.iter().filter(|s| s.pitch == EMPTY || s.pitch == NONOTE).cloned().collect()).unwrap_or_default();
+        let zero: Vec<Symbol> = groups
+            .get(&Frac::ZERO)
+            .map(|g| {
+                g.iter()
+                    .filter(|s| s.pitch == EMPTY || s.pitch == NONOTE)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
         if !zero.is_empty() {
-            let kept: Vec<Symbol> = chord.symbols.iter().filter(|s| !zero.iter().any(|z| z.key() == s.key())).cloned().collect();
+            let kept: Vec<Symbol> = chord
+                .symbols
+                .iter()
+                .filter(|s| !zero.iter().any(|z| z.key() == s.key()))
+                .cloned()
+                .collect();
             if kept.is_empty() {
                 return Ok(vec![]);
             }
-            let chord = Chord { symbols: kept, tuplet_mark: chord.tuplet_mark.clone() };
-            let mut st2 = XmlOptions { drop_zero_rests: false, ..st.opts };
+            let chord = Chord {
+                symbols: kept,
+                tuplet_mark: chord.tuplet_mark.clone(),
+            };
+            let mut st2 = XmlOptions {
+                drop_zero_rests: false,
+                ..st.opts
+            };
             std::mem::swap(&mut st.opts, &mut st2);
             let r = build_note_chord(t, &chord, st, chord_duration);
             std::mem::swap(&mut st.opts, &mut st2);
@@ -426,11 +542,24 @@ fn build_note_chord(t: &mut Tree, chord: &Chord, st: &mut State, chord_duration:
     let count = by.len();
     let mut out = Vec::new();
     for (i, (gd, gn)) in by.iter().enumerate() {
-        let notes: Vec<&Symbol> = gn.iter().filter(|n| n.pitch != EMPTY && n.pitch != NONOTE).collect();
-        let rests: Vec<&Symbol> = gn.iter().filter(|n| n.pitch == EMPTY || n.pitch == NONOTE).collect();
+        let notes: Vec<&Symbol> = gn
+            .iter()
+            .filter(|n| n.pitch != EMPTY && n.pitch != NONOTE)
+            .collect();
+        let rests: Vec<&Symbol> = gn
+            .iter()
+            .filter(|n| n.pitch == EMPTY || n.pitch == NONOTE)
+            .collect();
         let mut first = true;
         for n in &notes {
-            out.push(build_note_or_rest(t, n, i as i64, !first, st, &chord.tuplet_mark)?);
+            out.push(build_note_or_rest(
+                t,
+                n,
+                i as i64,
+                !first,
+                st,
+                &chord.tuplet_mark,
+            )?);
             first = false;
         }
         if !rests.is_empty() {
@@ -440,7 +569,14 @@ fn build_note_chord(t: &mut Tree, chord: &Chord, st: &mut State, chord_duration:
             if !notes.is_empty() {
                 out.push(build_backup(t, *gd, st)?);
             }
-            out.push(build_note_or_rest(t, rests[0], i as i64, false, st, &chord.tuplet_mark)?);
+            out.push(build_note_or_rest(
+                t,
+                rests[0],
+                i as i64,
+                false,
+                st,
+                &chord.tuplet_mark,
+            )?);
         }
         if i != count - 1 && *gd > Frac::ZERO {
             out.push(build_backup(t, *gd, st)?);
@@ -490,19 +626,31 @@ fn division_and_nominator(voice: &[Chord]) -> (i64, Frac) {
     if in_measure > Frac::ZERO {
         measures.push(in_measure);
     }
-    let dens: Vec<i64> = durations.iter().filter(|d| **d > Frac::ZERO).map(|d| d.d).collect();
+    let dens: Vec<i64> = durations
+        .iter()
+        .filter(|d| **d > Frac::ZERO)
+        .map(|d| d.d)
+        .collect();
     let division = dens[1..].iter().fold(dens[0], |c, &d| lcm(c, d));
     if measures.is_empty() {
         return (division, Frac::int(1));
     }
     measures.sort();
     let n = measures.len();
-    let median = if n % 2 == 1 { measures[n / 2] } else { (measures[n / 2 - 1] + measures[n / 2]) / Frac::int(2) };
+    let median = if n % 2 == 1 {
+        measures[n / 2]
+    } else {
+        (measures[n / 2 - 1] + measures[n / 2]) / Frac::int(2)
+    };
     (division, median)
 }
 
 fn tuplet_duration(c: &Chord) -> Option<Duration> {
-    c.symbols.iter().filter(|s| nr(&s.rhythm)).map(|s| s.duration()).find(|d| d.normal_notes != d.actual_notes)
+    c.symbols
+        .iter()
+        .filter(|s| nr(&s.rhythm))
+        .map(|s| s.duration())
+        .find(|d| d.normal_notes != d.actual_notes)
 }
 
 fn add_tuplets(groups: &mut [Chord]) -> bool {
@@ -554,12 +702,24 @@ fn tuplet_parse(groups: &mut [Chord]) {
 }
 
 fn advance_to_next_group(g: &Chord, clock: Frac, sounding: &mut Vec<Frac>) -> Frac {
-    let timed: Vec<Frac> = g.symbols.iter().filter(|s| nr(&s.rhythm)).map(|s| s.duration().fraction).filter(|d| *d > Frac::ZERO).collect();
+    let timed: Vec<Frac> = g
+        .symbols
+        .iter()
+        .filter(|s| nr(&s.rhythm))
+        .map(|s| s.duration().fraction)
+        .filter(|d| *d > Frac::ZERO)
+        .collect();
     if timed.is_empty() {
         return Frac::ZERO;
     }
     sounding.extend(timed.iter().map(|d| clock + *d));
-    sounding.iter().filter(|e| **e > clock).min().copied().unwrap() - clock
+    sounding
+        .iter()
+        .filter(|e| **e > clock)
+        .min()
+        .copied()
+        .unwrap()
+        - clock
 }
 
 fn rebalance_measure_voices(t: &mut Tree, measure: usize) {
@@ -573,7 +733,16 @@ fn rebalance_measure_voices(t: &mut Tree, measure: usize) {
     let (mut current, mut last_start) = (0i64, 0i64);
     for c in t.elems(measure) {
         let tag = t.els[c].tag.clone();
-        let dur_of = |t: &Tree, c: usize| t.find(c, "duration").map(|d| t.els[d].text.clone().unwrap_or_default().parse::<i64>().unwrap());
+        let dur_of = |t: &Tree, c: usize| {
+            t.find(c, "duration").map(|d| {
+                t.els[d]
+                    .text
+                    .clone()
+                    .unwrap_or_default()
+                    .parse::<i64>()
+                    .unwrap()
+            })
+        };
         if tag == "backup" {
             if let Some(d) = dur_of(t, c) {
                 current -= d;
@@ -590,18 +759,35 @@ fn rebalance_measure_voices(t: &mut Tree, measure: usize) {
             continue;
         }
         let duration = dur_of(t, c).unwrap_or(0);
-        let staff = t.find(c, "staff").map(|s| t.els[s].text.clone().unwrap().parse::<i64>().unwrap()).unwrap_or(1);
+        let staff = t
+            .find(c, "staff")
+            .map(|s| t.els[s].text.clone().unwrap().parse::<i64>().unwrap())
+            .unwrap_or(1);
         let chord_tone = t.find(c, "chord").is_some();
         let start = if chord_tone { last_start } else { current };
         let end = start + duration;
-        if chord_tone && events.last().is_some_and(|e| e.staff == staff && e.start == start && e.end == end) {
+        if chord_tone
+            && events
+                .last()
+                .is_some_and(|e| e.staff == staff && e.start == start && e.end == end)
+        {
             events.last_mut().unwrap().notes.push(c);
         } else if chord_tone {
-            events.push(Ev { staff, start, end, notes: vec![c] });
+            events.push(Ev {
+                staff,
+                start,
+                end,
+                notes: vec![c],
+            });
         } else {
             last_start = start;
             current += duration;
-            events.push(Ev { staff, start, end, notes: vec![c] });
+            events.push(Ev {
+                staff,
+                start,
+                end,
+                notes: vec![c],
+            });
         }
     }
     let mut staff_order: Vec<i64> = Vec::new();
@@ -633,7 +819,13 @@ fn rebalance_measure_voices(t: &mut Tree, measure: usize) {
 
 fn note_pitch(t: &Tree, note: usize) -> Option<String> {
     let p = t.find(note, "pitch")?;
-    Some(["step", "alter", "octave"].iter().map(|k| t.findtext(p, k, "")).collect::<Vec<_>>().join("|"))
+    Some(
+        ["step", "alter", "octave"]
+            .iter()
+            .map(|k| t.findtext(p, k, ""))
+            .collect::<Vec<_>>()
+            .join("|"),
+    )
 }
 
 fn get_slur(t: &Tree, note: usize, ty: &str) -> Option<(usize, usize)> {
@@ -671,21 +863,33 @@ fn convert_ties(t: &mut Tree, part: usize) {
         }
         for ev in events {
             let first = ev[0];
-            let key = (t.findtext(first, "staff", "1"), t.findtext(first, "voice", "1"));
-            let before = previous.iter().position(|(k, _)| *k == key).map(|i| previous[i].1.clone());
+            let key = (
+                t.findtext(first, "staff", "1"),
+                t.findtext(first, "voice", "1"),
+            );
+            let before = previous
+                .iter()
+                .position(|(k, _)| *k == key)
+                .map(|i| previous[i].1.clone());
             match previous.iter_mut().find(|(k, _)| *k == key) {
                 Some(p) => p.1 = ev.clone(),
                 None => previous.push((key, ev.clone())),
             }
             let Some(before) = before else { continue };
             for &start_note in &before {
-                let Some(_) = get_slur(t, start_note, "start") else { continue };
-                let Some(pitch) = note_pitch(t, start_note) else { continue };
+                let Some(_) = get_slur(t, start_note, "start") else {
+                    continue;
+                };
+                let Some(pitch) = note_pitch(t, start_note) else {
+                    continue;
+                };
                 for &stop_note in &ev {
                     if note_pitch(t, stop_note).as_deref() != Some(pitch.as_str()) {
                         continue;
                     }
-                    let Some((end_slur, end_notation)) = get_slur(t, stop_note, "stop") else { continue };
+                    let Some((end_slur, end_notation)) = get_slur(t, stop_note, "stop") else {
+                        continue;
+                    };
                     let (begin_slur, begin_notation) = get_slur(t, start_note, "start").unwrap();
                     t.remove(begin_notation, begin_slur);
                     t.remove(end_notation, end_slur);
@@ -698,18 +902,41 @@ fn convert_ties(t: &mut Tree, part: usize) {
     }
 }
 
-fn build_measures(t: &mut Tree, voice: &[Symbol], has_two_staves: bool, opts: XmlOptions) -> XmlResult<Vec<usize>> {
+fn build_measures(
+    t: &mut Tree,
+    voice: &[Symbol],
+    has_two_staves: bool,
+    opts: XmlOptions,
+) -> XmlResult<Vec<usize>> {
     let mut clock = Frac::ZERO;
     let mut sounding: Vec<Frac> = Vec::new();
     let mut measure_number = 1i64;
-    let mut groups: Vec<Chord> = sort_token_chords(voice).into_iter().map(|s| Chord { symbols: s, tuplet_mark: String::new() }).collect();
+    let mut groups: Vec<Chord> = sort_token_chords(voice)
+        .into_iter()
+        .map(|s| Chord {
+            symbols: s,
+            tuplet_mark: String::new(),
+        })
+        .collect();
     tuplet_parse(&mut groups);
     let (division, nominator) = division_and_nominator(&groups);
-    let mut st = State { beats: 4 * 16, division, nominator, tremolo_start: false, volta_number: 1, last_volta_measure: -10, opts };
+    let mut st = State {
+        beats: 4 * 16,
+        division,
+        nominator,
+        tremolo_start: false,
+        volta_number: 1,
+        last_volta_measure: -10,
+        opts,
+    };
     let mut measures: Vec<usize> = Vec::new();
     let mut current = t.el("measure", &[("number", &measure_number.to_string())]);
     let first_attributes = t.sub(current, "attributes", &[]);
-    t.sub_text(first_attributes, "divisions", &division.div_euclid(4).to_string());
+    t.sub_text(
+        first_attributes,
+        "divisions",
+        &division.div_euclid(4).to_string(),
+    );
     if has_two_staves {
         t.sub_text(first_attributes, "staves", "2");
         t.sub_text(first_attributes, "part-symbol", "brace");
@@ -732,12 +959,18 @@ fn build_measures(t: &mut Tree, voice: &[Symbol], has_two_staves: bool, opts: Xm
                 let a = get_attrs(t, current, last_attributes, false);
                 attributes = Some(a);
                 if t.find(a, "measure-style").is_none() {
-                    let d: i64 = rhythm.split('_').nth(1).unwrap().replace('m', "").parse().unwrap();
+                    let d: i64 = rhythm
+                        .split('_')
+                        .nth(1)
+                        .unwrap()
+                        .replace('m', "")
+                        .parse()
+                        .unwrap();
                     let s = t.sub(a, "measure-style", &[]);
                     t.sub_text(s, "multiple-rest", &d.to_string());
                 }
             } else {
-                let positions = group.into_positions();
+                let positions = group.to_positions();
                 let advance = advance_to_next_group(group, clock, &mut sounding);
                 clock = clock + advance;
                 sounding.retain(|e| *e > clock);
@@ -780,14 +1013,20 @@ fn build_measures(t: &mut Tree, voice: &[Symbol], has_two_staves: bool, opts: Xm
             attributes = Some(a);
             let time = t.sub(a, "time", &[]);
             let den = rhythm.split('/').nth(1).unwrap().to_string();
-            let beats = (st.nominator * Frac::int(den.parse::<i64>().unwrap())).trunc().max(1);
+            let beats = (st.nominator * Frac::int(den.parse::<i64>().unwrap()))
+                .trunc()
+                .max(1);
             t.sub_text(time, "beats", &beats.to_string());
             t.sub_text(time, "beat-type", &den);
             st.beats = beats;
         } else if rhythm.contains("barline") {
             if rhythm != "barline" {
                 let b = barline(t, current, "right");
-                let style = if rhythm == "bolddoublebarline" { "heavy-heavy" } else { "light-light" };
+                let style = if rhythm == "bolddoublebarline" {
+                    "heavy-heavy"
+                } else {
+                    "light-light"
+                };
                 t.sub_text(b, "bar-style", style);
             }
             close(t, &mut measures, current);
@@ -824,11 +1063,19 @@ fn build_measures(t: &mut Tree, voice: &[Symbol], has_two_staves: bool, opts: Xm
         } else if rhythm.starts_with("voltaStart") {
             let v = st.start_volta(measure_number);
             let b = barline(t, current, "left");
-            t.sub(b, "ending", &[("type", "start"), ("number", &v.to_string())]);
+            t.sub(
+                b,
+                "ending",
+                &[("type", "start"), ("number", &v.to_string())],
+            );
         } else if rhythm.starts_with("voltaStop") || rhythm.starts_with("voltaDiscontinue") {
             let v = st.stop_volta(measure_number);
             let b = barline(t, current, "right");
-            let ty = if rhythm.starts_with("voltaStop") { "stop" } else { "discontinue" };
+            let ty = if rhythm.starts_with("voltaStop") {
+                "stop"
+            } else {
+                "discontinue"
+            };
             t.sub(b, "ending", &[("type", ty), ("number", &v.to_string())]);
         }
     }
@@ -838,7 +1085,11 @@ fn build_measures(t: &mut Tree, voice: &[Symbol], has_two_staves: bool, opts: Xm
     }
     if t.find(first_attributes, "time").is_none() {
         let time = t.sub(first_attributes, "time", &[]);
-        t.sub_text(time, "beats", &(st.nominator * Frac::int(4)).trunc().max(1).to_string());
+        t.sub_text(
+            time,
+            "beats",
+            &(st.nominator * Frac::int(4)).trunc().max(1).to_string(),
+        );
         t.sub_text(time, "beat-type", "4");
     }
     Ok(measures)
@@ -857,7 +1108,11 @@ fn repeat(t: &mut Tree, barline: usize, rhythm: &str) {
     if t.find(barline, "repeat").is_some() {
         return;
     }
-    let dir = if rhythm == "repeatStart" { "forward" } else { "backward" };
+    let dir = if rhythm == "repeatStart" {
+        "forward"
+    } else {
+        "backward"
+    };
     t.sub(barline, "repeat", &[("direction", dir)]);
 }
 
@@ -866,7 +1121,11 @@ pub fn generate_xml(voices: &[Vec<Symbol>], title: &str) -> XmlResult<String> {
     generate_xml_with(voices, title, XmlOptions::default())
 }
 
-pub fn generate_xml_with(voices: &[Vec<Symbol>], title: &str, opts: XmlOptions) -> XmlResult<String> {
+pub fn generate_xml_with(
+    voices: &[Vec<Symbol>],
+    title: &str,
+    opts: XmlOptions,
+) -> XmlResult<String> {
     let mut t = Tree::default();
     let root = t.el("score-partwise", &[("version", "4.0")]);
     let work = t.sub(root, "work", &[]);
@@ -875,11 +1134,18 @@ pub fn generate_xml_with(voices: &[Vec<Symbol>], title: &str, opts: XmlOptions) 
     let enc = t.sub(ident, "encoding", &[]);
     t.sub_text(enc, "software", "homr");
     t.sub(root, "defaults", &[]);
-    let two: Vec<bool> = voices.iter().map(|v| v.iter().any(|s| is_lower(&s.position))).collect();
+    let two: Vec<bool> = voices
+        .iter()
+        .map(|v| v.iter().any(|s| is_lower(&s.position)))
+        .collect();
     let pl = t.sub(root, "part-list", &[]);
     for (i, &two_staves) in two.iter().enumerate() {
         let id = format!("P{}", i + 1);
-        let (name, sound, program) = if two_staves { ("Piano", "keyboard.piano", 1) } else { ("Voice", "voice", 54) };
+        let (name, sound, program) = if two_staves {
+            ("Piano", "keyboard.piano", 1)
+        } else {
+            ("Voice", "voice", 54)
+        };
         let sp = t.sub(pl, "score-part", &[("id", &id)]);
         t.sub_text(sp, "part-name", name);
         let si = t.sub(sp, "score-instrument", &[("id", &format!("{id}-I1"))]);

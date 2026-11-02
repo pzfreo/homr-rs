@@ -2,11 +2,11 @@
 pub mod braces;
 pub mod contours;
 pub mod decoder;
-pub mod page;
 pub mod ellipse;
 pub mod geom;
 pub mod musicxml;
 pub mod npmath;
+pub mod page;
 pub mod polygon;
 pub mod preprocess;
 pub mod raster;

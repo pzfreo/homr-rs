@@ -53,7 +53,15 @@ impl RBox {
         let pts = box_points_f32(cx, cy, w, h, angle);
         let poly = pts.map(|p| [p[0] as f64 as i64, p[1] as f64 as i64]);
         let (w, h, angle) = normalise(w, h, angle);
-        RBox { cx, cy, w, h, angle, poly, frag }
+        RBox {
+            cx,
+            cy,
+            w,
+            h,
+            angle,
+            poly,
+            frag,
+        }
     }
     pub fn left_x(&self) -> f64 {
         self.cx - self.w / 2.0 // bottom_left / top_left x
@@ -73,7 +81,7 @@ impl RBox {
     }
     fn can_touch(&self, o: &RBox) -> bool {
         let d = ((self.cx - o.cx).powi(2) + (self.cy - o.cy).powi(2)).sqrt();
-        !(d > self.w.max(self.h) + o.w.max(o.h))
+        d.partial_cmp(&(self.w.max(self.h) + o.w.max(o.h))) != Some(std::cmp::Ordering::Greater)
     }
     /// is_intersecting: cv2.rotatedRectangleIntersection != INTERSECT_NONE
     pub fn is_intersecting(&self, o: &RBox) -> bool {
@@ -88,7 +96,9 @@ impl RBox {
         let center_x = (l.cx + r.cx) * 0.5;
         let tol = unit / 3.0;
         let max_gap = 5.0 * unit;
-        if center_x - l.cx - (l.w / 2.0).floor() > max_gap || r.cx - center_x - (r.w / 2.0).floor() > max_gap {
+        if center_x - l.cx - (l.w / 2.0).floor() > max_gap
+            || r.cx - center_x - (r.w / 2.0).floor() > max_gap
+        {
             return false;
         }
         let la = libm::tan(l.angle * PI / 180.0);
@@ -139,7 +149,7 @@ pub fn rotated_rects_intersect(r1: &RBox, r2: &RBox) -> bool {
             if !t1.is_finite() || !t2.is_finite() {
                 continue;
             }
-            if t1 >= 0.0 && t1 <= 1.0 && t2 >= 0.0 && t2 <= 1.0 {
+            if (0.0..=1.0).contains(&t1) && (0.0..=1.0).contains(&t2) {
                 return true;
             }
         }
@@ -147,7 +157,9 @@ pub fn rotated_rects_intersect(r1: &RBox, r2: &RBox) -> bool {
     // _isOnPositiveSide: vy*(lx - px) >= vx*(ly - py)
     let inside = |p: &[[f32; 2]; 4], q: &[[f32; 2]; 4], vq: &[[f32; 2]; 4]| {
         p.iter().any(|&[x, y]| {
-            let pos = (0..4).filter(|&j| vq[j][1] * (q[j][0] - x) >= vq[j][0] * (q[j][1] - y)).count();
+            let pos = (0..4)
+                .filter(|&j| vq[j][1] * (q[j][0] - x) >= vq[j][0] * (q[j][1] - y))
+                .count();
             pos == 4 || pos == 0
         })
     };
@@ -166,7 +178,10 @@ fn convex_touch_f64(a: &[[f64; 2]; 4], b: &[[f64; 2]; 4]) -> bool {
             }
             let proj = |s: &[[f64; 2]; 4]| {
                 let v: Vec<f64> = s.iter().map(|c| c[0] * n[0] + c[1] * n[1]).collect();
-                (v.iter().cloned().fold(f64::INFINITY, f64::min), v.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+                (
+                    v.iter().cloned().fold(f64::INFINITY, f64::min),
+                    v.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+                )
             };
             let (amin, amax) = proj(a);
             let (bmin, bmax) = proj(b);
@@ -187,7 +202,10 @@ fn convex_touch_i64(a: &[[i64; 2]; 4], b: &[[i64; 2]; 4]) -> bool {
                 continue;
             }
             let proj = |s: &[[i64; 2]; 4]| {
-                let v: Vec<i128> = s.iter().map(|c| c[0] as i128 * n[0] + c[1] as i128 * n[1]).collect();
+                let v: Vec<i128> = s
+                    .iter()
+                    .map(|c| c[0] as i128 * n[0] + c[1] as i128 * n[1])
+                    .collect();
                 (*v.iter().min().unwrap(), *v.iter().max().unwrap())
             };
             let (amin, amax) = proj(a);
@@ -207,13 +225,27 @@ fn convex_touch_i64(a: &[[i64; 2]; 4], b: &[[i64; 2]; 4]) -> bool {
 /// different width/height/angle convention.
 pub fn min_area_rect(points: &[[i32; 2]]) -> RBox {
     let (cx, cy, w, h, angle) = min_area_rect_raw(points);
-    RBox::new(cx as f64, cy as f64, w as f64, h as f64, angle as f64, NO_FRAGMENT)
+    RBox::new(
+        cx as f64,
+        cy as f64,
+        w as f64,
+        h as f64,
+        angle as f64,
+        NO_FRAGMENT,
+    )
 }
 
 /// cv2.minAreaRect as OpenCV returns it: (cx, cy, w, h, angle) in float32.
 pub fn min_area_rect_raw(points: &[[i32; 2]]) -> (f32, f32, f32, f32, f32) {
-    let hull: Vec<[f32; 2]> = convex_hull_cv(points).iter().map(|&k| [points[k][0] as f32, points[k][1] as f32]).collect();
-    if cfg!(feature = "opencv5") { box_v5(&hull) } else { box_v4(&hull) }
+    let hull: Vec<[f32; 2]> = convex_hull_cv(points)
+        .iter()
+        .map(|&k| [points[k][0] as f32, points[k][1] as f32])
+        .collect();
+    if cfg!(feature = "opencv5") {
+        box_v5(&hull)
+    } else {
+        box_v4(&hull)
+    }
 }
 
 /// OpenCV 4.x: width along out[1], angle = atan2 of out[1] (radians kept as
@@ -225,8 +257,10 @@ fn box_v4(hull: &[[f32; 2]]) -> (f32, f32, f32, f32, f32) {
         let out = rotating_calipers(hull);
         cx = out[0][0] + (out[1][0] + out[2][0]) * 0.5f32;
         cy = out[0][1] + (out[1][1] + out[2][1]) * 0.5f32;
-        w = ((out[1][0] as f64) * out[1][0] as f64 + (out[1][1] as f64) * out[1][1] as f64).sqrt() as f32;
-        h = ((out[2][0] as f64) * out[2][0] as f64 + (out[2][1] as f64) * out[2][1] as f64).sqrt() as f32;
+        w = ((out[1][0] as f64) * out[1][0] as f64 + (out[1][1] as f64) * out[1][1] as f64).sqrt()
+            as f32;
+        h = ((out[2][0] as f64) * out[2][0] as f64 + (out[2][1] as f64) * out[2][1] as f64).sqrt()
+            as f32;
         angle = libm::atan2(out[1][1] as f64, out[1][0] as f64) as f32;
     } else if n == 2 {
         cx = (hull[0][0] + hull[1][0]) * 0.5f32;
@@ -252,8 +286,10 @@ fn box_v5(hull: &[[f32; 2]]) -> (f32, f32, f32, f32, f32) {
         let out = rotating_calipers(hull);
         cx = out[0][0] + (out[1][0] + out[2][0]) * 0.5f32;
         cy = out[0][1] + (out[1][1] + out[2][1]) * 0.5f32;
-        let mut ww = ((out[2][0] as f64) * out[2][0] as f64 + (out[2][1] as f64) * out[2][1] as f64).sqrt() as f32;
-        let mut hh = ((out[1][0] as f64) * out[1][0] as f64 + (out[1][1] as f64) * out[1][1] as f64).sqrt() as f32;
+        let mut ww = ((out[2][0] as f64) * out[2][0] as f64 + (out[2][1] as f64) * out[2][1] as f64)
+            .sqrt() as f32;
+        let mut hh = ((out[1][0] as f64) * out[1][0] as f64 + (out[1][1] as f64) * out[1][1] as f64)
+            .sqrt() as f32;
         if out[1][0] == 0.0 && out[1][1] > 0.0 {
             std::mem::swap(&mut ww, &mut hh);
         } else {
@@ -365,7 +401,11 @@ fn rotating_calipers(points: &[[f32; 2]]) -> [[f32; 2]; 3] {
     let idet = 1.0f32 / (a1 * b2 - a2 * b1);
     let px = (c1 * b2 - c2 * b1) * idet;
     let py = (a1 * c2 - a2 * c1) * idet;
-    [[px, py], [a1 * width, b1 * width], [a2 * height, b2 * height]]
+    [
+        [px, py],
+        [a1 * width, b1 * width],
+        [a2 * height, b2 * height],
+    ]
 }
 
 fn sign(v: i64) -> i32 {
@@ -373,7 +413,14 @@ fn sign(v: i64) -> i32 {
 }
 
 /// OpenCV's Sklansky_<int, int64>; `array` holds indices into `pts` (sorted order).
-fn sklansky(pts: &[[i32; 2]], array: &[usize], start: i64, end: i64, nsign: i32, sign2: i32) -> Vec<i64> {
+fn sklansky(
+    pts: &[[i32; 2]],
+    array: &[usize],
+    start: i64,
+    end: i64,
+    nsign: i32,
+    sign2: i32,
+) -> Vec<i64> {
     let p = |k: i64| pts[array[k as usize]];
     let incr = if end > start { 1 } else { -1 };
     let (mut pprev, mut pcur, mut pnext) = (start, start + incr, start + 2 * incr);
@@ -447,13 +494,17 @@ fn convex_hull_cv(pts: &[[i32; 2]]) -> Vec<usize> {
         let tl = sklansky(pts, &ptr, 0, maxy as i64, -1, 1);
         let tr = sklansky(pts, &ptr, last, maxy as i64, -1, -1);
         let (tl, tr) = (tr, tl); // counter-clockwise: swap
-        for i in 0..tl.len().saturating_sub(1) {
-            hull.push(tl[i]);
-        }
+        hull.extend(tl.iter().take(tl.len().saturating_sub(1)));
         for i in (1..tr.len()).rev() {
             hull.push(tr[i]);
         }
-        let stop_idx: i64 = if tr.len() > 2 { tr[1] } else if tl.len() > 2 { tl[tl.len() - 2] } else { -1 };
+        let stop_idx: i64 = if tr.len() > 2 {
+            tr[1]
+        } else if tl.len() > 2 {
+            tl[tl.len() - 2]
+        } else {
+            -1
+        };
         let mut bl = sklansky(pts, &ptr, 0, miny as i64, 1, -1);
         let mut br = sklansky(pts, &ptr, last, miny as i64, 1, 1);
         if stop_idx >= 0 {
@@ -464,14 +515,14 @@ fn convex_hull_cv(pts: &[[i32; 2]]) -> Vec<usize> {
             } else {
                 -1
             };
-            if check_idx == stop_idx || (check_idx >= 0 && pts[ptr[check_idx as usize]] == pts[ptr[stop_idx as usize]]) {
+            if check_idx == stop_idx
+                || (check_idx >= 0 && pts[ptr[check_idx as usize]] == pts[ptr[stop_idx as usize]])
+            {
                 bl.truncate(2);
                 br.truncate(2);
             }
         }
-        for i in 0..bl.len().saturating_sub(1) {
-            hull.push(bl[i]);
-        }
+        hull.extend(bl.iter().take(bl.len().saturating_sub(1)));
         for i in (1..br.len()).rev() {
             hull.push(br[i]);
         }
@@ -521,10 +572,13 @@ fn convex_hull_cv(pts: &[[i32; 2]]) -> Vec<usize> {
 }
 
 #[allow(dead_code)]
-fn convex_hull(pts: &[(i64, i64)]) -> Vec<(i64, i64)> {    if pts.len() < 3 {
+fn convex_hull(pts: &[(i64, i64)]) -> Vec<(i64, i64)> {
+    if pts.len() < 3 {
         return pts.to_vec();
     }
-    let cross = |o: (i64, i64), a: (i64, i64), b: (i64, i64)| (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0);
+    let cross = |o: (i64, i64), a: (i64, i64), b: (i64, i64)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
     let mut lower: Vec<(i64, i64)> = Vec::new();
     for &p in pts {
         while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0 {

@@ -2,7 +2,16 @@
 //! OpenCV 5.0.0 (modules/imgproc/src/contours_new.cpp, contours_common.*)
 //! so that contours come out in OpenCV's order with OpenCV's points.
 
-const CHAIN: [(isize, isize); 8] = [(1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1)];
+const CHAIN: [(isize, isize); 8] = [
+    (1, 0),
+    (1, -1),
+    (0, -1),
+    (-1, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+];
 const MASK8_RIGHT: i8 = -128; // 0x80
 const MASK8_FLAGS: i32 = -2; // 0xFE as schar
 const MASK8_LVAL: i32 = 0x7F;
@@ -22,7 +31,17 @@ struct Node {
 
 impl Node {
     fn new() -> Node {
-        Node { parent: -1, first_child: -1, prev: -1, next: -1, ctable_next: -1, pts: vec![], brect: (0, 0, 0, 0), origin: (0, 0), is_hole: false }
+        Node {
+            parent: -1,
+            first_child: -1,
+            prev: -1,
+            next: -1,
+            ctable_next: -1,
+            pts: vec![],
+            brect: (0, 0, 0, 0),
+            origin: (0, 0),
+            is_hole: false,
+        }
     }
 }
 
@@ -100,7 +119,10 @@ impl Scanner {
                     }
                 }
                 prev_s = s;
-                pt = (pt.0 + CHAIN[s as usize].0 as i32, pt.1 + CHAIN[s as usize].1 as i32);
+                pt = (
+                    pt.0 + CHAIN[s as usize].0 as i32,
+                    pt.1 + CHAIN[s as usize].1 as i32,
+                );
                 if i4 == i0 && i3 == i1 {
                     break;
                 }
@@ -166,7 +188,13 @@ impl Scanner {
         false
     }
 
-    fn find_first_bounding_contour(&self, last_pos: (i32, i32), y: i32, lval: i32, par: i32) -> i32 {
+    fn find_first_bounding_contour(
+        &self,
+        last_pos: (i32, i32),
+        y: i32,
+        lval: i32,
+        par: i32,
+    ) -> i32 {
         let end = (last_pos.0, y);
         let mut res = par;
         let mut cur = self.ctable[lval as usize];
@@ -224,7 +252,14 @@ impl Scanner {
         idx
     }
 
-    fn contour_scan(&mut self, prev: i32, p: i32, last_pos: &mut (i32, i32), x: i32, y: i32) -> bool {
+    fn contour_scan(
+        &mut self,
+        prev: i32,
+        p: i32,
+        last_pos: &mut (i32, i32),
+        x: i32,
+        y: i32,
+    ) -> bool {
         let mut is_hole = false;
         if !(prev == 0 && p == 1) {
             if p != 0 || prev < 1 {
@@ -333,7 +368,17 @@ fn find_contours_mode(mask: &[u8], h: usize, w: usize, external: bool) -> Vec<Ve
     let mut root = Node::new();
     root.is_hole = true;
     root.brect = (0, 0, pw as i32, ph as i32);
-    let mut sc = Scanner { external, img, w: pw, h: ph, pt: (1, 1), lnbd: (0, 1), nbd: 2, tree: vec![root], ctable: [-1; 128] };
+    let mut sc = Scanner {
+        external,
+        img,
+        w: pw,
+        h: ph,
+        pt: (1, 1),
+        lnbd: (0, 1),
+        nbd: 2,
+        tree: vec![root],
+        ctable: [-1; 128],
+    };
     while sc.find_next() {}
     // contourTreeToResults: depth first from the root, first child (the newest) first
     let mut out = Vec::with_capacity(sc.tree.len() - 1);

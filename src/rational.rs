@@ -22,7 +22,10 @@ impl Frac {
         assert!(d != 0, "Fraction(n, 0)");
         let g = gcd(n, d).max(1);
         let s = if d < 0 { -1 } else { 1 };
-        Frac { n: s * n / g, d: s * d / g }
+        Frac {
+            n: s * n / g,
+            d: s * d / g,
+        }
     }
     pub fn int(n: i64) -> Frac {
         Frac { n, d: 1 }

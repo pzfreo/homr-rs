@@ -16,7 +16,12 @@ fn instructions() -> u64 {
 }
 
 fn rbox(v: &Value, frag: usize) -> RBox {
-    let a: Vec<f64> = v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+    let a: Vec<f64> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_f64().unwrap())
+        .collect();
     RBox::new(a[0], a[1], a[2], a[3], a[4], frag)
 }
 
@@ -29,7 +34,11 @@ fn compare(ours: &[Staff], expected: &Value) -> Result<f64, String> {
     for (k, (s, e)) in ours.iter().zip(exp).enumerate() {
         let e = e.as_array().unwrap();
         if s.grid.len() != e.len() {
-            return Err(format!("staff {k}: {} points, homr {}", s.grid.len(), e.len()));
+            return Err(format!(
+                "staff {k}: {} points, homr {}",
+                s.grid.len(),
+                e.len()
+            ));
         }
         for (p, q) in s.grid.iter().zip(e) {
             let q = q.as_array().unwrap();
@@ -48,22 +57,55 @@ fn compare(ours: &[Staff], expected: &Value) -> Result<f64, String> {
 
 fn main() {
     let root = std::env::args().nth(1).expect("cases dir");
-    let mut dirs: Vec<_> = fs::read_dir(&root).unwrap().map(|e| e.unwrap().path()).collect();
+    let mut dirs: Vec<_> = fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
     dirs.sort();
     let (mut same, mut diff, mut py_total, mut rs_total) = (0, 0, 0u64, 0u64);
     for d in dirs {
-        let case: Value = serde_json::from_str(&fs::read_to_string(d.join("case.json")).unwrap()).unwrap();
-        let shape: Vec<usize> = case["shape"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
+        let case: Value =
+            serde_json::from_str(&fs::read_to_string(d.join("case.json")).unwrap()).unwrap();
+        let shape: Vec<usize> = case["shape"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as usize)
+            .collect();
         let image = fs::read(d.join("staff.bin")).unwrap();
         let frags = case["fragments"].as_array().unwrap();
-        let boxes: Vec<RBox> = frags.iter().enumerate().map(|(i, f)| rbox(&f["box"], i)).collect();
+        let boxes: Vec<RBox> = frags
+            .iter()
+            .enumerate()
+            .map(|(i, f)| rbox(&f["box"], i))
+            .collect();
         let contours: Vec<Vec<[i32; 2]>> = frags
             .iter()
-            .map(|f| f["contour"].as_array().unwrap().iter().map(|p| [p[0].as_i64().unwrap() as i32, p[1].as_i64().unwrap() as i32]).collect())
+            .map(|f| {
+                f["contour"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| [p[0].as_i64().unwrap() as i32, p[1].as_i64().unwrap() as i32])
+                    .collect()
+            })
             .collect();
-        let clefs: Vec<RBox> = case["clefs"].as_array().unwrap().iter().map(|b| rbox(b, NO_FRAGMENT)).collect();
-        let bars: Vec<RBox> = case["bars"].as_array().unwrap().iter().map(|b| rbox(b, NO_FRAGMENT)).collect();
-        let f = Fragments { boxes: &boxes, contours: &contours };
+        let clefs: Vec<RBox> = case["clefs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| rbox(b, NO_FRAGMENT))
+            .collect();
+        let bars: Vec<RBox> = case["bars"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| rbox(b, NO_FRAGMENT))
+            .collect();
+        let f = Fragments {
+            boxes: &boxes,
+            contours: &contours,
+        };
         let _ = detect_staff(&image, shape[0], shape[1], &f, &clefs, &bars); // warm, as the Python count
         let a = instructions();
         let result = detect_staff(&image, shape[0], shape[1], &f, &clefs, &bars);
@@ -79,7 +121,12 @@ fn main() {
                 same += 1;
                 py_total += py;
                 rs_total += rs;
-                println!("SAME {name:40} max diff {worst:.1e}  python {:>6.0}M  rust {:>5.1}M  x{:.0}", py as f64 / 1e6, rs as f64 / 1e6, py as f64 / rs as f64);
+                println!(
+                    "SAME {name:40} max diff {worst:.1e}  python {:>6.0}M  rust {:>5.1}M  x{:.0}",
+                    py as f64 / 1e6,
+                    rs as f64 / 1e6,
+                    py as f64 / rs as f64
+                );
             }
             Err(e) => {
                 diff += 1;

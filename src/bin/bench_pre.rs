@@ -10,11 +10,26 @@ fn main() {
     let reps: usize = args[1].parse().unwrap();
     let mut n = 0;
     for d in &args[2..] {
-        let meta: Value = serde_json::from_str(&fs::read_to_string(format!("{d}/segnet.json")).unwrap()).unwrap();
-        let sh: Vec<usize> = meta["image_shape"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
-        let img = Bgr { w: sh[1], h: sh[0], data: fs::read(format!("{d}/image.bin")).unwrap() };
+        let meta: Value =
+            serde_json::from_str(&fs::read_to_string(format!("{d}/segnet.json")).unwrap()).unwrap();
+        let sh: Vec<usize> = meta["image_shape"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as usize)
+            .collect();
+        let img = Bgr {
+            w: sh[1],
+            h: sh[0],
+            data: fs::read(format!("{d}/image.bin")).unwrap(),
+        };
         let tiles = fs::read(format!("{d}/tiles.bin")).unwrap();
-        let classes: Vec<Vec<u8>> = tiles.chunks_exact(320 * 320).map(|c| c.to_vec()).collect();
+        let classes: Vec<Vec<u8>> = tiles
+            .as_chunks::<{ 320 * 320 }>()
+            .0
+            .iter()
+            .map(|c| c.to_vec())
+            .collect();
         for _ in 0..reps {
             let mut pre = preprocess(&img);
             let (h, w) = (pre.gray.h, pre.gray.w);

@@ -47,7 +47,7 @@ pub fn find_periodic_core(layout: &[bool]) -> Option<(usize, usize, usize)> {
                     continue;
                 }
                 let core = &layout[front..n - back];
-                if core.len() < 2 * period || core.len() % period != 0 {
+                if core.len() < 2 * period || !core.len().is_multiple_of(period) {
                     continue;
                 }
                 let first = &core[..period];
@@ -55,7 +55,7 @@ pub fn find_periodic_core(layout: &[bool]) -> Option<(usize, usize, usize)> {
                     continue;
                 }
                 let cand = (front + back, period, front, back);
-                if best.map_or(true, |b| (cand.0, cand.1) < (b.0, b.1)) {
+                if best.is_none_or(|b| (cand.0, cand.1) < (b.0, b.1)) {
                     best = Some(cand);
                 }
             }
@@ -74,10 +74,22 @@ pub fn ensure_same_number_of_staffs(rows: Vec<Row>) -> Vec<Row> {
     let layout: Vec<bool> = flat.iter().map(|s| s.1).collect();
     if let Some((period, front, back)) = find_periodic_core(&layout) {
         let core = &flat[front..flat.len() - back];
-        return core.chunks(period).map(|c| sorted_row(c.to_vec())).collect();
+        return core
+            .chunks(period)
+            .map(|c| sorted_row(c.to_vec()))
+            .collect();
     }
-    let mut out: Vec<Row> = rows.into_iter().flat_map(|r| r.staffs.into_iter().map(|s| Row { staffs: vec![s] })).collect();
-    out.sort_by(|a, b| a.staffs[0].0.min_y.partial_cmp(&b.staffs[0].0.min_y).unwrap());
+    let mut out: Vec<Row> = rows
+        .into_iter()
+        .flat_map(|r| r.staffs.into_iter().map(|s| Row { staffs: vec![s] }))
+        .collect();
+    out.sort_by(|a, b| {
+        a.staffs[0]
+            .0
+            .min_y
+            .partial_cmp(&b.staffs[0].0.min_y)
+            .unwrap()
+    });
     out
 }
 
@@ -100,15 +112,33 @@ pub fn page_xml(
     page: &PageMapping,
     predict: &mut dyn FnMut(&Gray) -> Result<Vec<Symbol>, String>,
 ) -> Result<String, String> {
-    let rows: Vec<Row> = multi.iter().map(|m| Row { staffs: m.staffs.iter().cloned().zip(m.grand.iter().copied()).collect() }).collect();
+    let rows: Vec<Row> = multi
+        .iter()
+        .map(|m| Row {
+            staffs: m
+                .staffs
+                .iter()
+                .cloned()
+                .zip(m.grand.iter().copied())
+                .collect(),
+        })
+        .collect();
     let rows = ensure_same_number_of_staffs(rows);
     let voices_n = rows[0].staffs.len();
-    let regions = Regions { centers: rows.iter().flat_map(|r| r.staffs.iter().map(|s| (s.0.min_y, s.0.max_y))).collect() };
+    let regions = Regions {
+        centers: rows
+            .iter()
+            .flat_map(|r| r.staffs.iter().map(|s| (s.0.min_y, s.0.max_y)))
+            .collect(),
+    };
     let mut voices = Vec::new();
     for voice in 0..voices_n {
         let mut result_for_voice: Vec<Symbol> = Vec::new();
         for row in &rows {
-            let (staff, grand) = row.staffs.get(voice).ok_or("IndexError: list index out of range")?;
+            let (staff, grand) = row
+                .staffs
+                .get(voice)
+                .ok_or("IndexError: list index out of range")?;
             let prepared = prepare_staff(staff, image, &regions)?;
             let mut result: Vec<Symbol> = predict(&prepared.canvas)?;
             if !grand {

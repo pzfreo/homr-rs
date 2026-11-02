@@ -7,7 +7,9 @@ use crate::contours::find_contours;
 use crate::npmath::{np_mean, py_int, py_round};
 use crate::raster::fill_convex_poly;
 use crate::staff::{Staff, StaffPoint};
-use crate::warp::{bounding_rect_f, get_affine_transform, resize, resize_region, warp_affine, Gray, Subdiv2D};
+use crate::warp::{
+    bounding_rect_f, get_affine_transform, resize, resize_region, warp_affine, Gray, Subdiv2D,
+};
 
 pub const CANVAS_W: usize = 1280;
 pub const CANVAS_H: usize = 256;
@@ -19,17 +21,31 @@ pub struct Regions {
 
 impl Regions {
     fn above(&self, y: f64) -> f64 {
-        self.centers.iter().filter(|c| c.0 < y).map(|c| c.1).fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.max(v)))).unwrap_or(0.0)
+        self.centers
+            .iter()
+            .filter(|c| c.0 < y)
+            .map(|c| c.1)
+            .fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.max(v))))
+            .unwrap_or(0.0)
     }
     fn below(&self, y: f64) -> f64 {
-        self.centers.iter().filter(|c| c.1 > y).map(|c| c.0).fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.min(v)))).unwrap_or(1e12)
+        self.centers
+            .iter()
+            .filter(|c| c.1 > y)
+            .map(|c| c.0)
+            .fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.min(v))))
+            .unwrap_or(1e12)
     }
 }
 
 fn median(mut v: Vec<f64>) -> f64 {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = v.len();
-    if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 }
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2.0
+    }
 }
 
 fn unit_size(s: &Staff) -> f64 {
@@ -40,9 +56,15 @@ fn unit_size(s: &Staff) -> f64 {
 fn canvas_size(height: i64, width: i64) -> (i64, i64) {
     let ratio = CANVAS_H as f64 / CANVAS_W as f64;
     if height as f64 / width as f64 > ratio {
-        (py_int(width as f64 / height as f64 * CANVAS_H as f64), CANVAS_H as i64)
+        (
+            py_int(width as f64 / height as f64 * CANVAS_H as f64),
+            CANVAS_H as i64,
+        )
     } else {
-        (CANVAS_W as i64, py_int(height as f64 / width as f64 * CANVAS_W as f64))
+        (
+            CANVAS_W as i64,
+            py_int(height as f64 / width as f64 * CANVAS_W as f64),
+        )
     }
 }
 
@@ -50,14 +72,24 @@ fn canvas_size(height: i64, width: i64) -> (i64, i64) {
 fn crop_rect(w: usize, h: usize, x1: f64, y1: f64, x2: f64, y2: f64) -> (i64, i64, i64, i64) {
     let lx = |x: f64| 0.max((w as i64 - 1).min(py_round(x)));
     let ly = |y: f64| 0.max((h as i64 - 1).min(py_round(y)));
-    (lx(x1.min(x2)), ly(y1.min(y2)), lx(x1.max(x2)), ly(y1.max(y2)))
+    (
+        lx(x1.min(x2)),
+        ly(y1.min(y2)),
+        lx(x1.max(x2)),
+        ly(y1.max(y2)),
+    )
 }
 
 /// crop_image_and_return_new_top
 fn crop(img: &Gray, x1: f64, y1: f64, x2: f64, y2: f64) -> (Gray, (i64, i64)) {
     let lx = |x: f64| 0.max((img.w as i64 - 1).min(py_round(x)));
     let ly = |y: f64| 0.max((img.h as i64 - 1).min(py_round(y)));
-    let (xa, xb, ya, yb) = (lx(x1.min(x2)), lx(x1.max(x2)), ly(y1.min(y2)), ly(y1.max(y2)));
+    let (xa, xb, ya, yb) = (
+        lx(x1.min(x2)),
+        lx(x1.max(x2)),
+        ly(y1.min(y2)),
+        ly(y1.max(y2)),
+    );
     (img.slice(xa, ya, xb, yb), (xa, ya))
 }
 
@@ -68,7 +100,11 @@ fn transform_staff(s: &Staff, dx: f64, dy: f64, scale: f64) -> Result<Staff, Str
         .iter()
         .map(|p| {
             let xs: Vec<f64> = p.y.iter().map(|_| (p.x - dx) * scale).collect();
-            StaffPoint { x: np_mean(&xs), y: p.y.iter().map(|y| (y - dy) * scale).collect(), angle: p.angle }
+            StaffPoint {
+                x: np_mean(&xs),
+                y: p.y.iter().map(|y| (y - dy) * scale).collect(),
+                angle: p.angle,
+            }
         })
         .collect();
     Staff::from_grid(grid)
@@ -146,8 +182,16 @@ fn dewarp_triangles(img: &Gray, staff: &Staff) -> Option<Vec<Tri>> {
         lines.insert(0, vec![(0, 0), (w, 0)]);
         lines.push(vec![(0, h), (w, h)]);
     }
-    let sp: Vec<[f32; 2]> = src.iter().flatten().map(|p| [p.0 as f32, p.1 as f32]).collect();
-    let dp: Vec<[f32; 2]> = dst.iter().flatten().map(|p| [p.0 as f32, p.1 as f32]).collect();
+    let sp: Vec<[f32; 2]> = src
+        .iter()
+        .flatten()
+        .map(|p| [p.0 as f32, p.1 as f32])
+        .collect();
+    let dp: Vec<[f32; 2]> = dst
+        .iter()
+        .flatten()
+        .map(|p| [p.0 as f32, p.1 as f32])
+        .collect();
     if sp.len() < 3 {
         return None;
     }
@@ -175,7 +219,11 @@ fn dewarp_triangles(img: &Gray, staff: &Staff) -> Option<Vec<Tri>> {
     for t in sub.triangle_list() {
         if let (Some(a), Some(b), Some(c)) = (find(t[0]), find(t[1]), find(t[2])) {
             let (src, dst) = ([sp[a], sp[b], sp[c]], [dp[a], dp[b], dp[c]]);
-            let mat = if degenerate(&src) || degenerate(&dst) { None } else { Some(get_affine_transform(&src, &dst)) };
+            let mat = if degenerate(&src) || degenerate(&dst) {
+                None
+            } else {
+                Some(get_affine_transform(&src, &dst))
+            };
             tris.push(Tri { src, dst, mat });
         }
     }
@@ -194,7 +242,9 @@ fn warp_image(img: &Gray, tris: &[Tri]) -> Gray {
         if sr.2 <= 0 || sr.3 <= 0 || dr.2 <= 0 || dr.3 <= 0 {
             continue;
         }
-        let shift = |tri: &[[f32; 2]; 3], r: (i64, i64, i64, i64)| tri.map(|p| [p[0] - r.0 as f32, p[1] - r.1 as f32]);
+        let shift = |tri: &[[f32; 2]; 3], r: (i64, i64, i64, i64)| {
+            tri.map(|p| [p[0] - r.0 as f32, p[1] - r.1 as f32])
+        };
         let (sc, dc) = (shift(&t.src, sr), shift(&t.dst, dr));
         if degenerate(&sc) || degenerate(&dc) {
             continue;
@@ -210,7 +260,12 @@ fn warp_image(img: &Gray, tris: &[Tri]) -> Gray {
         let poly: Vec<[i64; 2]> = dc.iter().map(|p| [p[0] as i64, p[1] as i64]).collect();
         fill_convex_poly(&mut mask, dh, dw, &poly, 255);
         let (y1, y2, x1, x2) = (dr.1, dr.1 + dr.3, dr.0, dr.0 + dr.2);
-        let (yc1, yc2, xc1, xc2) = (y1.max(0), y2.min(img.h as i64), x1.max(0), x2.min(img.w as i64));
+        let (yc1, yc2, xc1, xc2) = (
+            y1.max(0),
+            y2.min(img.h as i64),
+            x1.max(0),
+            x2.min(img.w as i64),
+        );
         if yc2 <= yc1 || xc2 <= xc1 {
             continue;
         }
@@ -228,7 +283,11 @@ fn warp_image(img: &Gray, tris: &[Tri]) -> Gray {
 
 /// remove_black_contours_at_edges_of_image
 fn remove_black_contours(gray: &mut Gray, unit: f64) {
-    let thresh: Vec<u8> = gray.data.iter().map(|&v| if v > 97 { 0 } else { 255 }).collect();
+    let thresh: Vec<u8> = gray
+        .data
+        .iter()
+        .map(|&v| if v > 97 { 0 } else { 255 })
+        .collect();
     let limit = 2.0 * unit;
     for c in find_contours(&thresh, gray.h, gray.w) {
         let x = c.iter().map(|p| p[0]).min().unwrap() as i64;
@@ -264,7 +323,8 @@ fn center_on_canvas(img: &Gray, size: (i64, i64)) -> Gray {
     let mut out = Gray::new(CANVAS_W, CANVAS_H, 255);
     let y_off = (CANVAS_H as i64 - resized.h as i64).div_euclid(2) as usize;
     for y in 0..resized.h {
-        out.data[(y_off + y) * CANVAS_W..(y_off + y) * CANVAS_W + resized.w].copy_from_slice(&resized.data[y * resized.w..(y + 1) * resized.w]);
+        out.data[(y_off + y) * CANVAS_W..(y_off + y) * CANVAS_W + resized.w]
+            .copy_from_slice(&resized.data[y * resized.w..(y + 1) * resized.w]);
     }
     out
 }
@@ -290,7 +350,9 @@ fn undo_resize(p: (f64, f64), before: (usize, usize), after: (usize, usize)) -> 
 }
 
 fn point_in_triangle(p: (f64, f64), t: &[[f32; 2]; 3]) -> bool {
-    let cross = |a: [f32; 2], b: [f32; 2]| -> f64 { ((b[0] - a[0]) * (p.1 as f32 - a[1]) - (b[1] - a[1]) * (p.0 as f32 - a[0])) as f64 };
+    let cross = |a: [f32; 2], b: [f32; 2]| -> f64 {
+        ((b[0] - a[0]) * (p.1 as f32 - a[1]) - (b[1] - a[1]) * (p.0 as f32 - a[0])) as f64
+    };
     let (d1, d2, d3) = (cross(t[0], t[1]), cross(t[1], t[2]), cross(t[2], t[0]));
     let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
     let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
@@ -318,7 +380,10 @@ impl StaffMapping {
             }
             let inv = invert_affine(m);
             let v = [p.0 as f32 as f64, p.1 as f32 as f64, 1.0f32 as f64];
-            return (inv[0] * v[0] + inv[1] * v[1] + inv[2] * v[2], inv[3] * v[0] + inv[4] * v[1] + inv[5] * v[2]);
+            return (
+                inv[0] * v[0] + inv[1] * v[1] + inv[2] * v[2],
+                inv[3] * v[0] + inv[4] * v[1] + inv[5] * v[2],
+            );
         }
         p
     }
@@ -346,7 +411,11 @@ pub fn prepare_staff_image(staff: &Staff, image: &Gray, regions: &Regions) -> Re
 }
 
 /// prepare_staff_image with the transformed staff and the mapping back to the page.
-pub fn prepare_staff(staff: &Staff, image: &Gray, regions: &Regions) -> Result<PreparedStaff, String> {
+pub fn prepare_staff(
+    staff: &Staff,
+    image: &Gray,
+    regions: &Regions,
+) -> Result<PreparedStaff, String> {
     let u = unit_size(staff);
     let region = [
         py_int(staff.min_x - 2.0 * u),
@@ -356,13 +425,39 @@ pub fn prepare_staff(staff: &Staff, image: &Gray, regions: &Regions) -> Result<P
     ];
     let dims = canvas_size(region[3] - region[1], region[2] - region[0]);
     let scale = dims.1 as f64 / (region[3] - region[1]) as f64;
-    let (rw, rh) = (py_int(image.w as f64 * scale) as usize, py_int(image.h as f64 * scale) as usize);
-    let rf: Vec<f64> = region.iter().map(|&v| (v as f64 * scale).round_ties_even()).collect();
+    let (rw, rh) = (
+        py_int(image.w as f64 * scale) as usize,
+        py_int(image.h as f64 * scale) as usize,
+    );
+    let rf: Vec<f64> = region
+        .iter()
+        .map(|&v| (v as f64 * scale).round_ties_even())
+        .collect();
     // crop(resize(page)): only the cropped part of the resized page is computed
-    let (xa, ya, xb, yb) = crop_rect(rw, rh, rf[0] - 10.0, rf[1] - 50.0, rf[2] + 10.0, rf[3] + 50.0);
-    let cropped = resize_region(image, rw, rh, xa as usize, ya as usize, xb as usize, yb as usize);
+    let (xa, ya, xb, yb) = crop_rect(
+        rw,
+        rh,
+        rf[0] - 10.0,
+        rf[1] - 50.0,
+        rf[2] + 10.0,
+        rf[3] + 50.0,
+    );
+    let cropped = resize_region(
+        image,
+        rw,
+        rh,
+        xa as usize,
+        ya as usize,
+        xb as usize,
+        yb as usize,
+    );
     let tl = (xa, ya);
-    let step2 = [rf[0] - tl.0 as f64, rf[1] - tl.1 as f64, rf[2] - tl.0 as f64, rf[3] - tl.1 as f64];
+    let step2 = [
+        rf[0] - tl.0 as f64,
+        rf[1] - tl.1 as f64,
+        rf[2] - tl.0 as f64,
+        rf[3] - tl.1 as f64,
+    ];
     let staff2 = transform_staff(staff, tl.0 as f64 / scale, tl.1 as f64 / scale, scale)?;
     let tris = dewarp_triangles(&cropped, &staff2);
     let dewarped = match &tris {
@@ -384,10 +479,18 @@ pub fn prepare_staff(staff: &Staff, image: &Gray, regions: &Regions) -> Result<P
         page: (image.h, image.w),
         resized: (rh, rw),
     };
-    Ok(PreparedStaff { canvas, staff: staff2, mapping })
+    Ok(PreparedStaff {
+        canvas,
+        staff: staff2,
+        mapping,
+    })
 }
 
 /// The model's input from the canvas: (pixel / 255 - 0.7931) / 0.1738, float32.
 pub fn to_model_input(canvas: &Gray) -> Vec<f32> {
-    canvas.data.iter().map(|&v| ((v as f64 / 255.0 - 0.7931) / 0.1738) as f32).collect()
+    canvas
+        .data
+        .iter()
+        .map(|&v| ((v as f64 / 255.0 - 0.7931) / 0.1738) as f32)
+        .collect()
 }
