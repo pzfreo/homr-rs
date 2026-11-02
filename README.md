@@ -250,7 +250,10 @@ Tiled guarded, tiled arithmetic-control and legacy guarded runs are interleaved
 native. `profile.valid` must be true before using speedup/guard deltas. These
 differential estimates can be negative under noise; they are not hardware
 counters. Controls retain certificates and rounding barriers and never supply
-an encoder result. The quick profiling commands omit the expensive corpus
+an encoder result. The weight-scan metric is a warm scan of resident weights;
+full initialization wall time is reported separately. Certified div/sqrt,
+including their flags, remain part of arithmetic in the guard control: the
+delta removes wrapper FTZ/domain checks. The quick profiling commands omit the expensive corpus
 primitive streams and report that partial coverage; use the full command for
 qualification. Missing timestamp-query reports profiling unavailable.
 

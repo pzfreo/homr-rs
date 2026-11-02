@@ -26,7 +26,10 @@ export function specialBits(value) {
 }
 function storage(device, valueOrSize, usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST) {
   const data=typeof valueOrSize === 'number' ? null : bytes(valueOrSize);
-  const buffer=device.createBuffer({size:Math.max(4,data?.byteLength??valueOrSize),usage,mappedAtCreation:!!data});
+  // A vec4 runtime storage array needs a complete final vector, even when a
+  // diagnostic input ends with 1..3 scalar words (e.g. the 19x47 load test).
+  // WebGPU zero-initializes the padding. Readbacks still return requested bytes.
+  const buffer=device.createBuffer({size:Math.max(16,Math.ceil((data?.byteLength??valueOrSize)/16)*16),usage,mappedAtCreation:!!data});
   if(data) {new Uint8Array(buffer.getMappedRange()).set(data);buffer.unmap();}
   return buffer;
 }
@@ -34,7 +37,7 @@ function uniform(device,q) {return storage(device,new Uint32Array(q),GPUBufferUs
 export async function readBuffer(device,source,size,offset=0) {
   const target=storage(device,size,GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ);
   try {const cmd=device.createCommandEncoder();cmd.copyBufferToBuffer(source,offset,target,0,size);device.queue.submit([cmd.finish()]);
-    await target.mapAsync(GPUMapMode.READ);return target.getMappedRange().slice(0);
+    await target.mapAsync(GPUMapMode.READ);return target.getMappedRange().slice(0,size);
   } finally {target.destroy();}
 }
 
@@ -299,13 +302,13 @@ export class EncoderGPU {
       const median=xs=>xs.toSorted((a,b)=>a-b)[Math.floor(xs.length/2)],valid=rows.every(r=>!r.flags&&!r.bit_differences)&&scan.every(r=>!r.flags);
       const kernels=this.ops.map((op,i)=>{const guarded=median(rows.filter(r=>r.guarded&&!r.legacy).map(r=>r.kernels[i].gpu_ms)),arithmetic=median(rows.filter(r=>!r.guarded).map(r=>r.kernels[i].gpu_ms)),old=median(rows.filter(r=>r.legacy).map(r=>r.kernels[i].gpu_ms));
         return {index:i,name:op.name,kind:op.params[0],guarded_ms:guarded,arithmetic_control_ms:arithmetic,guard_delta_ms:valid?guarded-arithmetic:null,legacy_guarded_ms:old,speedup:valid&&guarded>0?old/guarded:null};});
-      const totals={};for(const k of kernels){const t=totals[k.kind]??={kind:k.kind,guarded_ms:0,arithmetic_control_ms:0,legacy_guarded_ms:0};t.guarded_ms+=k.guarded_ms;t.arithmetic_control_ms+=k.arithmetic_control_ms;t.legacy_guarded_ms+=k.legacy_guarded_ms;}
+      const totals={};for(const k of kernels){const t=totals[k.kind]??={kind:k.kind,kernel:entries[k.kind],guarded_ms:0,arithmetic_control_ms:0,legacy_guarded_ms:0};t.guarded_ms+=k.guarded_ms;t.arithmetic_control_ms+=k.arithmetic_control_ms;t.legacy_guarded_ms+=k.legacy_guarded_ms;}
       const image_scan_ms=median(rows.filter(r=>r.guarded&&!r.legacy).map(r=>r.image_scan_ms)),guarded_ms=kernels.reduce((n,k)=>n+k.guarded_ms,0)+image_scan_ms,arithmetic_control_ms=kernels.reduce((n,k)=>n+k.arithmetic_control_ms,0);
       const legacy_guarded_ms=kernels.reduce((n,k)=>n+k.legacy_guarded_ms,0)+median(rows.filter(r=>r.legacy).map(r=>r.image_scan_ms));
       scoped=false;await popErrors(d);
       return {available:true,valid,trials,control_compile_ms,kernels,by_kind:Object.values(totals),image_scan_ms,weight_scan_once_ms:median(scan.map(r=>r.gpu_ms)),guarded_ms,arithmetic_control_ms,legacy_guarded_ms,speedup:valid&&guarded_ms>0?legacy_guarded_ms/guarded_ms:null,
         guard_and_image_delta_ms:valid?guarded_ms-arithmetic_control_ms:null,guard_and_image_fraction:valid?(guarded_ms-arithmetic_control_ms)/guarded_ms:null,rows,weight_scan:scan,
-        policy:'Per-pass timestamps; one warm-up and interleaved trials. Deltas are noisy differential estimates, not additive hardware counters. Control retains rounding barriers and exact certificates; no control output is used for encoding.'};
+        policy:'Per-pass timestamps; one warm-up and interleaved trials. Weight scan is a warm scan of resident weights, separate from initialization wall time. Deltas are noisy differential estimates, not additive hardware counters. Control removes wrapper FTZ/domain checks; rounding barriers and certified div/sqrt (including their flags) remain arithmetic. No control output is used for encoding.'};
     } finally {if(scoped){try{await popErrors(d);}catch{}}for(const b of live)b.destroy();this.busy=false;}
   }
   // Diagnostic timing control only; never writes a context or affects fallback.

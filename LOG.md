@@ -2350,3 +2350,63 @@ was checked via GET/HEAD for the page, manifest, modules, symlinked model,
 WASM, input and native context, with COOP/COEP headers and profile=3 preserved.
 An occupied fixed test port was avoided using an OS-assigned ephemeral port;
 no existing listener was touched. No report POST or browser run was performed.
+
+Final checks: fmt, all-target/all-feature Clippy -D warnings and release tests
+pass; 17 library tests, all binary/doc tests. Ordinary strict/fused WASM and
+all eight shared artifacts (production, probes, chunk diagnostics, combined)
+build successfully, including `bench/build_encoder_threads.py`. Ordinary and
+shared strict/fused WASM Clippy passes; WASI strict/fused each pass 15 tests
+with the existing one panic-abort test ignored. All four real ABI/CPU-fallback
+runs (ordinary/shared strict/fused) match the native context and all 33 decoder
+steps on angelus_0/0. All four shader variants pass Naga/Metal translation;
+host-control/profiling tests and new JS/Python syntax checks pass. Native
+fmt/Clippy/tests were repeated after the final CPU-simulator edit. No CPU
+encoder arithmetic, decoder, pool/worker, Partsong or homr files were changed.
+
+Final review caught a storage-layout tail issue before GPU qualification:
+19x47 contains 893 words, so vec4 input storage needs zero padding for the
+last vector. GPU allocations are now rounded to sixteen bytes; readBuffer
+still returns exactly the requested bytes. Host profiling tests enforce
+allocation alignment and exercise short readbacks. Repeated JS syntax and
+host-control/profiling checks pass after this fix. Production model buffers
+were already aligned; this is important for the expanded load gate.
+
+Timing definitions: `weight_scan_once_ms` is the median of warm scans of
+resident weights, a separate one-time cost, not cold-load GPU time. The full
+initialization wall time remains separate. The guard delta removes wrapper
+FTZ/domain checks, while certified div/sqrt (including their flags) stay in
+arithmetic. No purported additive guard counter or hardware speedup is
+inferred from the CPU simulation, mock timestamps or logical load counts.
+
+Unattended decision: ship a fixed conservative tile design fitting default
+limits, preserve the old schedule solely for measured comparison, and leave
+actual speed selection to Partsong's existing speed test. No adapter/vendor
+guess, approximation, guard relaxation or unmeasured speed estimate is used.
+New GPU speed, guard frequency/self-test time and 627-staff GPU parity still
+require external execution. Dawn 0.6.2 returns no Metal/default adapter here;
+Chrome aborts before CDP and Safari cannot be executed in this sandbox. The
+maintainer-supplied previous-revision corpus result does not qualify these
+new shader schedules. No pushes, external posts, or committed data/reports.
+
+Run from this clone, Chrome first (one staff/per-kernel, then full corpus):
+
+```
+node bench/gpu_encoder_chrome.mjs .. ../threads_build/encoder-threads-fused.wasm ../gpu-fast-one.json --limit 1 --profile 3 --audit none --math-cases 65536
+node bench/gpu_encoder_chrome.mjs .. ../threads_build/encoder-threads-fused.wasm ../gpu-fast-full.json
+```
+
+Then Safari, opening each printed URL (stop the first server before the second):
+
+```
+python3 bench/gpu_encoder_server.py .. ../threads_build/encoder-threads-strict.wasm ../gpu-fast-safari-one --limit 1 --profile 3 --audit none --math-cases 65536
+python3 bench/gpu_encoder_server.py .. ../threads_build/encoder-threads-strict.wasm ../gpu-fast-safari-full
+```
+
+Profiling omits corpus primitive streams but still checks all op outputs on
+one staff and 65,536 random/edge cases per primitive. Full runs default to all
+627 staffs / 38,076 steps and all recorded primitive operands. Same phone
+page: Android `adb reverse tcp:8796 tcp:8796`, open localhost:8796; alternatively
+use server --bind/--cert/--key with HTTPS trusted by the phone. README gives
+the scratch-only Dawn install/run and independent CPU simulation commands.
+Copy all three host JS files together and rebuild WASM for the thirteen-case
+load gate; ABI version and EncoderGPU API usage remain unchanged.

@@ -8,7 +8,7 @@ const names=[...entries,'math_probe','weights_scan','image_scan'],dispatches=[];
 let clock=0n,destroyed=0;
 const buffer=size=>({data:new ArrayBuffer(size),getMappedRange(){return this.data;},unmap(){},async mapAsync(){},destroy(){destroyed++;}});
 const d={pushErrorScope(){},async popErrorScope(){return null;},
-  createBuffer({size}){return buffer(size);},
+  createBuffer({size}){assert.equal(size%16,0);return buffer(size);},
   createQuerySet({count}){return {times:new BigUint64Array(count),destroy(){destroyed++;}};},
   createShaderModule({code}){return {legacy:!code.includes('var<workgroup> tile_a'),guarded:code.includes('mag(r) == 0u'),async getCompilationInfo(){return {messages:[]};}};},
   createBindGroupLayout(x){return x;},createPipelineLayout(x){return x;},async createComputePipelineAsync(x){return x;},createBindGroup(x){return x;},
