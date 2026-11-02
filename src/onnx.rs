@@ -1,7 +1,7 @@
 //! The small protobuf subset needed by homr's ONNX model. Unknown fields are skipped.
 use std::collections::HashMap;
 
-pub(super) struct Tensor {
+pub struct Tensor {
     pub dims: Vec<usize>,
     pub kind: u64,
     pub data: Vec<u8>,
@@ -28,13 +28,15 @@ impl Tensor {
     }
 }
 #[derive(Default)]
-pub(super) struct Node {
+pub struct Node {
     pub name: String,
     pub op: String,
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
+    pub ints: HashMap<String, Vec<i64>>,
+    pub floats: HashMap<String, f32>,
 }
-pub(super) struct Graph {
+pub struct Graph {
     pub tensors: HashMap<String, Tensor>,
     pub nodes: Vec<Node>,
 }
@@ -109,6 +111,45 @@ impl Graph {
                         2 => n.outputs.push(string(a.bytes)?),
                         3 => n.name = string(a.bytes)?,
                         4 => n.op = string(a.bytes)?,
+                        5 => {
+                            let attrs = fields(a.bytes)?;
+                            let key = attrs
+                                .iter()
+                                .find(|a| a.tag == 1)
+                                .ok_or("attribute name missing")?;
+                            let key = string(key.bytes)?;
+                            let mut ints = Vec::new();
+                            for value in attrs {
+                                match value.tag {
+                                    2 => {
+                                        n.floats.insert(
+                                            key.clone(),
+                                            f32::from_le_bytes(
+                                                value
+                                                    .bytes
+                                                    .try_into()
+                                                    .map_err(|_| "float attribute")?,
+                                            ),
+                                        );
+                                    }
+                                    3 => ints.push(value.int as i64),
+                                    8 => {
+                                        if value.bytes.is_empty() {
+                                            ints.push(value.int as i64);
+                                        } else {
+                                            let mut b = value.bytes;
+                                            while !b.is_empty() {
+                                                ints.push(varint(&mut b)? as i64);
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if !ints.is_empty() {
+                                n.ints.insert(key, ints);
+                            }
+                        }
                         _ => {}
                     }
                 }

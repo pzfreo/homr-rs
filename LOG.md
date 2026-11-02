@@ -1116,3 +1116,26 @@ and call-count checks; they are labelled as boundary replays rather than live
 browser runs. No user answers were needed. All work is committed on cx/models;
 Partsong and the plain homr checkout were not edited. Nothing was pushed or
 posted, and generated data/reports remain only in scratch.
+
+## Exact Rust encoder port (cx/encoder)
+
+The maintainer supplied external Chrome 156 / Apple Metal measurements for all
+88 pages / 627 staffs: WebGPU segnet differs at **24 / 826,982,400 pixels on
+16 pages**, worst fix-six-1 with **2 pixels**; encoder max absolute difference
+**1.86e-5**, mean **1.32e-6**, worst pdf-1 staff 8. These supplement the WASM
+measurements above; downstream GPU tokens/XML have not been supplied and are
+not inferred. The encoder port targets native default arm64 ORT 1.31.0.
+Segnet remains in ORT-web as requested. No large segmentation port is planned.
+
+### Stage 1: native scalar operator checks
+
+Shared the ONNX protobuf reader at src/onnx.rs, retaining decoder parsing and
+adding typed node attributes. Factored the existing MLAS erf polynomial out of
+the decoder GELU without changing its arithmetic. Initial native single-node
+checks (angelus_0 staff 0) are bit-identical for stem Conv (1,966,080 outputs),
+LayerNorm (1,966,080), depthwise 7x7 Conv (1,966,080), MatMul (7,864,320), Div
+(7,864,320), and Erf (7,864,320). The stem Conv must initialize accumulators
+with bias; summing from zero and adding bias later differed at 1,423,236
+outputs. Depthwise uses the opposite schedule: zero accumulation, bias after.
+No fixture hashes or approximate tolerances are used for these checks.
+Seven release library tests and all existing binary/doc test targets pass.

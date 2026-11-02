@@ -3,15 +3,14 @@
 //! This is a model-specific executor, not a general ONNX runtime. Weights are
 //! read at runtime from the upstream decoder ONNX bytes. A session owns its KV
 //! caches; no cache crosses the JavaScript boundary between steps.
-mod activation;
+pub(crate) mod activation;
 mod math;
-mod onnx;
 pub mod profile;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
+use crate::onnx::Graph;
 use activation::{gelu, sigmoid, softmax};
 use math::{norm, Linear, Quantized};
-use onnx::Graph;
 
 pub const CONTEXT_POSITIONS: usize = 1280;
 pub const DIM: usize = 512;

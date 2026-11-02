@@ -12,6 +12,10 @@ crate-type = ["rlib", "cdylib"]
 name = "decode_contexts"
 path = "bench/decode_contexts.rs"
 
+[[bin]]
+name = "check_encoder_ops"
+path = "bench/check_encoder_ops.rs"
+
 [dependencies]
 libm = "0.2"
 serde_json = { version = "1", features = ["float_roundtrip"] }

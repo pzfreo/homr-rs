@@ -4,7 +4,7 @@
 //! compute.cpp, logistic.cpp, erf.cpp and gelu.cpp (Microsoft Corporation).
 #![allow(clippy::excessive_precision)]
 #[inline]
-pub(super) fn fma(a: f32, b: f32, c: f32) -> f32 {
+pub(crate) fn fma(a: f32, b: f32, c: f32) -> f32 {
     // SIMD128 has no fused float32 multiply-add. Widening preserves the
     // float32 product, then narrows once; corpus checks bound any double rounding.
     #[cfg(target_arch = "wasm32")]
@@ -69,8 +69,7 @@ fn exp(x: f32) -> f32 {
         ],
     )
 }
-pub(super) fn gelu(x: f32) -> f32 {
-    let v = x * std::f32::consts::FRAC_1_SQRT_2;
+pub(crate) fn erf(v: f32) -> f32 {
     let a = v.abs().min(3.925);
     let r = if a <= 0.921875 {
         let p = horner(
@@ -112,7 +111,10 @@ pub(super) fn gelu(x: f32) -> f32 {
             ],
         )
     };
-    (0.5 * x) * (r.copysign(v) + 1.0)
+    r.copysign(v)
+}
+pub(crate) fn gelu(x: f32) -> f32 {
+    (0.5 * x) * (erf(x * std::f32::consts::FRAC_1_SQRT_2) + 1.0)
 }
 pub(super) fn softmax(x: &mut [f32]) {
     let _g = super::profile::enter(super::profile::Phase::Softmax);
