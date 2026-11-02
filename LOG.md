@@ -155,3 +155,19 @@ and contour, clefs, bar lines) and 151/151 for staff detection.
   packing/unpacking; the noise filter's 3x3 without per-pixel reflection):
   **22.0G (1.5x fewer than Pyodide)**, still 5/5 identical; stage 1 still
   158/158. bench/py_pre.mjs and bench/rs_pre.mjs reproduce it.
+
+## Whole corpus, stages 2 and 4
+- 158 corpus pages; 88 have music (the other 70 have no staffs or noteheads
+  in homr itself).
+- **Stage 2: 88 of 88 pages identical** (segnet input tiles, and masks from
+  the recorded segnet output, against homr in Pyodide).
+- **Stage 4: 88 of 88 pages agree.** 75 give byte-identical MusicXML. On the
+  other 13 (app-2, cam_0_exif1, files-1, fix-1, fix-six-1, gpufail-1, live-2,
+  openpdf-1, pdf-1, scar-1, scar2-1, scar3-1, shot-2) upstream homr itself
+  fails: `assert group_duration > Fraction(0)` in build_note_chord
+  (music_xml_generator.py:795). The port fails at the same place on the same
+  transformer output. dump_decoder.py now records these pages (decoder.json
+  "error"), and check_xml expects the failure. Partsong avoids this crash with
+  its own patch; under "homr-rs follows homr" the fix belongs upstream.
+- So on our corpus the port matches homr at every stage, apart from the
+  models, which stay in onnxruntime.

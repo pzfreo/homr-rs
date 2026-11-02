@@ -14,10 +14,10 @@ nothing has to block on JavaScript. See LOG.md for how each stage was checked.
 
 | stage | from | to | checked on the corpus |
 |---|---|---|---|
-| 2 | page image | segnet tiles; masks from its output | 5 pages identical (full corpus running) |
+| 2 | page image | segnet tiles; masks from its output | 88/88 music pages identical |
 | 1 | masks | staffs, systems (MultiStaffs) | 158/158 pages identical |
 | 3 | page + staff | the transformer's canvas | 627/627 staff images identical |
-| 4 | transformer output | MusicXML | 6/6 pages byte-identical (full corpus running) |
+| 4 | transformer output | MusicXML | 88/88 music pages: 75 byte-identical, 13 fail in homr itself (assert) and in the port alike |
 
 ## Using it
 

@@ -38,6 +38,12 @@ for p in sys.argv[3:]:
     calls.clear(); crop.clear()
     try:
         xml_path = main.process_image(p, config(main), XmlGeneratorArguments())
+    except AssertionError as e:
+        # homr itself fails (e.g. a zero-duration backup in music_xml_generator):
+        # keep what the transformer returned so the port can be checked to fail too
+        json.dump({"crop": crop, "calls": calls, "error": "AssertionError"}, open(os.path.join(d, "decoder.json"), "w"))
+        print("dumped", d, len(calls), "staffs; homr fails with AssertionError", flush=True)
+        continue
     except Exception as e:
         print("skip", p, type(e).__name__, e, flush=True)
         continue

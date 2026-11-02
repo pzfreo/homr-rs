@@ -13,11 +13,22 @@ fn main() {
     let pages = std::env::args().nth(1).expect("pages dir (tools/dump_page.py)");
     let decs = std::env::args().nth(2).expect("decoder dir (tools/dump_decoder.py)");
     let refs = std::env::args().nth(3).expect("replay dir (tools/pyodide_replay.mjs)");
-    let mut dirs: Vec<_> = fs::read_dir(&refs).unwrap().map(|e| e.unwrap().path()).filter(|p| p.join("replay.musicxml").exists()).collect();
-    dirs.sort();
-    let (mut same, mut diff) = (0, 0);
-    for r in dirs {
-        let name = r.file_name().unwrap().to_string_lossy().to_string();
+    // pages homr replayed to MusicXML, and pages where homr itself fails
+    // (decoder.json has "error"): the port must fail the same way
+    let mut names: Vec<String> = fs::read_dir(&decs).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+    names.sort();
+    let (mut same, mut diff, mut same_err) = (0, 0, 0);
+    for name in names {
+        let r = std::path::Path::new(&refs).join(&name);
+        let dec_path = std::path::Path::new(&decs).join(&name).join("decoder.json");
+        if !dec_path.exists() {
+            continue;
+        }
+        let dec: Value = serde_json::from_str(&fs::read_to_string(&dec_path).unwrap()).unwrap();
+        let homr_error = dec["error"].as_str().map(|s| s.to_string());
+        if homr_error.is_none() && !r.join("replay.musicxml").exists() {
+            continue;
+        }
         let d = std::path::Path::new(&pages).join(&name);
         let page: Value = serde_json::from_str(&fs::read_to_string(d.join("page.json")).unwrap()).unwrap();
         let sh: Vec<usize> = page["shape"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
@@ -26,7 +37,6 @@ fn main() {
         let (nh, sy, st, ck, sr) = (rd("notehead"), rd("symbols"), rd("staff"), rd("clefs_keys"), rd("stem_rests"));
         let masks = PageMasks { h: sh[0], w: sh[1], notehead: &nh, symbols: &sy, staff: &st, clefs_keys: &ck, stem_rests: &sr };
         let image = Gray { w: ps[1], h: ps[0], data: rd("preprocessed") };
-        let dec: Value = serde_json::from_str(&fs::read_to_string(std::path::Path::new(&decs).join(&name).join("decoder.json")).unwrap()).unwrap();
         let cs: Vec<usize> = dec["crop"]["cropped_shape"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
         let tl: Vec<f64> = dec["crop"]["top_left"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
         let mapping = PageMapping { cropped: (cs[0], cs[1]), preprocessed: (ps[0], ps[1]), crop: (tl[0], tl[1]) };
@@ -57,8 +67,22 @@ fn main() {
             .collect();
         calls.reverse();
         let mut predict = |_: &Gray| -> Result<Vec<Symbol>, String> { calls.pop().ok_or_else(|| "replay ran out".to_string()) };
-        let expected = fs::read_to_string(r.join("replay.musicxml")).unwrap();
         let result = analyse_page(&masks).and_then(|multi| page_xml(&multi, &image, &mapping, &mut predict));
+        if let Some(e) = homr_error {
+            match result {
+                Err(r) if r == e && calls.is_empty() => same_err += 1,
+                Err(r) => {
+                    diff += 1;
+                    println!("DIFF {name}: homr {e}, rust {r}, {} recorded staffs unused", calls.len());
+                }
+                Ok(_) => {
+                    diff += 1;
+                    println!("DIFF {name}: homr {e}, rust succeeded");
+                }
+            }
+            continue;
+        }
+        let expected = fs::read_to_string(r.join("replay.musicxml")).unwrap();
         match result {
             Ok(xml) if xml == expected && calls.is_empty() => same += 1,
             Ok(xml) => {
@@ -74,5 +98,5 @@ fn main() {
             }
         }
     }
-    println!("{same} pages same, {diff} different");
+    println!("{same} pages same, {same_err} failing in homr and the port alike, {diff} different");
 }
