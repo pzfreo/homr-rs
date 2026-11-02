@@ -1295,3 +1295,35 @@ now follows the optimized graph's actual constant Reshape shape for both Gemm
 and Gelu. Correcting the scratch GELU input declaration to [1,64,320,384]
 preserves every native output byte and makes the browser probe load. This is
 a diagnostic-fixture correction, not an encoder arithmetic change.
+
+### Complete three-build encoder agreement
+
+All four retained strict shards exited successfully. Their disjoint merge
+contains exactly 88 pages and 627 staffs; every staff actually executes both
+models. Strict results are **627 bit-identical contexts, 38,076 steps, zero
+differing token heads/steps, zero extra or missing steps**. Its byte-exact XML
+replay gives **75 identical files and 13 matching native AssertionErrors**.
+No staff input, inference, decoder trajectory or failed native page was skipped.
+
+| encoder + Rust decoder | context bit-identical staffs | decoder steps | changed heads / steps / lengths | XML identical / matching failures |
+|---|---:|---:|---:|---:|
+| native NEON fused | 627/627 | 38,076 | 0 / 0 / 0 | 75 / 13 |
+| WASM SIMD128 + relaxed SIMD, fused probe passes | 627/627 | 38,076 | 0 / 0 / 0 | 75 / 13 |
+| WASM strict SIMD128, emulated fused | 627/627 | 38,076 | 0 / 0 / 0 | 75 / 13 |
+
+The scratch evidence is encoder_native/comparison.json,
+encoder_native_tokens/comparison.json, encoder_fused/comparison.json,
+encoder_strict_final/comparison.json and each corresponding *_xml/comparison.json.
+The strict merger rejects duplicate/missing pages and mixed artifact names.
+Whole contexts are compared as float32 bits, including signed zero, with no
+hashes or numeric tolerance. XML replay uses recorded native page/staff inputs
+and each build's newly generated symbols/attention; it is not a live browser
+segmentation/whole-page integration test. Segnet remains on ORT-web.
+
+Fresh guarded-source strict and fused artifacts also pass every isolated
+operator probe and the combined encoder_decode follow-3 check (121 matching
+native steps each, plus separate context-bit checks). Native guarded source
+passes the observed stage trace. The frozen corpus kernels and these final
+builds have identical floating arithmetic; late edits add dimension validation
+and an equivalent iterator spelling, as documented above. Sequential final
+benchmarks use the fresh normal artifacts, separately from profile artifacts.
