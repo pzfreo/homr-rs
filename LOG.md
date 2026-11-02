@@ -340,5 +340,18 @@ mentioned above are not used for these figures.
   integer quantization/SIMD arithmetic). The requested full release build for
   `wasm32-unknown-unknown`, with `-C target-feature=+simd128`, passes as well.
 
-The independent WASM corpus check is still running; its completed figures will
-be added below before this work is closed.
+- **WASM SIMD128 in Node/V8: all 88 pages, 627 staffs, 38,076 steps, and
+  228,456 token choices also agree**, with zero differing steps and zero length
+  differences. Max/mean absolute attention errors are exactly the same as
+  native Rust: **0.0003662109375 / 0.0000035342254462343814 pixels**. Each page's
+  max and mean error statistics agree with native Rust's as well. This check
+  ran the actual `wasm32-unknown-unknown` cdylib, with its own greedy trajectory,
+  through `bench/decoder.mjs rust check`, not a native stand-in.
+
+All requested implementation and corpus checks completed on the supplied
+arm64 machine. The strict `/usr/bin/time -l` invocation remains blocked by the
+sandbox's `kern.clockrate` restriction; the reported measurements use the
+retired-instruction counter directly, as explained above. Other CPU targets
+and browser engines remain unverified; no cross-platform parity is inferred
+from the Node/V8 run. All data and intermediate reports remain in scratch.
+Changes were committed on `cx/decoder`; nothing was pushed or posted.

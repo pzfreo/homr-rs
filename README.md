@@ -28,7 +28,7 @@ See LOG.md for numerical checks, reference versions, and measured limits.
 | 2 | page image | segnet tiles; masks from its output | 88/88 music pages identical |
 | 1 | masks | staffs, systems (MultiStaffs) | 158/158 pages identical |
 | 3 | page + staff | the transformer's canvas | 627/627 staff images identical |
-| decoder | encoder output | six tokens + coordinates per step | native: 627/627 staffs, 38,076 steps, all six tokens identical; attention max error 0.000366 pixels |
+| decoder | encoder output | six tokens + coordinates per step | native + WASM: 627/627 staffs, 38,076 steps each, all six tokens identical; attention max error 0.000366 pixels |
 | 4 | transformer output | MusicXML | 88/88 music pages: 75 byte-identical, 13 fail in homr itself (assert) and in the port alike |
 
 ## Using it
@@ -103,6 +103,11 @@ browser engine (Node/V8): homr in Pyodide 38.1G retired instructions a page,
 this port as WebAssembly 2.2G (17x fewer). Staff detection alone: 41x fewer.
 Stage 2 (page image to segnet input, its output to masks): Pyodide 6.5G a page,
 the port 4.4G (here homr's work is mostly native numpy/OpenCV/Pillow already).
+
+Decoder only (four staffs / 123 steps, load baseline subtracted): Rust WASM
+333.29M retired instructions per step versus ORT-web 479.58M, **1.44x fewer**.
+Native Rust is 1.56x more instructions than single-threaded native ORT on this
+page. See LOG.md for the full table, reference versions, and counter method.
 
 ## Results for staff detection (the first stage ported)
 
