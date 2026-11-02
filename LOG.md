@@ -723,7 +723,7 @@ those four contexts bit for bit. Native 1.31 one-thread samples match too.
 Thus this sample isolates backend arithmetic rather than merely the version
 number or native thread count. WASM 1.30 encoder with optimizations disabled
 still differs (max 7.6293945e-6, mean 4.2591845e-7 over the four staffs), versus
-all optimizations (max 6.1988831e-6, mean 4.2024840e-7). No matching stock setting
+all optimizations (max 6.1988831e-6, mean 4.2019768e-7). No matching stock setting
 has been found. npm rejects onnxruntime-web@1.31.0 with ETARGET; no published
 1.31 package was available to test. A Node import of the browser JSEP bundle
 failed loading its WASM via fetch; that attempt produced no comparison data.
@@ -731,3 +731,12 @@ failed loading its WASM via fetch; that attempt produced no comparison data.
 The four all-optimized one-thread WASM encoder sample contexts cause zero
 changed tokens/steps/lengths in the Rust decoder (123 steps). This is only a
 sample; the full greedy corpus comparison is still required.
+
+Default-native optimized graphs are also recorded in scratch: segnet fuses 27
+Conv+Relu pairs into FusedConv, retaining four Conv; encoder has 31 Gemm, 15
+Gelu, one NhwcFusedConv and 17 Conv, plus 18 LayerNormalization. Reproducing
+that fused arithmetic schedule matters; an unfused ONNX-op transcription is
+not automatically the default CPU program. A diagnostic sequential float32
+FMA recurrence matches **all 24,576** sampled native first-MLP matrix outputs
+(64 rows x 384 columns); separate multiply/add differs in **15,607**, max
+4.7683716e-7. This supports the FMA diagnosis even with the SME dispatch caveat.

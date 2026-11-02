@@ -20,13 +20,20 @@ try {
  const adapter = await navigator.gpu?.requestAdapter();
  if (!adapter) throw Error('No WebGPU adapter');
  const adapterInfo = adapter.info;
+ // Keep ORT's default device creation, but record actual GPU submissions so
+ // an adapter plus an entirely CPU-fallback session cannot masquerade as GPU.
+ ort.env.webgpu.adapter = adapter;
+ const originalSubmit = GPUQueue.prototype.submit;
+ let gpuSubmissions = 0;
+ GPUQueue.prototype.submit = function(...args) { gpuSubmissions++; return originalSubmit.apply(this,args); };
  ort.env.wasm.wasmPaths = '/ort/';
  const summary = await compareModels({ort, ep:'webgpu', threads:1,
   pages:${JSON.stringify(pages)}, models:${JSON.stringify(modelPaths)},
   read: async name => { const r=await fetch('/'+name); if(!r.ok)throw Error(name+': '+r.status);return new Uint8Array(await r.arrayBuffer()); },
   write: async (name,data) => { const r=await fetch('/'+name,{method:'POST',body:data});if(!r.ok)throw Error('write '+name); },
  });
- window.result={summary, adapterInfo, userAgent:navigator.userAgent};
+ if(!gpuSubmissions) throw Error('No WebGPU queue submissions; refusing a CPU-only result');
+ window.result={summary, adapterInfo, gpuSubmissions, userAgent:navigator.userAgent};
 } catch(e) {window.result={error:String(e.stack||e)};}
 </script>`;
 const server = http.createServer(async (req, res) => {
