@@ -877,3 +877,34 @@ claimed.
 This recommendation does not alter homr's target, add a model approximation,
 implement a large port, or change Partsong. The current scope is measurement,
 reusable local harnesses, and the exact XML checker's optional scratch export.
+
+### Completed WASM segnet result
+
+All 88 pages / 8,076 tiles / 826,982,400 tile pixels were run at batch 8
+(last batch preserved), ORT-web 1.30.0, four WASM threads, all graph optimizations.
+**14 class pixels differ on 11 pages: fraction 1.69290180783e-08 (1.69290180783e-06%).**
+77 pages have no differing class pixels. Worst fraction: fix-six-1,
+3 / 8,601,600 = 3.487723214e-7. Counts include tile overlap/padding, as the
+model emits it, not just unique page pixels.
+
+| differing page | pixels different | tile pixels | fraction |
+|---|---:|---:|---:|
+| angelus_1 | 1 | 5529600 | 1.808449074e-07 |
+| app-3 | 2 | 22118400 | 9.04224537e-08 |
+| app-4 | 1 | 44851200 | 2.229594749e-08 |
+| fix-six-1 | 3 | 8601600 | 3.487723214e-07 |
+| follow-3 | 1 | 8601600 | 1.162574405e-07 |
+| manual-1 | 1 | 8601600 | 1.162574405e-07 |
+| t-follow-3 | 1 | 8601600 | 1.162574405e-07 |
+| t-manual-1 | 1 | 8601600 | 1.162574405e-07 |
+| t-views-1 | 1 | 8601600 | 1.162574405e-07 |
+| views-1 | 1 | 8601600 | 1.162574405e-07 |
+| zoom-1 | 1 | 8601600 | 1.162574405e-07 |
+
+All 11 differing-class pages were replayed through native homr with the
+native decoder symbols, checking every staff canvas against the recorded
+native canvas. **Zero changed canvases, call counts, XML files or error
+outcomes**; the other 77 pages have identical class maps at the model boundary.
+This is a recorded-symbol segmentation replay, not a claim that class maps
+are exact. A combined replay with the newly decoded WASM encoder symbols is
+also queued for those 11 pages.

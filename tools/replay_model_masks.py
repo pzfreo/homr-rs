@@ -6,10 +6,12 @@ staff canvases or call counts are reported explicitly, so this cannot pretend
 to be a complete neural end-to-end run. Only differing-class pages need replay.
 """
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
 import time
+import xml.etree.ElementTree as ET
 
 import numpy as np
 from homr_setup import load, config
@@ -54,6 +56,7 @@ Staff2Score.__init__ = lambda self, *a, **k: None
 Staff2Score.predict = predict
 output.mkdir(parents=True, exist_ok=True)
 rows = []
+alternate_decoder = os.getenv('MODEL_DECODER_OUTPUT')
 for source in corpus.read_text().splitlines():
     name = Path(source).stem
     metrics = browser / name / 'metrics.json'
@@ -65,33 +68,44 @@ for source in corpus.read_text().splitlines():
         raise RuntimeError(f'missing completed segmentation {name}')
     observed = json.loads(metrics.read_text())
     if not observed['segnet']['different']:
-        rows.append({'page': name, 'class_maps_identical': True, 'xml': 'identical by identical model boundary'})
+        rows.append({'page': name, 'class_maps_identical': True,
+            'xml': 'see encoder replay; segmentation boundary identical' if alternate_decoder else 'identical by identical model boundary'})
         continue
     meta = json.loads((native / name / 'models.json').read_text())
-    dec = json.loads((refs / name / 'decoder.json').read_text())
+    decoder_path = (Path(alternate_decoder) if alternate_decoder else refs) / name / 'decoder.json'
+    for attempt in range(14400):
+        if decoder_path.exists():
+            break
+        time.sleep(1)
+    else:
+        raise RuntimeError(f'decoder did not complete {name}')
+    dec = json.loads(decoder_path.read_text())
     batch = staff = different_canvases = 0
     d = output / name
     d.mkdir(exist_ok=True)
     local = d / ('source' + Path(source).suffix)
     shutil.copyfile(source, local)
-    status, error = None, None
+    status, error, without_comments_same = None, None, False
     try:
         xml = main.process_image(str(local), config(main), XmlGeneratorArguments())
         same = (refs / name / 'native.musicxml').exists() and Path(xml).read_bytes() == (refs / name / 'native.musicxml').read_bytes()
+        expected_xml = refs / name / 'native.musicxml'
+        without_comments_same = expected_xml.exists() and ET.tostring(ET.parse(xml).getroot()) == ET.tostring(ET.parse(expected_xml).getroot())
         status = 'identical' if same else 'different'
     except AssertionError:
         status = 'matching failure' if dec.get('error') == 'AssertionError' else 'different failure'
+        without_comments_same = status == 'matching failure'
     except ReplayMismatch as e:
         status, error = 'unreplayable', str(e)
     finally:
         local.unlink(missing_ok=True)
     row = {'page': name, 'xml': status, 'staffs_called': staff, 'native_staffs': len(dec['calls']),
-           'different_canvases': different_canvases, 'error': error}
+           'different_canvases': different_canvases, 'error': error, 'without_comments_same': without_comments_same}
     if staff != len(dec['calls']):
         row['xml'] = 'unreplayable'
     rows.append(row)
     print(row, flush=True)
-report = {'pages': rows, 'summary': {'pages': len(rows),
+report = {'decoder_source': alternate_decoder or str(refs), 'pages': rows, 'summary': {'pages': len(rows),
     'identical_class_maps': sum(r.get('class_maps_identical', False) for r in rows),
     'replayed': sum('class_maps_identical' not in r for r in rows),
     'xml_changed': sum(r['xml'] in {'different', 'different failure'} for r in rows),
