@@ -1,8 +1,10 @@
 // node bench/encoder_ops.mjs WASM PROBE_DIRECTORY OUTPUT_JSON
 import fs from 'node:fs';
 import path from 'node:path';
+import {EncoderPool} from '../tools/encoder_pool.mjs';
 const [wasm,root,output]=process.argv.slice(2);
-const {instance:{exports:e}}=await WebAssembly.instantiate(fs.readFileSync(wasm),{});
+const pool=process.env.ENCODER_THREADS?await EncoderPool.create(await WebAssembly.compile(fs.readFileSync(wasm)),{threads:Number(process.env.ENCODER_THREADS)}):null;
+const e=pool?.exports??(await WebAssembly.instantiate(fs.readFileSync(wasm),{})).instance.exports;
 const copy=bytes=>{const p=e.decoder_alloc(bytes.length);new Uint8Array(e.memory.buffer,p,bytes.length).set(bytes);return p;};
 const manifest=JSON.parse(fs.readFileSync(path.join(root,'probes.json'))),rows=[];
 for(const probe of manifest.probes){
@@ -16,3 +18,4 @@ for(const probe of manifest.probes){
  e.decoder_free(input,bytes.length);e.decoder_free(out,ref.length);e.encoder_probe_drop(handle);
 }
 fs.writeFileSync(output,JSON.stringify(rows,null,2));if(rows.some(r=>r.bit_differences))process.exitCode=1;
+await pool?.close();

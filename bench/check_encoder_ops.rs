@@ -23,6 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = Path::new(&args[1]);
     let manifest: Value = serde_json::from_slice(&fs::read(root.join("probes.json"))?)?;
     let mut rows = Vec::new();
+    let mut failed = false;
     for probe in manifest["probes"].as_array().unwrap() {
         let kind = probe["kind"].as_str().unwrap();
         let g = Graph::read(&fs::read(root.join(probe["model"].as_str().unwrap()))?)?;
@@ -120,9 +121,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         let row = json!({"kind":kind,"values":got.len(),"bit_differences":count,"max_abs":max,"mean_abs":sum/got.len() as f64,"first":first});
+        failed |= count != 0;
+        if let Some(root) = std::env::var_os("PROBE_OUTPUT") {
+            let root = Path::new(&root);
+            fs::create_dir_all(root)?;
+            fs::write(
+                root.join(format!("{kind}.f32")),
+                got.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
+            )?;
+        }
         println!("{row}");
         rows.push(row);
     }
     fs::write(&args[2], serde_json::to_vec_pretty(&rows)?)?;
+    if failed {
+        return Err("encoder operator bits differ".into());
+    }
     Ok(())
 }

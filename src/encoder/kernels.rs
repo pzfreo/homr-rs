@@ -32,6 +32,11 @@ pub fn erf(x: f32) -> f32 {
     crate::decoder::activation::erf(x)
 }
 pub fn gelu_in_place(x: &mut [f32]) {
+    #[cfg(all(target_arch = "wasm32", feature = "encoder-threads"))]
+    if !x.is_empty() && x.len().is_multiple_of(4) {
+        super::parallel::activation(x, true);
+        return;
+    }
     #[cfg(any(target_arch = "aarch64", target_arch = "wasm32"))]
     {
         unsafe { super::simd::activation(x, true) };
@@ -42,6 +47,11 @@ pub fn gelu_in_place(x: &mut [f32]) {
     }
 }
 pub fn erf_in_place(x: &mut [f32]) {
+    #[cfg(all(target_arch = "wasm32", feature = "encoder-threads"))]
+    if !x.is_empty() && x.len().is_multiple_of(4) {
+        super::parallel::activation(x, false);
+        return;
+    }
     #[cfg(any(target_arch = "aarch64", target_arch = "wasm32"))]
     {
         unsafe { super::simd::activation(x, false) };
@@ -65,6 +75,23 @@ pub fn layer_norm(
     assert_eq!(bias.len(), channels);
     assert!(x.len().is_multiple_of(channels));
     let mut out = vec![0.0; x.len()];
+    #[cfg(all(target_arch = "wasm32", feature = "encoder-threads"))]
+    if !x.is_empty() {
+        super::parallel::norm(x, channels, scale, bias, epsilon, &mut out);
+        return out;
+    }
+    norm_into(x, channels, scale, bias, epsilon, &mut out);
+    out
+}
+
+pub(super) fn norm_into(
+    x: &[f32],
+    channels: usize,
+    scale: &[f32],
+    bias: &[f32],
+    epsilon: f32,
+    out: &mut [f32],
+) {
     for (row, dst) in x.chunks_exact(channels).zip(out.chunks_exact_mut(channels)) {
         let (mut mean, mut m2) = (0.0, 0.0);
         for (i, &v) in row.iter().enumerate() {
@@ -77,7 +104,6 @@ pub fn layer_norm(
             dst[j] = fma((row[j] - mean) / std, scale[j], bias[j]);
         }
     }
-    out
 }
 
 /// B is row-major KxN. Products accumulate in ascending K, then bias is added.
@@ -108,7 +134,32 @@ fn product(
     let mut out = vec![0.0; elements(&[m, n])];
     #[cfg(any(target_arch = "wasm32", target_arch = "aarch64"))]
     if m.is_multiple_of(4) && n.is_multiple_of(16) {
+        #[cfg(all(target_arch = "wasm32", feature = "encoder-threads"))]
+        if m > 0 && n > 0 {
+            super::parallel::product(
+                a,
+                b,
+                &mut out,
+                m,
+                k,
+                n,
+                if bias_start { bias } else { None },
+            );
+        } else {
+            unsafe {
+                super::simd::product(
+                    a,
+                    b,
+                    &mut out,
+                    m,
+                    k,
+                    n,
+                    if bias_start { bias } else { None },
+                );
+            }
+        }
         // SAFETY: lengths and tile divisibility are checked above.
+        #[cfg(not(all(target_arch = "wasm32", feature = "encoder-threads")))]
         unsafe {
             super::simd::product(
                 a,
@@ -264,7 +315,30 @@ pub fn depthwise(
     assert_eq!(bias.len(), c);
     #[cfg(any(target_arch = "aarch64", target_arch = "wasm32"))]
     if c.is_multiple_of(4) {
-        return unsafe { super::simd::depthwise(x, h, w, c, weights, bias, kernel, pad) };
+        let pw = w + padding;
+        let mut padded = vec![0.0; (h + padding) * pw * c];
+        for y in 0..h {
+            padded[((y + pad) * pw + pad) * c..((y + pad) * pw + pad + w) * c]
+                .copy_from_slice(&x[y * w * c..(y + 1) * w * c]);
+        }
+        let mut packed = vec![0.0; weights.len()];
+        for ch in 0..c {
+            for k in 0..kernel * kernel {
+                packed[k * c + ch] = weights[ch * kernel * kernel + k];
+            }
+        }
+        let mut out = vec![0.0; x.len()];
+        #[cfg(all(target_arch = "wasm32", feature = "encoder-threads"))]
+        if h > 0 && w > 0 && c > 0 {
+            super::parallel::depthwise(&padded, &packed, bias, &mut out, h, w, c, kernel, pad);
+            return out;
+        }
+        // SAFETY: shapes and channel divisibility checked above; preparation
+        // contains all padding and every output pixel is owned by this call.
+        unsafe {
+            super::simd::depthwise_into(&padded, w, c, &packed, bias, kernel, pad, 0, &mut out);
+        }
+        return out;
     }
     let mut out = vec![0.0; x.len()];
     for y in 0..h {

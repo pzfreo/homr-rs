@@ -1438,3 +1438,49 @@ on cx/encoder; nothing was pushed or posted, and neither Partsong nor homr was
 edited. Unattended decisions were the fixed graph executor, the rigorously
 bounded strict fast path, four disjoint corpus workers, and deferring a browser
 threading runtime until its own validation round.
+
+## Exact encoder threads and GPU prototype (cx/threads)
+
+### Shared-memory worker implementation and first verified stage
+
+Selected a host-managed synchronous worker pool, without std::thread or
+wasm-bindgen. The coordinator owns graph execution, allocation and convolution
+lowering. Kernels publish a stack-resident descriptor, dispatch disjoint output
+ranges, compute rank zero, then join all workers before the descriptor/buffers
+can be released. GEMM splits whole four-row tiles; depthwise splits spatial
+pixels; activations split whole SIMD vectors; LayerNorm splits complete rows.
+No contraction K or Welford channel reduction is split or reordered.
+
+tools/encoder_pool.mjs and encoder_worker.mjs work in Node and browser Workers.
+Workers share one memory/model, with private stacks, per-instance stack globals
+and initialized TLS blocks. They enter only allocation-free encoder_work.
+Atomics publish jobs and join; Atomics.wait/notify sleep instead of spinning.
+The coordinator must be a Web Worker in the browser because Window forbids
+blocking Atomics.wait. A worker failure poisons the pool; terminate workers
+before discarding memory rather than reusing an abandoned Rust stack job.
+
+The stock precompiled Rust std cannot link --shared-memory (confirmed by a
+linker rejection). bench/build_encoder_threads.py rebuilds std,panic_abort
+with atomics/bulk-memory and imports shared memory, exporting stack/TLS setup.
+The installed compiler is nightly 1.101.0 (3e92e1a2d, 2026-11-01). Existing
+strict/fused nonshared builds remain available with encoder-threads disabled.
+The shared build uses the existing encoder/decoder C ABI plus encoder_work.
+No model weights, inputs, output data or fixture hashes are embedded.
+
+All isolated Conv, depthwise Conv, LayerNorm, MatMul/Gemm, Div, Erf and Gelu
+checks pass with **zero differing bits**, in both shared WASM variants at
+**1, 2, 4 and 6 threads**. The strict four-thread follow-3 sample has an exact
+context and **121 matching decoder steps**, with **89 joined jobs per staff**.
+Native release tests and all-target/all-feature Clippy -D warnings pass after
+the allocation-free kernel refactor. Corpus checks are the next stage.
+
+The first exploratory scaling harness put all cases in one Node process, so
+its process-wide instruction counter could include idle engines' GC/JIT work.
+For example fused-one-thread samples were 22.086G, 20.970G and 22.323G despite
+other thread counts clustering near 20.98G. It is retained in scratch as
+threads_scaling_shared_process.json, not used as the final comparison. The
+final harness isolates each engine in its own persistent process and samples
+that process, including all its kernel workers. Cases still run sequentially,
+with one warm-up and three interleaved measured rounds, preserving every raw
+sample and the predeclared rotation/reversal order. This corrects attribution,
+not arithmetic or the chosen workload. The machine remains shared and loaded.
