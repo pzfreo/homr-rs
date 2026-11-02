@@ -1910,3 +1910,13 @@ run all 627 staffs with four actual host ranks per build. Existing per-rank
 host counts measure calls to encoder_work, **not chunks**: a rank may correctly
 find no remaining work on a cheap job. Actual work shares are measured only
 in the separate diagnostic experiment above.
+
+### Fused dynamic corpus verified
+
+The frozen production fused module completes **627/627 bit-identical contexts**
+and its Rust decoder completes **38,076 native steps**, with zero differing
+heads, steps or lengths. XML replay gives **75 byte-identical files and 13
+matching native failures**. Production exports contain no encoder_bench_ entry
+points, and imports remain only env.memory and encoder_threads.dispatch.
+The strict production corpus is now running. Host pool/worker sources remain
+byte-unchanged from main; no Partsong or homr edits, push or posting occurred.
