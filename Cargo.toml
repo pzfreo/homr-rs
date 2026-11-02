@@ -24,6 +24,10 @@ path = "bench/check_encoder.rs"
 name = "encoder_corpus"
 path = "bench/encoder_corpus.rs"
 
+[[bin]]
+name = "encoder_bench"
+path = "bench/encoder_bench.rs"
+
 [dependencies]
 libm = "0.2"
 serde_json = { version = "1", features = ["float_roundtrip"] }

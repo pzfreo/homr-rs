@@ -1217,3 +1217,13 @@ For the complete strict corpus use two independent, single-threaded Node
 workers over disjoint page lists (modest CPU parallelism), both executing
 normal, non-profile final artifacts and their own Rust decoder in the same
 linear memory. Fused and native runs are also complete/in progress as noted.
+
+Strict engineering update: the range fast path batches halfway checks over a
+2x8 tile and uses an inline vector round-to-odd repair, avoiding scalar calls
+inside GEMM. Its full follow-3 context is bit-identical, at approximately
+273.7G retired instructions including profiling, versus 440G for the earlier
+range-checked scalar repair. The final normal strict artifact is frozen at
+this implementation. The complete strict corpus will use four balanced,
+disjoint single-threaded Node shards, at most four CPU workers total (the
+fourth strict worker starts after the fused corpus exits). Previous slow
+prefix runs are not merged into the final corpus or final speed table.

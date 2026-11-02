@@ -375,7 +375,7 @@ unsafe fn product_strict(
             .all(|v| *v == 0.0 || (v.abs() >= 2.0f32.powi(-40) && v.abs() <= 2.0f32.powi(40)))
     };
     if k <= 65536 && bounded(a) && bounded(b) && bias.is_none_or(bounded) {
-        product_strict_inner::<true>(a, b, out, m, k, n, bias);
+        product_normal_batched(a, b, out, m, k, n, bias);
     } else {
         product_strict_inner::<false>(a, b, out, m, k, n, bias);
     }
@@ -388,26 +388,10 @@ fn round_normal(sum: v128, a: v128, b: v128, c: v128) -> v128 {
         i64x2_splat(0x10000000),
     );
     if v128_any_true(halfway) {
-        fma_slow(a, b, c)
+        rounded_fma(sum, a, b, c)
     } else {
         f64x2_promote_low_f32x4(f32x4_demote_f64x2_zero(sum))
     }
-}
-#[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
-#[cold]
-#[inline(never)]
-fn fma_slow(a: v128, b: v128, c: v128) -> v128 {
-    let lo = libm::fmaf(
-        f64x2_extract_lane::<0>(a) as f32,
-        f64x2_extract_lane::<0>(b) as f32,
-        f64x2_extract_lane::<0>(c) as f32,
-    );
-    let hi = libm::fmaf(
-        f64x2_extract_lane::<1>(a) as f32,
-        f64x2_extract_lane::<1>(b) as f32,
-        f64x2_extract_lane::<1>(c) as f32,
-    );
-    f64x2(lo as f64, hi as f64)
 }
 #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
 unsafe fn product_strict_inner<const NORMAL: bool>(
@@ -450,6 +434,101 @@ unsafe fn product_strict_inner<const NORMAL: bool>(
                     f32x4_demote_f64x2_zero(hi),
                 ),
             );
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
+unsafe fn product_normal_batched(
+    a: &[f32],
+    b: &[f32],
+    out: &mut [f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    bias: Option<&[f32]>,
+) {
+    for row in (0..m).step_by(2) {
+        for col in (0..n).step_by(8) {
+            let mut acc = [[f64x2_splat(0.0); 2]; 4];
+            if let Some(bias) = bias {
+                for r in 0..2 {
+                    for j in 0..2 {
+                        let v = v128_load(bias.as_ptr().add(col + j * 4).cast());
+                        acc[r * 2 + j] = [
+                            f64x2_promote_low_f32x4(v),
+                            f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(v, v)),
+                        ];
+                    }
+                }
+            }
+            for p in 0..k {
+                let scalar = [
+                    f64x2_splat(*a.get_unchecked(row * k + p) as f64),
+                    f64x2_splat(*a.get_unchecked((row + 1) * k + p) as f64),
+                ];
+                let mut weights = [[f64x2_splat(0.0); 2]; 2];
+                for j in 0..2 {
+                    let v = v128_load(b.as_ptr().add(p * n + col + j * 4).cast());
+                    weights[j] = [
+                        f64x2_promote_low_f32x4(v),
+                        f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(v, v)),
+                    ];
+                }
+                let mut sums = [[f64x2_splat(0.0); 2]; 4];
+                let mut half = i64x2_splat(0);
+                for r in 0..2 {
+                    for j in 0..2 {
+                        for lane in 0..2 {
+                            let v = f64x2_add(
+                                f64x2_mul(scalar[r], weights[j][lane]),
+                                acc[r * 2 + j][lane],
+                            );
+                            sums[r * 2 + j][lane] = v;
+                            half = v128_or(
+                                half,
+                                i64x2_eq(
+                                    v128_and(v, i64x2_splat(0x1fffffff)),
+                                    i64x2_splat(0x10000000),
+                                ),
+                            );
+                        }
+                    }
+                }
+                if v128_any_true(half) {
+                    for r in 0..2 {
+                        for j in 0..2 {
+                            for lane in 0..2 {
+                                acc[r * 2 + j][lane] = rounded_fma(
+                                    sums[r * 2 + j][lane],
+                                    scalar[r],
+                                    weights[j][lane],
+                                    acc[r * 2 + j][lane],
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    for j in 0..4 {
+                        for lane in 0..2 {
+                            acc[j][lane] =
+                                f64x2_promote_low_f32x4(f32x4_demote_f64x2_zero(sums[j][lane]));
+                        }
+                    }
+                }
+            }
+            for r in 0..2 {
+                for j in 0..2 {
+                    let v = acc[r * 2 + j];
+                    v128_store(
+                        out.as_mut_ptr().add((row + r) * n + col + j * 4).cast(),
+                        i32x4_shuffle::<0, 1, 4, 5>(
+                            f32x4_demote_f64x2_zero(v[0]),
+                            f32x4_demote_f64x2_zero(v[1]),
+                        ),
+                    );
+                }
+            }
         }
     }
 }
