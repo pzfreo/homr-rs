@@ -1595,3 +1595,64 @@ native decoder steps**, zero differing heads/steps/lengths, and XML **75
 byte-identical files + 13 matching native failures**. Every staff records
 **[89,89,89,89]** completed jobs across coordinator and workers: 55,803 joined
 jobs, 223,212 rank executions. The strict four-thread corpus is now running.
+
+### Phone recommendation and explicit estimate assumptions
+
+Rank current evidence by exactness first: (1) the shared CPU encoder, with
+the passing fused artifact on Android and strict on iPhone; (2) a future GPU
+encoder only after its arithmetic gate, every operator and the full corpus
+pass on the actual browser/device; (3) the ordinary nonshared strict/fused
+artifact where shared memory or the worker pool cannot be used. The pool
+improves elapsed CPU latency without materially increasing total work. It
+does not remove strict fused-emulation's roughly 267G instruction budget.
+
+No physical iPhone/Android CPU run or exact GPU timing was available. For a
+concrete planning scenario, assume a phone takes **2–4 times this loaded
+Mac's measured elapsed latency at the same worker count**. This assumption is
+not a measured hardware ratio: core placement, thermal limits, Safari versus
+V8 code generation and background load can move results outside the ranges.
+In particular the Mac's raw samples vary substantially and are not a device
+performance calibration. Do not use these estimates as a shipping promise.
+
+| exact CPU option | 6-core iPhone, strict (scenario) | 4-core Android, fused (scenario) | remaining work |
+|---|---:|---:|---|
+| shared pool, 6 iPhone / 4 Android threads | about 8–16 s/staff | about 1.1–2.3 s/staff | integrate host assets, validate full corpus and worker lifecycle on devices, choose thermal/UI worker cap |
+| nonshared fallback, 1 thread | about 76–152 s/staff | about 3.8–7.5 s/staff | device validation; no worker/isolation requirement |
+
+These fallback estimates use the measured one-thread shared path as an
+approximation; normal nonshared artifacts are regression-checked but were
+not separately wall-time benchmarked. The estimates intentionally expose that
+uncertainty rather than substituting the earlier faster exploratory run.
+
+The exact GPU whole-encoder phone time is **not estimable from this run**:
+Chrome never started, and neither this fc1 kernel nor a complete exact GPU
+encoder ran. The supplied Android **0.35 s/staff** is the current nonexact
+ORT-web GPU reference, not a measured time or promised target for our shader.
+Matching that order of latency is the reason to pursue the GPU experiment.
+Remaining work is to run the prepared Metal probe, then implement/verify
+depthwise and downsample schedules, ordered Welford LayerNorm with native
+division/sqrt rounding, MLAS erf/GELU, pointwise operations and device-resident
+buffers. Validate all 627 contexts/tokens on Chrome Metal and Safari/WebKit,
+plus Android backends, before selecting it as an exact path. A small fma
+self-test alone cannot establish whole-model exactness or portable WGSL
+floating-point guarantees. No full GPU encoder is implemented in this round.
+
+### Regression and build verification
+
+Both ordinary nonshared artifacts and both shared artifacts pass the combined
+encoder_decode regression: a separate bit-exact follow-3 context and **121
+matching native token steps** each. Shared samples use the one-rank dispatch
+path, while full corpus uses four ranks and all 1/2/4/6 operator probes pass.
+The existing C ABI signatures are retained; the shared build only adds its
+worker entry/imports and setup globals.
+
+Required checks pass: cargo fmt --check; cargo clippy --all-targets
+--all-features -- -D warnings; cargo test --release (**11 library tests**, all
+binary/doc targets); strict/fused shared WASM Clippy -D warnings using rebuilt
+std; strict/fused nonshared WASI tests (**10 pass, 1 should-panic test ignored
+by the aborting WASI runner**, with that test passing natively). Both normal
+WASM builds, both shared WASM builds and both shared diagnostic probe builds
+are rebuilt successfully. The two shared normal modules reproduce the frozen
+corpus modules **byte-for-byte** after rebuilding, establishing artifact
+provenance; this is not a substitute for output comparisons or a hash test.
+All actual outputs are still compared element by element against native.
