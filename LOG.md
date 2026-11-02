@@ -663,3 +663,71 @@ the initial one-thread four-page sample separately; do not merge its instruction
 counts into four-thread results. Interrupt the one-thread process through its
 own tool session before continuing, keeping CPU parallelism modest. Native
 reference options remain homr's defaults. No answers or permission requested.
+
+### Arithmetic evidence and scope (measured samples, not corpus totals)
+
+Both supplied models are float32; neither has int8/quantization, Softmax,
+attention, or ReduceMean nodes. The encoder is a ConvNeXt-style convolution/MLP
+encoder, not another attention transformer. Inferred static shapes resolve all
+Conv/MatMul sizes:
+
+| model | ops | learned parameters | all initializer bytes | dense MACs/input | dense FLOPs/input |
+|---|---|---:|---:|---:|---:|
+| segnet | Conv 31, Relu 27, Add 8, Resize 5, MaxPool 1, Sub/Div 1 each, Shape 5, Concat 9 | 14,323,142 | 57,292,672 | 8,508,211,200/tile | 17,016,422,400/tile |
+| encoder | Conv 18, MatMul 31, LayerNormalization 18, Erf/Div 15 each, Mul 45, Add 62, Transpose 37, Reshape 1 | 12,542,048 | 52,789,668 | 24,337,612,800/staff | 48,675,225,600/staff |
+
+Encoder totals include 1.437G convolution MACs and 22.901G matrix MACs. Its
+655,360-element positional buffer and scalar/shape constants are excluded from
+learned parameters. Segnet excludes normalization and shape constants. FLOPs
+are mathematical direct dense counts (2/MAC), not executed instructions or an
+assumption that native convolution uses that exact algorithm. Nonlinear ops,
+normalization and memory movement are additional work.
+
+Identical-native-input, isolated-operator probes on angelus_0 (segnet batch 8;
+encoder staff 0) give max absolute errors:
+
+| operator | segnet | encoder |
+|---|---:|---:|
+| Sub, Div | 0, 0 | Div 0 |
+| Conv | 3.8146973e-6 | 2.3841858e-6 |
+| depthwise Conv | absent | 3.7252903e-8 |
+| MatMul | absent | 1.4305115e-6 |
+| LayerNormalization | absent | 4.7916546e-7 |
+| Erf | absent | 5.9604645e-8 |
+| nearest Resize | 0 | absent |
+
+These probes expose intermediate values and may inhibit whole-graph fusions;
+they isolate arithmetic, not an additive attribution of final error. They do
+not justify claiming every node of an operator family differs equally.
+
+The pinned [ORT 1.30 SIMD helper](https://github.com/microsoft/onnxruntime/blob/v1.30.0/onnxruntime/core/mlas/lib/mlasi.h)
+uses wasm_f32x4_add(wasm_f32x4_mul(...)) versus ARM64 vfmaq_f32. The
+[WASM SGEMM kernel](https://github.com/microsoft/onnxruntime/blob/v1.30.0/onnxruntime/core/mlas/lib/wasm_simd/SgemmKernelWasmSimd.cpp)
+uses this helper. Erf polynomial evaluation uses it too. The CPU layer norm
+fallback uses ordered Welford updates; contraction of M2 += delta*delta2 and
+output scale/bias also matters. WebGPU has different shader reductions/kernel
+schedules, so no bit parity is inferred from its float32 storage.
+
+The supplied machine reports NEON=true, SME=true, SME2=true, SVE=false through
+Rust feature detection (scratch diagnostic). ORT's
+[1.31 platform dispatch](https://github.com/microsoft/onnxruntime/blob/v1.31.0/onnxruntime/core/mlas/lib/platform.cpp)
+selects KleidiAI SGEMM/convolution overrides when SME is available. Therefore
+“copy NEON FMA” alone is not a sufficient plan: record the selected kernel,
+packing/blocking and accumulation order, including SME, before porting. The
+native wheel reports commit 402979a. The reference is this actual default
+native path, not a newly selected portable CPU algorithm.
+
+Fresh default-native encoder runs on all four angelus_0 staffs match the
+reused contexts bit for bit, in three runs each. Native 1.30.0 also matches
+those four contexts bit for bit. Native 1.31 one-thread samples match too.
+Thus this sample isolates backend arithmetic rather than merely the version
+number or native thread count. WASM 1.30 encoder with optimizations disabled
+still differs (max 7.6293945e-6, mean 4.2591845e-7 over the four staffs), versus
+all optimizations (max 6.1988831e-6, mean 4.2024840e-7). No matching stock setting
+has been found. npm rejects onnxruntime-web@1.31.0 with ETARGET; no published
+1.31 package was available to test. A Node import of the browser JSEP bundle
+failed loading its WASM via fetch; that attempt produced no comparison data.
+
+The four all-optimized one-thread WASM encoder sample contexts cause zero
+changed tokens/steps/lengths in the Rust decoder (123 steps). This is only a
+sample; the full greedy corpus comparison is still required.

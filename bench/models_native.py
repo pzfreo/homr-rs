@@ -1,6 +1,7 @@
 """Native encoder verification and retired-instruction samples.
 
 models_native.py MODEL NATIVE_FIXTURES OUTPUT_JSON PAGE/STAFF...
+For segnet, pass PAGE/seg-N instead of PAGE/STAFF.
 NATIVE_THREADS optionally sets intra/inter op thread counts for an experiment;
 unset preserves homr defaults. Warm once, report three runs' median and check
 every result against the reused native context. No wall-clock measurements.
@@ -26,15 +27,23 @@ session = ort.InferenceSession(model, sess_options=options)
 rows = []
 for staff in staffs:
     d = Path(native) / staff
-    shape = json.loads((d / 'input.json').read_text())['shape']
-    x = np.fromfile(d / 'input.f32', dtype='<f4').reshape(shape)
-    ref = np.fromfile(d / 'context.bin', dtype='<f4')
+    segmentation = d.name.startswith('seg-')
+    if segmentation:
+        index = int(d.name.split('-')[1])
+        shape = json.loads((d.parent / 'models.json').read_text())['batches'][index]['shape']
+        x = np.fromfile(str(d) + '.input.u8', dtype=np.uint8).astype(np.float32).reshape(shape)
+        ref = np.fromfile(str(d) + '.native.u8', dtype=np.uint8)
+    else:
+        shape = json.loads((d / 'input.json').read_text())['shape']
+        x = np.fromfile(d / 'input.f32', dtype='<f4').reshape(shape)
+        ref = np.fromfile(d / 'context.bin', dtype='<f4')
     session.run(None, {session.get_inputs()[0].name: x})
     counts = []
     for _ in range(3):
         before = instructions()
-        result = session.run(None, {session.get_inputs()[0].name: x})[0].reshape(-1)
+        result = session.run(None, {session.get_inputs()[0].name: x})[0]
         counts.append(instructions() - before)
+        result = result.argmax(axis=1).astype(np.uint8).reshape(-1) if segmentation else result.reshape(-1)
         error = np.abs(result.astype(np.float64) - ref)
         rows.append({'staff': staff, 'instructions': counts[-1], 'max_abs': float(error.max()),
                      'mean_abs': float(error.mean()), 'different': int(np.count_nonzero(error))})
