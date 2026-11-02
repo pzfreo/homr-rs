@@ -1,5 +1,9 @@
 # homr-rs
 
+> **Experimental.** This port is new: it is not yet supported, and it has not
+> yet been tested in real use. It matches homr on the test pages described
+> below, but expect rough edges, and don't rely on it yet.
+
 A Rust port of [homr](https://github.com/liebharc/homr), Christian Liebhardt's
 optical music recognition, aimed at running in the browser as WebAssembly
 without Python. homr is AGPL-3.0, and so is this port (see `LICENSE`).
