@@ -30,7 +30,13 @@ fn main() {
         wait();
         return;
     }
+    #[cfg(feature = "decoder-profile")]
     assert!(["decode", "profile"].contains(&args[1].as_str()));
+    #[cfg(not(feature = "decoder-profile"))]
+    assert_eq!(
+        args[1], "decode",
+        "profile mode requires --features decoder-profile"
+    );
     #[cfg(feature = "decoder-profile")]
     let overhead = homr_rs::decoder::profile::calibrate();
     #[cfg(feature = "decoder-profile")]

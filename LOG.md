@@ -616,3 +616,28 @@ Rust changes. The comparison is not a claim about every phone's wall time.
 No models, corpora, benchmark dumps or survey output were committed. Profile
 and benchmark harnesses live under bench; the original pipeline checks and
 all existing reference expectations remain intact.
+
+### Final verification and rejected experiment details
+
+The rejected unfused experiment was also replayed to MusicXML on both native
+and WASM results: 21 pages identical, 13 matching failures, **54 different**.
+This further rules out replacing fused arithmetic merely because most early
+steps look close. All 88 pages and all 627 staffs were visited in both rejected
+runs; their different step totals resulted from greedy divergence, not skipped
+data. The retained implementations still have zero differences.
+
+For scale, the actual gated 465 decoder has 42.153M steady-step integer MACs:
+8 blocks x 5.243M, plus 0.210M in the heads. Its gated attention outputs have
+1,024 columns and the GEGLU input projection has 4,096 columns. Initial context
+projections add the 174.6M amortized MACs/step on this benchmark noted above.
+The profile therefore explains the measured total without attributing it to
+unmeasured allocation costs.
+
+Final required checks pass: cargo fmt --check, cargo clippy --all-targets --
+-D warnings, cargo test --release (seven tests), and the full release build
+for wasm32-unknown-unknown with +simd128. Additional Clippy checks passed with
+all features, with strict WASM, and with optional relaxed SIMD; the same seven
+synthetic tests pass in both WASI SIMD configurations. All retained float
+versions independently retained the full corpus and the 75 + 13 XML result.
+No lint expectation was weakened, no pipeline fix was reverted, and nothing
+was pushed or posted.
