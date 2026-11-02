@@ -190,3 +190,155 @@ These let an app make the changes it used to make by patching homr's Python:
   use WebGPU and gives onnxruntime-web's results.
 - Python bindings (PyO3) with a homr-shaped API: homr's results, faster, for
   existing Python users.
+
+## Native transformer decoder (2026-11-02)
+
+### Implementation and decisions
+
+- Added `decoder::{Decoder, Session, Step}`. `from_onnx` reads the downloaded
+  upstream 465 decoder bytes at runtime. It supports this graph's architecture,
+  with explicit vocabulary/matrix dimension checks, rather than pretending to
+  be a general ONNX runtime. A checked protobuf reader handles initializers and
+  node wiring; external tensor files and other architectures are rejected.
+  No Rust dependencies were added; the model is never embedded or converted.
+- Eight blocks implement quantized embeddings, self-attention, cross-attention,
+  gated attention outputs, GEGLU feed-forward, norms, six logits, and homr's
+  16-by-80 attention centroid. `Session::step` exposes logits for diagnosis;
+  `generate` greedily feeds its own choices, includes EOS for checking, and
+  stops at rhythm EOS or 608 steps. `Step::symbol` bridges to the existing
+  vocabulary and coordinate/MusicXML pipeline.
+- The reference is native arm64 ONNX Runtime 1.31.0, with default session
+  options, running homr's real `ScoreDecoder.generate`. This is the environment
+  that reproduces the existing `dec_all` recordings. Pin OpenCV 4.11.0.86 too.
+  Recorded environment: numpy 2.5.4, Pillow 13.0.0. Other CPU architectures have
+  a portable integer path but have not been checked against their local ORT
+  default kernels; the executor retains the verified arm64 numerical profile.
+- A misleading preliminary reference used the saved **Pyodide** staff canvases.
+  Its 627 staffs / 38,637 steps all matched Rust's six greedy choices, but those
+  canvases do not reproduce native homr's encoder inputs. That preliminary
+  dataset is not the end-to-end acceptance reference. An initial diagnosis
+  blaming ORT 1.31.1 was wrong: on the same first-page canvases, 1.31.0 and
+  1.31.1 produced identical encoder outputs and transformer results. The final
+  recorder runs full native pages and does not substitute saved canvases.
+- Integer kernels: uint8 activation times int8 weights, exact i32 accumulation.
+  Standard DynamicQuantizeLinear includes zero in min/max, divides by the
+  float32 scale, rounds ties to even **before** adding the integer zero point,
+  and saturates. Context projections and the six shared-quantization heads use
+  those semantics. The fused DynamicQuantizeMatMul kernels in this CPU build
+  use KleidiAI: signed asymmetric quantization, multiplier `255/(max-min)`,
+  stored scale `1/multiplier`, an error-selected signed zero point, and
+  ties-away-from-zero for activation quantization. Applying ordinary DQL to
+  every matrix was wrong; early experiments diverged at app-2 staff 0 step 7.
+  The two quantizers are tested separately. Integer scaling multiplies the
+  two scales first, then scales the accumulated integer, then adds bias.
+- Float details matter too: native Welford layer normalization, MLAS sigmoid,
+  Erf/GELU and softmax polynomials, FMA and reduction order. The centroid
+  averages layers before heads and uses Eigen's two four-lane accumulators for
+  sums. WASM widens multiply/add to float64 and narrows once to approximate
+  float32 FMA without a slow software `fmaf`; its corpus comparison measures
+  the resulting error rather than assuming bit identity.
+- Full context K/V are projected once per staff. The first context position is
+  also projected with its **own** dynamic quantization range, and those 512 K/V
+  values are appended at every later step, reproducing homr's context quirk.
+  Preallocated position-major caches never copy previous positions. Attention
+  probabilities are shared with the centroid calculation (the exported graph
+  recomputes the same scores with Einsum). There is no per-token JS cache
+  transfer. WASM SIMD128 and native NEON/dotprod process four weight columns
+  together; the portable fallback retains exact integer arithmetic.
+- `homr_rs.wasm` exports a small allocation/model/decode/free C ABI, without
+  wasm-bindgen. Results are 32 bytes per step. The SIMD128 decoder-only cdylib
+  is about 94 KiB; the 47 MB weights are supplied separately. These are library
+  and benchmark interfaces; Partsong and upstream homr were not edited.
+- `tools/record_decoder.py` copies images to scratch, runs homr natively,
+  intercepts the original greedy loop without changing it, and records encoder
+  outputs, all logits, tokens, attention and native symbols. It resumes whole
+  completed pages. `check_decoder` independently generates Rust tokens and
+  writes its own `decoder.json` for `check_xml`; any differing step reports
+  page/staff/step/head and the winning margins from both implementations.
+- Required formatting/Clippy checks failed on the pre-existing source. A
+  separate commit formats it and fixes style lints without changing numerical
+  operations or NaN behavior. OpenCV's intentionally rounded sine lookup table
+  retains its original values (a narrowly scoped `approx_constant` allowance).
+  The original MusicXML replay still checks 75 identical + 13 failing alike.
+
+Kernel sources checked: [ORT dynamic quantized matmul](https://github.com/microsoft/onnxruntime/blob/main/onnxruntime/contrib_ops/cpu/quantization/dynamic_quantize_matmul.cc),
+[MLAS quantization](https://github.com/microsoft/onnxruntime/blob/main/onnxruntime/core/mlas/lib/quantize.cpp),
+[KleidiAI LHS packing](https://github.com/ARM-software/kleidiai/blob/main/kai/ukernels/matmul/pack/kai_lhs_quant_pack_qai8dxp_f32.c),
+[MLAS float kernels](https://github.com/microsoft/onnxruntime/tree/main/onnxruntime/core/mlas/lib),
+[ORT layer normalization](https://github.com/microsoft/onnxruntime/blob/main/onnxruntime/core/providers/cpu/nn/layer_norm_impl.cc),
+and [ORT reductions](https://github.com/microsoft/onnxruntime/blob/main/onnxruntime/core/providers/cpu/reduction/reduction_ops.h).
+MLAS's MIT notice is retained in `src/decoder/NOTICE.md`.
+
+### Retired instructions
+
+Benchmark: all four native-reference staffs of angelus_0, **123 steps including
+EOS**, with each engine running the same contexts and fixed step counts.
+Includes first-step context projections, all heads and coordinates. ORT's
+fixed-length loop feeds chord after EOS, as the supplied ortbench does.
+ONNX Runtime Web is **1.30.0**, SIMD, single thread; native ORT **1.31.0** also
+uses one thread for an equal-thread benchmark. Reference recording still uses
+default options. An initial default-thread benchmark counted substantial ORT
+thread-pool spinning, so those numbers are not used here.
+
+Three paired runs; table uses the median of decode minus that engine's
+load-only instructions. This includes JIT/GC required for decoding. No wall-time
+measurements are used. `/usr/bin/time -l` was attempted, but the sandbox denies
+its `sysctl kern.clockrate` call before it can print instruction counts. The
+harness's `--libproc` fallback reads the same macOS RUSAGE_INFO_V4 cumulative
+retired-instruction counter from each live child at `BENCH_READY`, then lets it
+exit. It does not estimate instructions from elapsed time.
+
+| engine | net instructions (4 staffs) | per staff | per step |
+|---|---:|---:|---:|
+| Rust native | 8.900 G | 2.225 G | 72.35 M |
+| ORT native, one thread | 5.699 G | 1.425 G | 46.33 M |
+| Rust WASM SIMD128, Node | 40.994 G | 10.249 G | 333.29 M |
+| ORT-web WASM SIMD, Node | 58.989 G | 14.747 G | 479.58 M |
+
+Rust WASM uses **1.44x fewer** instructions on this page. Rust native uses
+**1.56x more** than ORT native. This is an improvement for the browser, not the
+13x int8-kernel speedup suggested by the original native-vs-web measurements.
+The Rust executor still has substantial room for float attention and batched
+context-projection optimization; no faster result is claimed.
+
+Reproduce (point Python at the pinned environment, and ORT_MODULE at the
+existing 1.30.0 package):
+
+```sh
+cargo build --release --bin bench_decoder
+RUSTFLAGS='-C target-feature=+simd128' cargo build --release --target wasm32-unknown-unknown
+python bench/measure_decoder.py --libproc --reps 3 \
+  --python <reference-python> --ort-module <ort.node.min.mjs> \
+  <decoder.onnx> <reference-dir> angelus_0/0 angelus_0/1 angelus_0/2 angelus_0/3
+```
+
+### Corpus acceptance results
+
+Full native page recording reproduces the existing `dec_all` transformer
+recordings **exactly on all 88 pages**, including coordinates and the 13 error
+flags. All 627 staffs are present. The preliminary Pyodide-canvas recordings
+mentioned above are not used for these figures.
+
+- **Native Rust vs default native ORT: 627 staffs, 38,076 steps, all six tokens
+  identical on every step** (228,456 token choices, including EOS steps).
+  Zero differing steps, zero generation-length differences, and no remaining
+  differing-step logit margins to explain. Checks run each implementation's
+  actual greedy trajectory, without teacher forcing.
+- Native attention: **max absolute error 0.0003662109375 pixels**, mean absolute
+  error **0.0000035342254462343814 pixels**, across both coordinates of every
+  compared step, including EOS and staffs that reach the 608-step cap.
+- `check_xml` with `decoder.json` generated from Rust's own tokens and attention:
+  **75 pages byte-identical, 13 failing alike in homr and Rust, zero different**.
+  Coordinates are included in MusicXML's image-position comments; these were
+  not stripped or given a tolerance.
+- The separate ORT-web 1.30.0 vs default native ORT check on the benchmark's
+  four staffs / 123 steps has identical tokens, but attention max difference
+  **0.65496826171875 pixels**, mean **0.02671858934852166 pixels**. Rust's float
+  differences are substantially smaller than this observed cross-build spread.
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
+  `cargo test --release` pass (five focused tests for malformed protobuf and
+  integer quantization/SIMD arithmetic). The requested full release build for
+  `wasm32-unknown-unknown`, with `-C target-feature=+simd128`, passes as well.
+
+The independent WASM corpus check is still running; its completed figures will
+be added below before this work is closed.

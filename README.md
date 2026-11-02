@@ -5,32 +5,35 @@
 > below, but expect rough edges, and don't rely on it yet.
 >
 > **Written with AI.** Most of the code, tests and notes here were written by
-> Claude (Anthropic's AI model, working in Claude Code), directed by Paul
-> Fremantle. Its correctness rests on the comparisons against homr described
-> below (LOG.md has the detail), not on line-by-line human review.
+> Claude (Anthropic's AI model, working in Claude Code) and Codex (OpenAI),
+> directed by Paul Fremantle. Its correctness rests on the comparisons against
+> homr described below (LOG.md has the detail), not on line-by-line human review.
 
 A Rust port of [homr](https://github.com/liebharc/homr), Christian Liebhardt's
 optical music recognition, aimed at running in the browser as WebAssembly
 without Python. homr is AGPL-3.0, and so is this port (see `LICENSE`).
 
-**Status: everything except the models is ported**, checked against homr as
+**Status: the pipeline and transformer decoder are ported**, checked against homr as
 Partsong runs it (in Pyodide, with OpenCV 4.11): from the page image to the
 segmentation model's input, from its output to the staffs and systems, the
 staff images the transformer reads, and from the transformer's output to
-homr's MusicXML. The three ONNX models (segmentation, encoder, decoder) stay
-with onnxruntime(-web); Rust prepares their inputs and reads their outputs, so
-nothing has to block on JavaScript. See LOG.md for how each stage was checked.
+homr's MusicXML. The segmentation and encoder models stay with
+onnxruntime(-web). The decoder
+loads homr's original quantized ONNX file at runtime and runs in Rust, including
+WebAssembly with SIMD128. Its caches stay inside Rust across symbols.
+See LOG.md for numerical checks, reference versions, and measured limits.
 
 | stage | from | to | checked on the corpus |
 |---|---|---|---|
 | 2 | page image | segnet tiles; masks from its output | 88/88 music pages identical |
 | 1 | masks | staffs, systems (MultiStaffs) | 158/158 pages identical |
 | 3 | page + staff | the transformer's canvas | 627/627 staff images identical |
+| decoder | encoder output | six tokens + coordinates per step | native: 627/627 staffs, 38,076 steps, all six tokens identical; attention max error 0.000366 pixels |
 | 4 | transformer output | MusicXML | 88/88 music pages: 75 byte-identical, 13 fail in homr itself (assert) and in the port alike |
 
 ## Using it
 
-A page goes through the models three times; Rust does everything around them.
+A page goes through segmentation, the encoder, and the Rust decoder.
 
     preprocess::preprocess(&bgr)                  // autocrop, resize to 1920 wide, CLAHE
     preprocess::tile_origins / tile_input         // -> segnet input tiles
@@ -39,12 +42,47 @@ A page goes through the models three times; Rust does everything around them.
     page::analyse_page(&masks)                    // -> staffs and systems (MultiStaffs)
     staff_image::prepare_staff(&staff, &gray, ..) // -> the transformer's canvas + mapping back
     staff_image::to_model_input(&canvas)          // -> encoder input
-      [encoder, decoder loop] -> token numbers + coordinates per step
+      [encoder] -> context: 1280 * 512 float32 values
+    decoder.generate(&context)          // -> six tokens + coordinates per step
     tokens::Vocab::symbol(tokens, coordinates)    // -> homr's symbols
     score::page_xml(&multi, &gray, &mapping, ..)  // -> homr's MusicXML (with a predict callback)
 
 `score::page_xml` follows homr's own voice assembly; an app with its own layout
 (Partsong) calls `prepare_staff` per staff and the symbol/MusicXML parts itself.
+
+## Rust decoder
+
+```rust,ignore
+use homr_rs::{decoder::Decoder, tokens::Vocab};
+let decoder = Decoder::from_onnx(&downloaded_onnx_bytes)?;
+let steps = decoder.generate(&encoder_output)?;
+let vocab = Vocab::default();
+let symbols: Vec<_> = steps.iter().filter_map(|s| s.symbol(&vocab)).collect();
+```
+
+For individual steps, create `decoder.session(&encoder_output)?`, then call
+`session.step([rhythm, pitch, lift, articulation, slur])`; start with
+`[1, 0, 0, 0, 0]`. Results use ONNX output order: rhythm, pitch, lift,
+position, articulation, slur. `generate` includes the EOS step for checking;
+`Step::symbol` removes it. Generation stops at rhythm EOS (2), or 608 steps.
+
+This executor supports homr's `decoder_pytorch_model_465-597144cab54c8f6d0f6c9619df5c5312694eadd6.onnx`
+graph, not arbitrary ONNX networks. It follows the native arm64 ONNX Runtime
+1.31.0 default CPU kernels, including KleidiAI's fused quantization semantics.
+No runtime dependencies were added. Native int8 multiplication uses NEON/dotprod
+where available; WASM uses SIMD128; other native targets have a portable path.
+Cross-target validation details and limitations are in LOG.md.
+
+```sh
+RUSTFLAGS='-C target-feature=+simd128' cargo build --release --target wasm32-unknown-unknown
+```
+
+The resulting `homr_rs.wasm` also exports a minimal C ABI, documented in
+`src/decoder/wasm.rs`: allocate buffers, load the model once, run one staff,
+and free buffers/model. Each output step is six little-endian u32 tokens plus
+two float32 coordinates (32 bytes). No JS round trip is needed per symbol.
+`bench/decoder.mjs` demonstrates the host calls. Keep weights and encoder
+outputs outside the library; neither is embedded in the binary.
 
 ## Faithful to homr
 
@@ -89,6 +127,36 @@ You need a homr checkout with its model files (`homr/segmentation/*.onnx`).
     # compare (and count instructions)
     cargo run --release --bin compare cases
 
+To record and check the transformer decoder, pin the native reference versions
+that reproduce the existing corpus (ONNX Runtime 1.31.0 and OpenCV 4.11):
+
+```sh
+uv run --no-project --with numpy==2.5.4 --with onnxruntime==1.31.0 \
+  --with opencv-python-headless==4.11.0.86 --with scipy --with scikit-image \
+  --with pillow==13.0.0 --with musicxml --with typing_extensions --with scikit-learn \
+  python tools/record_decoder.py <homr-dir> <scratch-reference-dir> <page-images...>
+cargo run --release --bin check_decoder -- <decoder.onnx> <scratch-reference-dir> <scratch-rust-dir>
+cargo run --release --bin check_xml -- <pages-dir> <scratch-rust-dir> <replay-dir>
+```
+
+The recorder runs homr's actual greedy loop, saves encoder outputs, all logits,
+chosen tokens and coordinates, and resumes completed pages. It copies source
+images into its scratch output directory before running homr, so input image
+directories are untouched. The Rust checker runs its own greedy trajectory,
+reports every differing page/staff/step and both logit margins, and writes
+`decoder.json` from its own tokens and attention for `check_xml`.
+Keep the large recordings in scratch. `bench/decoder.mjs rust check ...` also
+checks the WASM build against these recordings.
+
+Decoder instruction benchmarks are in `bench/measure_decoder.py` (use `--help`).
+They compare identical staffs and fixed step counts, including first-step
+context projections, with a separate load-only baseline for each engine.
+Use `--ort-module` to point to onnxruntime-web 1.30.0's `ort.node.min.mjs`, and
+`--python` for the pinned native reference environment. Both benchmark ORT
+engines use one thread; recording preserves native default session options.
+`/usr/bin/time -l` is the default counter; `--libproc` reads the macOS retired
+instruction counter directly when sandbox restrictions prevent `time -l`.
+
 When a case differs, `tools/dump_mid.py` + `cargo run --release --bin mid cases/<page>`
 compare the intermediate steps (anchors, raw staffs).
 
@@ -110,7 +178,7 @@ Browser engine (instructions for one pass = half the difference between 3 and 1 
   models' output, and MusicXML.
 - Keep homr's stages callable separately, so an app can add its own layout
   logic between them (as Partsong does with choir systems).
-- Models stay ONNX, run by onnxruntime-web; Rust prepares their inputs and
-  reads their outputs, so no part of the pipeline has to block on JavaScript.
+- Segmentation and encoder stay ONNX and run in onnxruntime-web. The Rust
+  decoder reads the upstream decoder ONNX weights without a converted model.
 - Test pages: Partsong's test images and choral PDFs, and homr's benchmark sets
   (polish-scores, SMB) for comparing outputs.
