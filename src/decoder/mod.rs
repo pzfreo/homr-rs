@@ -84,11 +84,37 @@ impl Step {
         )
     }
 }
+#[cfg(target_arch = "wasm32")]
+type CacheFloat = f64;
+#[cfg(not(target_arch = "wasm32"))]
+type CacheFloat = f32;
+#[inline]
+fn cache_float(v: f32) -> CacheFloat {
+    #[cfg(target_arch = "wasm32")]
+    {
+        v as f64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        v
+    }
+}
+#[inline]
+fn cache_narrow(v: CacheFloat) -> f32 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        v as f32
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        v
+    }
+}
 struct Cache {
     // Channel-major K permits four independent scores in SIMD lanes. V stays
     // position-major, contiguous across output channels. Neither grows in stride.
-    k: Vec<f32>,
-    v: Vec<f32>,
+    k: Vec<CacheFloat>,
+    v: Vec<CacheFloat>,
     len: usize,
     capacity: usize,
 }
@@ -108,10 +134,10 @@ impl Cache {
         assert!(self.len + rows <= self.capacity);
         for d in 0..DIM {
             for r in 0..rows {
-                self.k[d * self.capacity + self.len + r] = k[r * DIM + d];
+                self.k[d * self.capacity + self.len + r] = cache_float(k[r * DIM + d]);
             }
         }
-        self.v.extend_from_slice(v);
+        self.v.extend(v.iter().copied().map(cache_float));
         self.len += rows;
     }
     fn attend(&self, q: &[f32], mut map: Option<&mut [f32]>) -> Vec<f32> {
@@ -145,7 +171,7 @@ impl Cache {
                 for (p, &s) in scores.iter().enumerate() {
                     for d in 0..HD {
                         let j = h * HD + d;
-                        out[j] = activation::fma(s, self.v[p * DIM + j], out[j]);
+                        out[j] = activation::fma(s, cache_narrow(self.v[p * DIM + j]), out[j]);
                     }
                 }
             }
@@ -171,7 +197,11 @@ impl Cache {
         for (p, s) in out.iter_mut().enumerate().skip(bulk) {
             let mut sum = 0.0;
             for d in 0..HD {
-                sum = activation::fma(q[h * HD + d], self.k[(h * HD + d) * self.capacity + p], sum);
+                sum = activation::fma(
+                    q[h * HD + d],
+                    cache_narrow(self.k[(h * HD + d) * self.capacity + p]),
+                    sum,
+                );
             }
             *s = sum * 0.125;
         }
@@ -179,35 +209,25 @@ impl Cache {
 }
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[inline(always)]
-unsafe fn fma4(
-    a: core::arch::wasm32::v128,
-    b: core::arch::wasm32::v128,
-    c: core::arch::wasm32::v128,
-) -> core::arch::wasm32::v128 {
+unsafe fn round2(v: core::arch::wasm32::v128) -> core::arch::wasm32::v128 {
     use core::arch::wasm32::*;
-    let lo = f64x2_add(
-        f64x2_mul(f64x2_promote_low_f32x4(a), b),
-        f64x2_promote_low_f32x4(c),
-    );
-    let hi = f64x2_add(
-        f64x2_mul(
-            f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(a, a)),
-            b,
-        ),
-        f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(c, c)),
-    );
-    i32x4_shuffle::<0, 1, 4, 5>(f32x4_demote_f64x2_zero(lo), f32x4_demote_f64x2_zero(hi))
+    f64x2_promote_low_f32x4(f32x4_demote_f64x2_zero(v))
 }
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-unsafe fn score_simd(q: &[f32], keys: &[f32], stride: usize, h: usize, out: &mut [f32]) {
+unsafe fn score_simd(q: &[f32], keys: &[CacheFloat], stride: usize, h: usize, out: &mut [f32]) {
     use core::arch::wasm32::*;
+    let queries: [v128; HD] =
+        std::array::from_fn(|d| f64x2_splat(*q.get_unchecked(h * HD + d) as f64));
     for p in (0..out.len()).step_by(4) {
-        let mut sum = f32x4_splat(0.0);
-        for d in 0..HD {
-            let v = v128_load(keys.as_ptr().add((h * HD + d) * stride + p).cast());
-            let query = f64x2_splat(*q.get_unchecked(h * HD + d) as f64);
-            sum = fma4(v, query, sum);
+        let mut lo = f64x2_splat(0.0);
+        let mut hi = f64x2_splat(0.0);
+        for (d, &query) in queries.iter().enumerate() {
+            let v = keys.as_ptr().add((h * HD + d) * stride + p);
+            lo = round2(f64x2_add(f64x2_mul(v128_load(v.cast()), query), lo));
+            hi = round2(f64x2_add(f64x2_mul(v128_load(v.add(2).cast()), query), hi));
         }
+        let sum =
+            i32x4_shuffle::<0, 1, 4, 5>(f32x4_demote_f64x2_zero(lo), f32x4_demote_f64x2_zero(hi));
         v128_store(
             out.as_mut_ptr().add(p).cast(),
             f32x4_mul(sum, f32x4_splat(0.125)),
@@ -230,17 +250,25 @@ unsafe fn score_simd(q: &[f32], keys: &[f32], stride: usize, h: usize, out: &mut
     }
 }
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-unsafe fn weighted_sum(values: &[f32], scores: &[f32], h: usize, out: &mut [f32]) {
+unsafe fn weighted_sum(values: &[CacheFloat], scores: &[f32], h: usize, out: &mut [f32]) {
     use core::arch::wasm32::*;
     for d in (0..HD).step_by(8) {
-        let mut lo = f32x4_splat(0.0);
-        let mut hi = f32x4_splat(0.0);
+        let mut a = f64x2_splat(0.0);
+        let mut b = f64x2_splat(0.0);
+        let mut c = f64x2_splat(0.0);
+        let mut e = f64x2_splat(0.0);
         for (p, &s) in scores.iter().enumerate() {
             let scale = f64x2_splat(s as f64);
             let v = values.as_ptr().add(p * DIM + h * HD + d);
-            lo = fma4(v128_load(v.cast()), scale, lo);
-            hi = fma4(v128_load(v.add(4).cast()), scale, hi);
+            a = round2(f64x2_add(f64x2_mul(v128_load(v.cast()), scale), a));
+            b = round2(f64x2_add(f64x2_mul(v128_load(v.add(2).cast()), scale), b));
+            c = round2(f64x2_add(f64x2_mul(v128_load(v.add(4).cast()), scale), c));
+            e = round2(f64x2_add(f64x2_mul(v128_load(v.add(6).cast()), scale), e));
         }
+        let lo =
+            i32x4_shuffle::<0, 1, 4, 5>(f32x4_demote_f64x2_zero(a), f32x4_demote_f64x2_zero(b));
+        let hi =
+            i32x4_shuffle::<0, 1, 4, 5>(f32x4_demote_f64x2_zero(c), f32x4_demote_f64x2_zero(e));
         v128_store(out.as_mut_ptr().add(h * HD + d).cast(), lo);
         v128_store(out.as_mut_ptr().add(h * HD + d + 4).cast(), hi);
     }

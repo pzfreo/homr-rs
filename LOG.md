@@ -490,3 +490,29 @@ Three paired runs: Rust native 56.128 M/step (1.726 G/staff), Rust WASM
 200.912 M/step (6.178 G/staff); ORT native 46.347 M/step and ORT-web
 480.219 M/step. This change is correct but only a modest further improvement.
 The remaining WASM FMA promotion/narrowing overhead is being measured next.
+
+### Strict SIMD128: widen cached values once
+
+The second float-related change preserves the same per-term rounding. WASM
+stores each already-float32 K/V value exactly as float64 once, then holds pairs
+of rounded accumulators in float64 registers. Each multiply/add is still
+narrowed to float32 and re-promoted immediately; no summation-order or precision
+relaxation is introduced. Queries are promoted/broadcast once per head.
+
+This cuts repeated conversions/shuffles in the hot loops, at the cost of
+**doubling the cache element storage** in the strict WASM artifact (maximum
+reserved K/V capacity approximately 164 MB instead of 82 MB). Native retains
+float32 caches. This is a memory/performance tradeoff, not model quantization.
+
+Full native and strict-WASM reruns after this change each cover 88 pages,
+627 staffs, 38,076 steps and 228,456 token choices, with zero token or length
+differences. Max/mean attention errors are unchanged at 0.0003662109375 /
+0.0000035342254462343814 pixels. Both symbol sets pass check_xml: 75 identical
+and 13 failing alike. Synthetic attention tile/tail tests also compare every
+float bit against the scalar ordered oracle; the integer tests cover -128
+weights and partial matrix tiles. All seven tests pass natively and in WASI.
+
+Three paired runs measured 182.303M strict-WASM instructions/step (5.606 G per
+staff) against 480.396M ORT-web, a 2.635x reduction. This does **not** meet the
+3x target for strict SIMD128. The final measurements below repeat this test
+against a fresh build of the round-1 commit as well.
