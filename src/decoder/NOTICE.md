@@ -1,5 +1,6 @@
-The MLAS polynomial coefficients and arithmetic in activation.rs follow
-ONNX Runtime's compute.cpp, logistic.cpp, erf.cpp and gelu.cpp:
+The MLAS polynomial coefficients and arithmetic in activation.rs and
+../encoder/{kernels,simd}.rs follow ONNX Runtime's compute.cpp, logistic.cpp,
+erf.cpp, gelu.cpp and convolution/GEMM accumulation schedules:
 https://github.com/microsoft/onnxruntime/tree/main/onnxruntime/core/mlas/lib
 
 Copyright (c) Microsoft Corporation. All rights reserved.

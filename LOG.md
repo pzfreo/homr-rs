@@ -1265,3 +1265,25 @@ Strict and fused WASI runs each pass **10** tests; WASI's aborting panic runtime
 ignores the should-panic dimension-overflow test, which passes natively.
 Native all-target/all-feature and both WASM all-feature Clippy checks pass
 with -D warnings. No user answers or new authorization were needed.
+
+### Threading assessment and scope
+
+The encoder currently executes one staff on one thread. Independent output
+rows/pixels, layer-normalization rows, and pointwise activations can be divided
+among workers without changing any contraction or Welford reduction order.
+Splitting K or reducing partial sums in a new order would break exactness.
+An intra-staff browser implementation needs shared WebAssembly.Memory,
+atomics/bulk-memory, a compatible thread-safe Rust std/allocator build,
+COOP/COEP isolation, worker stacks/initialization, and a persistent worker pool
+with stage barriers. The C ABI can be kept; wasm-bindgen is not required.
+
+Unmeasured planning estimate: two workers could provide approximately 1.5–1.8x
+parallel throughput, four approximately 2–3x. A 95%-parallel Amdahl model gives
+a four-worker ceiling near 3.48x before barriers, memory traffic and phone
+big/LITTLE effects. Total retired instructions would stay similar or increase
+(budget 5–20% for dispatch/synchronization; busy spinning could be worse).
+These are estimates, not phone or wall-time benchmark results. ORT-web's four
+threads and WebGPU can still have a latency advantage despite a smaller Rust
+single-thread instruction count. A worker pool is intentionally not built in
+this round: it requires a distinct shared-memory runtime and another exactness
+validation matrix. No Partsong integration or Android measurement was run.
