@@ -656,3 +656,10 @@ became ready, both in a direct DOM probe and in bench/models_chrome.mjs.
 No WebGPU measurements are inferred from WASM. The Chrome harness serves local
 fixtures and ORT 1.30.0, requests an actual GPU adapter, and uses the same
 comparison loop as Node. Nothing is pushed or posted.
+
+Unattended execution decision: the full WASM corpus uses four threads, matching
+Partsong's cross-origin-isolated setting (min(4, hardwareConcurrency)). Preserve
+the initial one-thread four-page sample separately; do not merge its instruction
+counts into four-thread results. Interrupt the one-thread process through its
+own tool session before continuing, keeping CPU parallelism modest. Native
+reference options remain homr's defaults. No answers or permission requested.

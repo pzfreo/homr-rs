@@ -61,9 +61,11 @@ for source in sys.argv[2:]:
     # quantization scale/zp tensors but list each so counts are auditable.
     parameters = {k: {'shape': list(v.shape), 'dtype': str(v.dtype), 'elements': int(v.size), 'bytes': v.nbytes}
                   for k, v in arrays.items()}
+    learned = {k: v for k, v in arrays.items() if any(s in k for s in ['weight', 'bias', 'MatMul_', 'Mul_'])}
     report = {'model': str(source), 'opset': {o.domain: o.version for o in model.opset_import},
         'ops': dict(inventory), 'initializer_elements': sum(v.size for v in arrays.values()),
         'initializer_bytes': sum(v.nbytes for v in arrays.values()), 'initializers': parameters,
+        'learned_parameter_elements': sum(v.size for v in learned.values()),
         'dense_macs': sum(a['macs'] for a in arithmetic), 'dense_flops': 2 * sum(a['macs'] for a in arithmetic),
         'arithmetic': arithmetic, 'unresolved_arithmetic': unknown}
     name = Path(source).stem

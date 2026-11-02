@@ -3,7 +3,7 @@
 export async function compareModels({ort, pages, models, read, write, log = console.log,
   threads = 1, ep = 'wasm', optimization = 'all', instructions = () => null}) {
   ort.env.wasm.numThreads = threads;
-  const report = {ort: ort.env.versions, ep, threads, optimization, pages: [],
+  const report = {ort: ort.env.versions, models, ep, threads, optimization, pages: [],
     counter: ep === 'wasm' ? 'proc_pid_rusage RUSAGE_INFO_V4 (when supplied)' : 'GPU speed not measured'};
   const floats = bytes => new Float32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
   const json = async name => JSON.parse(new TextDecoder().decode(await read(name)));

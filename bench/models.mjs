@@ -1,6 +1,7 @@
 // ORT_MODULE=/.../onnxruntime-web/dist/ort.node.min.mjs COUNTER_ADDON=/scratch/counter.node 
 // node bench/models.mjs NATIVE_FIXTURES MODELS_DIR OUTPUT [CORPUS_TXT] [wasm threads optimization]
 // Models dir contains segnet_308-*.onnx and encoder_pytorch_model_465-*.onnx.
+// Optional MODEL_KIND=encoder|segnet selects a component for setting surveys.
 import fs from 'node:fs';
 import path from 'node:path';
 import {createRequire} from 'node:module';
@@ -17,7 +18,8 @@ const resolve = name => {
   return path.join(roots[root], ...parts);
 };
 const pages = corpus ? fs.readFileSync(corpus, 'utf8').trim().split('\n').map(p => path.parse(p).name) : fs.readdirSync(native).sort();
-const models = Object.fromEntries([['segnet', 'segnet_308-'], ['encoder', 'encoder_pytorch_model_465-']].map(([k, prefix]) =>
+const models = Object.fromEntries([['segnet', 'segnet_308-'], ['encoder', 'encoder_pytorch_model_465-']]
+  .filter(([kind]) => !process.env.MODEL_KIND || kind === process.env.MODEL_KIND).map(([k, prefix]) =>
   [k, `models/${fs.readdirSync(modelRoot).find(n => n.startsWith(prefix) && n.endsWith('.onnx') && !n.includes('fp16'))}`]));
 console.log(await compareModels({ort, pages, models, ep, threads: Number(threads), optimization,
   instructions: counter ? () => counter.instructions() : undefined,
