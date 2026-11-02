@@ -2333,3 +2333,20 @@ Every final context must equal native and every flag must be zero before
 speedup/guard deltas are accepted. It reports all 113 pass medians, totals by
 kind, image scan, one-time weight scan and dispatch spans. Profile passes have
 no intermediate readbacks; differential guard deltas remain explicitly noisy.
+
+Final data-movement refinement: the tiled path uses vec4<u32> input storage
+with explicit vec4 loads for aligned dense A tiles and depthwise halos. The
+K=47 case exercises misaligned rows/tails via scalar-word access. Integer
+loads/bitcasts change no arithmetic. Legacy controls retain scalar input
+storage so their benchmark stays comparable to the previous implementation.
+All four shaders again pass Naga/Metal translation; thirteen CPU schedule
+known answers pass after the vector load refinement. Host-only profiling
+tests verify timestamp resolve/index alignment, legacy/tiled dispatch sizes,
+medians and withholding speedup/guard estimates when a control drifts. These
+mock timestamps are never logged as measured GPU times.
+
+A fresh Chrome attempt also failed with SIGABRT before CDP. The local server
+was checked via GET/HEAD for the page, manifest, modules, symlinked model,
+WASM, input and native context, with COOP/COEP headers and profile=3 preserved.
+An occupied fixed test port was avoided using an OS-assigned ephemeral port;
+no existing listener was touched. No report POST or browser run was performed.

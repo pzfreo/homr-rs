@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {EncoderGPU, specialBits, bitDifference} from '../tools/encoder_gpu.mjs';
 import {EncoderPool} from '../tools/encoder_pool.mjs';
+import './check_gpu_profile.mjs';
 globalThis.GPUMapMode??={READ:1}; // Host-control mocks only, never GPU execution.
 await assert.rejects(()=>EncoderGPU.create({exports:{},encoder:0,gpu:null}),/Live Rust encoder/);
 assert.equal(specialBits(new Uint32Array([0,0x80000000,0x3f800000])),0);

@@ -38,7 +38,9 @@ pub fn simulate(q: &[u32; 16], a: &[f32], r: &[f32], weights: &[f32]) -> Vec<f32
                         for (lane, av) in tile_a.iter_mut().enumerate() {
                             let ar = row_base + lane / 4;
                             let ak = base + lane % 4 * 4;
-                            if ar < rows {
+                            if ar < rows && !conv && ak + 3 < k && (ar * k + ak).is_multiple_of(4) {
+                                av.copy_from_slice(&a[ar * k + ak..ar * k + ak + 4]);
+                            } else if ar < rows {
                                 for (j, value) in av.iter_mut().enumerate() {
                                     let kk = ak + j;
                                     if kk < k {

@@ -24,14 +24,17 @@ struct Params {
  h:u32, w:u32, c:u32, kernel:u32, stride:u32, pad:u32, ow:u32,
  math_count:u32, round_mask:u32,
 }
-@group(0) @binding(0) var<storage,read> a:array<u32>;
+@group(0) @binding(0) var<storage,read> a:array<${legacy?'u32':'vec4<u32>'}>;
 @group(0) @binding(1) var<storage,read> weights:array<vec4<u32>>;
 @group(0) @binding(2) var<storage,read> residual:array<u32>;
 @group(0) @binding(3) var<storage,read_write> output:array<u32>;
 @group(0) @binding(4) var<uniform> p:Params;
 @group(0) @binding(5) var<storage,read_write> guard:array<atomic<u32>>;
 ${math}
-fn load_a(i:u32)->f32 { return bitcast<f32>(a[i]); }
+fn word_a(i:u32)->u32 { return ${legacy?'a[i]':'a[i>>2u][i&3u]'}; }
+fn load_a(i:u32)->f32 { return bitcast<f32>(word_a(i)); }
+// Call only on a four-word-aligned offset with all four words in bounds.
+fn a4(i:u32)->vec4<f32> { return ${legacy?'vec4<f32>(load_a(i),load_a(i+1u),load_a(i+2u),load_a(i+3u))':'bitcast<vec4<f32>>(a[i>>2u])'}; }
 fn load_w(i:u32)->f32 { return bitcast<f32>(weights[i>>2u][i&3u]); }
 // All packed fields and matrix columns are four-float aligned by the plan.
 fn w4(i:u32)->vec4<f32> { return bitcast<vec4<f32>>(weights[i>>2u]); }
@@ -61,8 +64,8 @@ ${legacy ? legacyKernels : tiledKernels}
 // returned beside the output, so a guard can never disguise a failed probe.
 @compute @workgroup_size(64) fn math_probe(@builtin(global_invocation_id) id:vec3<u32>){
  let i=id.x;if(i>=p.math_count){return;}
- let kind=a[i*4u];
- var x=probe_word(a[i*4u+1u]);var y=probe_word(a[i*4u+2u]);var z=probe_word(a[i*4u+3u]);
+ let kind=word_a(i*4u);
+ var x=probe_word(word_a(i*4u+1u));var y=probe_word(word_a(i*4u+2u));var z=probe_word(word_a(i*4u+3u));
  if(kind!=1u && kind!=2u){x=inspect(x);y=inspect(y);z=inspect(z);}
  var value:f32;
  switch(kind){
@@ -132,9 +135,12 @@ fn dense(group:u32,lane:u32,is_conv:bool){
      // One vec4 A load per lane (four channel-major gathers for Conv), and
      // two vec4 B loads. Padding lanes participate in every barrier.
      let ar=row_base+lane/4u;let ak=base+(lane%4u)*4u;var av=vec4<f32>(0.0);
-     if(ar<p.rows){for(var j=0u;j<4u;j++){if(ak+j<p.k){
-       if(is_conv){av[j]=gather_patch(ar,ak+j);}else{av[j]=load_a(ar*p.k+ak+j);}
-     }}}
+     if(ar<p.rows){
+       if(!is_conv&&ak+3u<p.k&&(ar*p.k+ak)%4u==0u){av=a4(ar*p.k+ak);}
+       else{for(var j=0u;j<4u;j++){if(ak+j<p.k){
+         if(is_conv){av[j]=gather_patch(ar,ak+j);}else{av[j]=load_a(ar*p.k+ak+j);}
+       }}}
+     }
      tile_a[lane]=av;
      for(var i=lane;i<128u;i+=64u){
        let bk=base+i/8u;let bc=col_base+(i%8u)*4u;var bv=vec4<f32>(0.0);
@@ -172,7 +178,7 @@ var<workgroup> dw_b:array<vec4<f32>,196>;
  for(var i=lane;i<extent*extent*4u;i+=64u){
    let pixel=i/4u;let c=ch+(i%4u)*4u;let y=i32(y0+pixel/extent)-i32(p.pad);let x=i32(x0+pixel%extent)-i32(p.pad);
    var v=vec4<f32>(0.0);
-   if(y>=0&&x>=0&&y<i32(p.h)&&x<i32(p.w)&&c<p.c){let offset=(u32(y)*p.w+u32(x))*p.c+c;v=vec4<f32>(load_a(offset),load_a(offset+1u),load_a(offset+2u),load_a(offset+3u));}
+   if(y>=0&&x>=0&&y<i32(p.h)&&x<i32(p.w)&&c<p.c){let offset=(u32(y)*p.w+u32(x))*p.c+c;v=a4(offset);}
    dw_a[i]=v;
  }
  for(var i=lane;i<p.kernel*p.kernel*4u;i+=64u){let c=ch+(i%4u)*4u;var v=vec4<f32>(0.0);if(c<p.c){v=w4(p.weights+(i/4u)*p.c+c);}dw_b[i]=v;}

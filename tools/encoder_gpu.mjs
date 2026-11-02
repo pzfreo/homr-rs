@@ -48,7 +48,7 @@ class Program {
     // control even if a compiler proves its fault accumulator stays zero.
     const indices=names.map((_,kind)=>kind===8?[0,3,4,5]:kind===9?[1,4,5]:kind===10?[3,4,5]:bindings[kind]);
     const layouts=indices.map(list=>device.createBindGroupLayout({entries:list.map(binding=>({binding,visibility:GPUShaderStage.COMPUTE,
-      buffer:{type:binding===4?'uniform':binding===3||binding===5?'storage':'read-only-storage',minBindingSize:binding===4?64:binding===1?16:4}}))}));
+      buffer:{type:binding===4?'uniform':binding===3||binding===5?'storage':'read-only-storage',minBindingSize:binding===4?64:binding===1||(binding===0&&!legacy)?16:4}}))}));
     const pipelines=await Promise.all(names.map((entryPoint,i)=>device.createComputePipelineAsync({layout:device.createPipelineLayout({bindGroupLayouts:[layouts[i]]}),compute:{module,entryPoint}})));
     return Object.assign(new Program(),{device,pipelines,indices,layouts,diagnosticUnguarded,legacy});
   }
