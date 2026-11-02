@@ -941,7 +941,12 @@ recorded per page.
 | backend | segnet differing tile pixels | worst-page fraction | encoder max abs | encoder mean abs |
 |---|---:|---:|---:|---:|
 | WASM 1.30.0, 4 threads | 14 / 826,982,400 | 3.487723214e-7 (fix-six-1) | 1.192092896e-5 | 4.360817261e-7 |
-| Chrome WebGPU + WASM fallback | not measured (SIGABRT before CDP) | unavailable | unavailable | unavailable |
+| Chrome WebGPU + WASM fallback (external Chrome 156 / Apple Metal) | 24 / 826,982,400 (16 pages) | 2.325148810e-7 (fix-six-1, 2 pixels) | 1.86e-5 | 1.32e-6 |
+
+The WebGPU row was supplied by the maintainer after the original sandbox
+survey, measured outside this sandbox on all 88 pages / 627 staffs. Worst
+encoder case is pdf-1 staff 8. Its downstream token/XML results were not
+supplied; the original local Chrome SIGABRT limitation remains.
 
 The exact Rust decoder follows its own greedy trajectory on every context,
 including EOS, all six heads, and each error-page staff. It never stops at the
