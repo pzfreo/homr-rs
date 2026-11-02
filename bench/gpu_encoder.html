@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Exact encoder qualification</title>
+<style>body{font:15px system-ui;margin:2rem;max-width:65rem}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style>
+<h1>Exact encoder qualification</h1><pre id="status">Loading…</pre>
+<script type="module">
+const status=document.querySelector('#status');let config;
+function progress(value){status.textContent=JSON.stringify(value,null,2);console.log(JSON.stringify(value));}
+async function finish(result){window.result=result;status.textContent=JSON.stringify(result.summary??result,null,2);if(config?.post_report){const r=await fetch('/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(result)});if(!r.ok)status.textContent+='\nReport POST failed: '+r.status;}}
+try{
+ config=await(await fetch('/config/manifest.json')).json();
+ if(config.main_thread){const{runGPUEncoder}=await import('/bench/gpu_encoder_run.mjs');await finish(await runGPUEncoder(config,progress));}
+ else{const worker=new Worker('/bench/gpu_encoder_worker.mjs',{type:'module'});worker.onmessage=async({data})=>{if(data.result){await finish(data.result);worker.terminate();}else progress(data.progress);};worker.onerror=event=>finish({error:event.message,complete:false});worker.postMessage(config);}
+}catch(error){await finish({error:String(error.stack||error),complete:false});}
+</script>

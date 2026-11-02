@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import {EncoderGPU, specialBits, bitDifference} from '../tools/encoder_gpu.mjs';
 import {EncoderPool} from '../tools/encoder_pool.mjs';
 globalThis.GPUMapMode??={READ:1}; // Host-control mocks only, never GPU execution.
+await assert.rejects(()=>EncoderGPU.create({exports:{},encoder:0,gpu:null}),/Live Rust encoder/);
 assert.equal(specialBits(new Uint32Array([0,0x80000000,0x3f800000])),0);
 assert.equal(specialBits(new Uint32Array([1])),1);
 assert.ok(specialBits(new Uint32Array([0x7f800000]))&2);
@@ -15,7 +16,7 @@ for(const shared of [false,true])for(const scenario of ['guard','loss','validati
   let cpuCalls=0,unmaps=0,pops=0;
   const e={memory,encoder_run(_model,_image,dst){cpuCalls++;assert.deepEqual([...new Uint32Array(memory.buffer,dst,2)],[0x12345678,0x12345678]);new Float32Array(memory.buffer,dst,2).fill(7);return 1;}};
   const mapped=new ArrayBuffer(32);new Float32Array(mapped,0,2).fill(9);new Uint32Array(mapped,8,1)[0]=scenario==='guard'?1:0;
-  const gpu=Object.assign(new EncoderGPU(),{e,encoder:1,enabled:true,busy:false,onReport(){},status:{},timestamp:false,ops:[],buffers:Array(7).fill({}),meta:{output:6},guard:{},contextBytes:8,
+  const gpu=Object.assign(new EncoderGPU(),{e,encoder:1,enabled:true,busy:false,onReport(){},status:{},timestamp:false,program:{dispatch(){}},ops:[],buffers:Array(7).fill({}),meta:{output:6},guard:{},contextBytes:8,
     device:{pushErrorScope(){},async popErrorScope(){return scenario==='validation'&&pops++===0?{message:'simulated validation error'}:null;},queue:{writeBuffer(){},submit(){}},createCommandEncoder(){return {copyBufferToBuffer(){},finish(){return {};}};}},
     readback:{async mapAsync(){if(scenario==='loss')throw Error('simulated device loss');},getMappedRange(){return mapped;},unmap(){unmaps++;}}});
   const result=await gpu.encode(0,context,{captureRaw:true});
@@ -43,10 +44,12 @@ if(process.argv.length>2){
   assert.equal(meta.abi,1);assert.equal(meta.buffers[0],256*1280);assert.equal(meta.buffers[meta.output],1280*512);
   assert.ok(meta.ops.every(op=>op.params[15]===0&&op.params.length===16));
   assert.ok(e.encoder_gpu_plan_weights_len(plan)*4<=128*1024*1024);
+  const weightsFlags=specialBits(new Uint32Array(e.memory.buffer,e.encoder_gpu_plan_weights(plan),e.encoder_gpu_plan_weights_len(plan)));
+  assert.equal(weightsFlags,0,'Canonical model weights outside GPU domain');
   const input=fs.readFileSync(image),ip=copy(input),expected=fs.readFileSync(reference),op=e.decoder_alloc(expected.length);
   const gpu=await EncoderGPU.create({exports:e,encoder,gpu:null});
   const result=await gpu.encode(ip,op);assert.equal(result.backend,'cpu');
   const diff=bitDifference(new Uint32Array(e.memory.buffer,op,expected.length/4),new Uint32Array(expected.buffer,expected.byteOffset,expected.length/4));assert.equal(diff.bit_differences,0);
-  console.log(JSON.stringify({shared,threads:Number(threads),plan_ops:meta.ops.length,weights:e.encoder_gpu_plan_weights_len(plan),fallback:result.backend,...diff}));
+  console.log(JSON.stringify({shared,threads:Number(threads),plan_ops:meta.ops.length,weights:e.encoder_gpu_plan_weights_len(plan),weights_flags:weightsFlags,fallback:result.backend,...diff}));
   gpu.destroy();e.encoder_gpu_plan_drop(plan);e.encoder_drop(encoder);e.decoder_free(ip,input.length);e.decoder_free(op,expected.length);await pool?.close();
 }

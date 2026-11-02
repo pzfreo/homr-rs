@@ -151,10 +151,85 @@ LOG.md records exactness, interleaved scaling results and remaining device
 validation. `bench/thread_scaling.mjs` measures total process instructions and
 wall time; `bench/threads_chrome.mjs` is the isolated-page browser harness.
 
-`bench/gpu_fc1_chrome.mjs` prototypes ordered WGSL fc1 arithmetic with a
-load-time known-answer gate. This is an experimental operator probe, not a GPU
-encoder. LOG.md distinguishes actual results from scripts blocked by Chrome
-launch restrictions.
+### WebGPU encoder candidate
+
+`tools/encoder_gpu.mjs` implements the full ordered encoder with GPU buffers
+and a CPU fallback. Copy it together with `encoder_gpu_math.mjs` and
+`encoder_gpu_kernels.mjs` from the same revision. The existing pool/worker files
+and CPU exports remain compatible. This candidate still requires the external
+Chrome/Safari qualification runs below: LOG.md separates CPU/offline checks
+from actual GPU evidence.
+
+```js
+import {EncoderGPU} from './tools/encoder_gpu.mjs';
+// e is the ordinary WASM exports object or pool.exports; encoder is already loaded.
+const gpu = await EncoderGPU.create({exports: e, encoder, onReport: console.log});
+const result = await gpu.encode(image, context);
+// result.backend says whether a flagged/unavailable GPU used the CPU fallback.
+const steps = e.decoder_run(decoder, context, tokens, 608, 0);
+gpu.destroy(); // before dropping the encoder handle or closing its pool
+```
+
+Serialize calls, keep the image unchanged until `encode()` resolves, and
+retain the encoder handle until `destroy()`. Run shared
+builds in a Web Worker, as above. Ordinary builds also work on Window. Rust
+`encoder_gpu_plan_create` exports immutable JSON metadata and packed weights
+through pointer/length getters; JavaScript never parses ONNX. The temporary
+CPU plan is freed after upload unless diagnostics request `retainPlan: true`.
+The final mapped context copies straight into WASM memory for the decoder.
+
+The GPU requires only default limits: four storage bindings per pipeline, one uniform,
+64 invocations/workgroup, less than 2 KiB workgroup memory, and bindings below
+128 MiB. No fp16 or subgroup features. Timestamp queries are optional; reports
+say `null` when unavailable. The self-test covers each production kernel,
+fused rounding, division/sqrt, polynomial activations and underflow detection.
+It reports full initialization, shader compilation and probe-only times.
+Any failed requirement/test, arithmetic flag, validation/internal/OOM error or
+device loss selects the existing CPU encoder. Flagged raw GPU values are
+discarded. The guard uses raw integer bits and conservative zero-result checks;
+normal division/sqrt use integer midpoint certificates after refinement.
+An integer GPU pass checks all weights at load; another checks/sanitizes the
+GPU image copy before float use on each staff. The original WASM image remains
+intact for CPU fallback. Staff timestamps include the image scan.
+
+WGSL alone does not guarantee RN-even fused arithmetic. The runtime integer
+rounding barrier preserves separate operations, while known answers and corpus
+runs qualify the actual add/mul/fma implementation. A passing finite self-test
+is not a proof for every conforming GPU/compiler. Do not infer full encoder
+qualification from the older `bench/gpu_fc1_chrome.mjs` operator probe.
+
+From this clone, with `S` set to the supplied scratchpad path:
+
+```sh
+python3 bench/build_decoder_variants.py "$S/gpu_single"
+python3 bench/build_encoder_threads.py "$S/threads_build"
+# First run the op checks and a single staff:
+node bench/gpu_encoder_chrome.mjs "$S" "$S/threads_build/encoder-threads-fused.wasm" "$S/gpu-chrome-one.json" --limit 1
+# Then the complete corpus, including every native arithmetic operand:
+node bench/gpu_encoder_chrome.mjs "$S" "$S/threads_build/encoder-threads-fused.wasm" "$S/gpu-chrome.json"
+# Open the printed local URL in Mac Safari; JSON is POSTed to this server's /report:
+python3 bench/gpu_encoder_server.py "$S" "$S/threads_build/encoder-threads-strict.wasm" "$S/gpu-safari"
+```
+
+The static page runs the coordinator in a dedicated worker and supplies
+COOP/COEP headers. If an engine exposes WebGPU only on Window, use the ordinary
+strict WASM path with `--main-thread --threads 1`. Both runners first test large
+random/edge primitive sets, then all intermediate operations on one staff,
+then the corpus. Default `--audit full` streams every native div/sqrt and
+GELU/Erf/inner-exp operand through GPU checks for every staff, keeping an
+independent CPU state even when the GPU drifts or flags. It also compares all
+GPU op outputs. This audit is expensive and separate from the timestamped
+production pass. `--audit first` limits this extra audit to the first staff;
+`--audit none` omits corpus primitive audits. These report partial coverage.
+`--math-cases` and `--only page/staff` support focused debugging.
+
+Reports distinguish raw GPU drift/tokens, effective results after fallback,
+guard reasons/frequency, timestamp timings, and interleaved guarded/unguarded
+timing controls. Unguarded controls never supply an encoder result. Only
+`corpus_qualified: true` denotes the complete unflagged GPU/corpus/audit target.
+`bench/check_gpu_shaders.py` performs offline WGSL validation/Metal translation;
+it does not execute the GPU. `bench/check_gpu_host.mjs` tests fallback/control
+logic and optional real-WASM ABI compatibility, also without GPU claims.
 
 ## Rust decoder
 

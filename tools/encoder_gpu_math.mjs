@@ -3,6 +3,27 @@
 // floating operations across an unknown integer transformation of their bits.
 // Hardware RN-even add/mul/fused-fma are qualified by the load test and corpus,
 // not guaranteed by WGSL. Division/sqrt additionally carry integer certificates.
+// Erf/inner-exp arithmetic and coefficients follow ORT MLAS (MIT, Microsoft),
+// as in src/encoder/simd.rs and src/decoder/activation.rs.
+/* MLAS-derived polynomial sequences:
+Copyright (c) Microsoft Corporation. All rights reserved.
+MIT License
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
 export const arithmetic = `
 var<private> faults: u32;
 const SUBNORMAL: u32 = 1u;
@@ -23,9 +44,9 @@ fn inspect(x: f32) -> f32 {
   let m = mag(x);
   if (m > 0u && m < 0x00800000u) { faults |= SUBNORMAL; return 0.0; }
   if (m >= 0x7f800000u) { faults |= NONFINITE; return 0.0; }
-  // With all operands <=2^60, add/mul/fma cannot overflow. Stop propagation
-  // before a later operation could invoke WGSL's indeterminate nonfinite rules.
-  if (m > 0x5d800000u) { faults |= DOMAIN; return 0.0; }
+  // Stored operands <=2^32 keep scalar mul/fma finite; plus4 also consumes
+  // proved vector prefixes <2^76. Clip before a later operation can overflow.
+  if (m > 0x4f800000u) { faults |= DOMAIN; return 0.0; }
   return bitcast<f32>(bitcast<u32>(x) ^ p.round_mask);
 }
 fn wide(a: u32, b: u32) -> vec2<u32> {
@@ -79,18 +100,20 @@ fn plus4(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
 fn fused4(a: vec4<f32>, b: vec4<f32>, c: vec4<f32>) -> vec4<f32> {
   // One explicit vector fma, preserving the fc1 probe's code generation.
   let r = fma(a,b,c);
-  let bits = bitcast<vec4<u32>>(r); let magnitude = bits & vec4<u32>(0x7fffffffu);
-  if (any(magnitude == vec4<u32>(0u))) {
+  var bits = bitcast<vec4<u32>>(r);let magnitude = bits & vec4<u32>(0x7fffffffu);
+  // Entry operands/weights are bounded by 2^32; K<=1536. Even with rounding,
+  // every prefix stays below 2^76. Check only FTZ in the hot loop; store4
+  // enforces the next op's magnitude domain. This avoids four more comparisons
+  // and selects on every normal FMA, without relaxing any arithmetic order.
+  if (any(magnitude < vec4<u32>(0x800000u))) {
     if (magnitude.x==0u) { if (!exact_cancel(a.x,b.x,c.x)) { faults |= SUBNORMAL; } }
     if (magnitude.y==0u) { if (!exact_cancel(a.y,b.y,c.y)) { faults |= SUBNORMAL; } }
     if (magnitude.z==0u) { if (!exact_cancel(a.z,b.z,c.z)) { faults |= SUBNORMAL; } }
     if (magnitude.w==0u) { if (!exact_cancel(a.w,b.w,c.w)) { faults |= SUBNORMAL; } }
+    let tiny=(magnitude>vec4<u32>(0u)) & (magnitude<vec4<u32>(0x800000u));
+    if(any(tiny)){faults|=SUBNORMAL;bits=select(bits,vec4<u32>(0u),tiny);}
   }
-  if (any((magnitude > vec4<u32>(0u)) & (magnitude < vec4<u32>(0x800000u)))) { faults |= SUBNORMAL; }
-  if (any(magnitude >= vec4<u32>(0x7f800000u))) { faults |= NONFINITE; }
-  if (any(magnitude > vec4<u32>(0x5d800000u))) { faults |= DOMAIN; }
-  let invalid = ((magnitude > vec4<u32>(0u)) & (magnitude < vec4<u32>(0x800000u))) | (magnitude > vec4<u32>(0x5d800000u));
-  return bitcast<vec4<f32>>(select(bits,vec4<u32>(0u),invalid) ^ vec4<u32>(p.round_mask));
+  return bitcast<vec4<f32>>(bits ^ vec4<u32>(p.round_mask));
 }
 fn correction(exact_value: vec2<u32>, low: vec2<u32>, high: vec2<u32>, m: u32) -> i32 {
   let lo = cmp(exact_value,low); let hi = cmp(exact_value,high); let odd = (m & 1u) != 0u;
@@ -176,7 +199,7 @@ fn erf_exp(x0: f32) -> f32 {
   return times(v,scale);
 }
 fn erf_cpu(v: f32) -> f32 {
-  let a = min(abs(v),3.925);
+  let a = min(abs(v),bitcast<f32>(0x407b3333u));
   var result: f32;
   if (a <= 0.921875) {
     let a2 = times(a,a);

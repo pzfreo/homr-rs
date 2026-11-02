@@ -341,11 +341,21 @@ pub fn erf_exp(x: f32) -> f32 {
 
 /// Operand of the inner exponential, including SIMD's unselected large branch.
 #[allow(clippy::excessive_precision)]
-pub fn erf_exp_input(v:f32)->f32 {
-    let a=v.abs().min(3.925);
-    let mut p=1.72948930e-5;
-    for b in [-3.83208680e-4,3.88393435e-3,-2.42545605e-2,1.06777847e-1,6.34846687e-1,1.28717512e-1] {p=kernels::fma(p,a,b);}
-    -kernels::fma(p,a,a)
+pub fn erf_exp_input(v: f32) -> f32 {
+    let a = v.abs().min(3.925);
+    let mut p = 1.72948930e-5;
+    for b in [
+        -3.83208680e-4,
+        3.88393435e-3,
+        -2.42545605e-2,
+        1.06777847e-1,
+        6.34846687e-1,
+        1.28717512e-1,
+    ] {
+        p = kernels::fma(p, a, b);
+    }
+    // SIMD uses +0 - p, which gives +0 (not unary negation's -0) at a=0.
+    0.0 - kernels::fma(p, a, a)
 }
 
 fn bits(x: &[f32]) -> Vec<u32> {
@@ -430,6 +440,9 @@ fn self_tests() -> Vec<Value> {
             a[0] = f32::from_bits(0x3f800001);
             weights[0] = f32::from_bits(0x3f7ffffe);
             weights[q[5] as usize] = 16777218.0;
+            a[1] = f32::from_bits(0x1c800000);
+            weights[16 + 2] = f32::from_bits(0x1c800000);
+            weights[q[5] as usize + 2] = f32::MIN_POSITIVE;
         }
         if kind == MATMUL {
             a.fill(0.0);
@@ -447,6 +460,12 @@ fn self_tests() -> Vec<Value> {
             weights[2] = 1.0;
             weights[18] = 1.0;
             weights[34] = 1.0;
+            // A subnormal *unrounded product* with a normal fused result.
+            // This must not flush or trigger a false-positive result guard.
+            a[96] = 1.0;
+            a[97] = f32::from_bits(0x1c800000);
+            weights[3] = f32::MIN_POSITIVE;
+            weights[19] = f32::from_bits(0x1c800000);
         }
         let expected = reference(&q, &a, &residual, &weights);
         tests.push(json!({"params":q,"a":bits(&a),"r":bits(&residual),"weights":bits(&weights),"expected":bits(&expected)}));
@@ -459,9 +478,14 @@ mod tests {
     use super::*;
     #[test]
     fn exponential_oracle_reconstructs_the_actual_cpu_erf_large_branch() {
+        assert_eq!(erf_exp_input(0.0).to_bits(), 0);
+        assert_eq!(erf_exp_input(-0.0).to_bits(), 0);
         for i in 0..100_000 {
-            let x=0.921875+(4.25-0.921875)*(i as f32+0.5)/100_000.0;
-            assert_eq!((1.0-erf_exp(erf_exp_input(x))).to_bits(),kernels::erf(x).to_bits());
+            let x = 0.921875 + (4.25 - 0.921875) * (i as f32 + 0.5) / 100_000.0;
+            assert_eq!(
+                (1.0 - erf_exp(erf_exp_input(x))).to_bits(),
+                kernels::erf(x).to_bits()
+            );
         }
     }
     #[test]

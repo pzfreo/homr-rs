@@ -1,7 +1,7 @@
 import {arithmetic} from './encoder_gpu_math.mjs';
 
 export const entries = ['matmul', 'conv', 'depthwise', 'norm', 'activation', 'scale', 'add', 'position'];
-// Default limits only: 64 invocations, < 2 KiB workgroup storage, five storage
+// Default limits only: 64 invocations, < 2 KiB workgroup storage, four storage
 // bindings and one 64-byte uniform. No optional arithmetic features required.
 export function shaderSource({diagnosticUnguarded = false} = {}) {
   let math = arithmetic;
@@ -25,18 +25,19 @@ struct Params {
  math_count:u32, round_mask:u32,
 }
 @group(0) @binding(0) var<storage,read> a:array<u32>;
-@group(0) @binding(1) var<storage,read> weights:array<u32>;
+@group(0) @binding(1) var<storage,read> weights:array<vec4<u32>>;
 @group(0) @binding(2) var<storage,read> residual:array<u32>;
 @group(0) @binding(3) var<storage,read_write> output:array<u32>;
 @group(0) @binding(4) var<uniform> p:Params;
 @group(0) @binding(5) var<storage,read_write> guard:array<atomic<u32>>;
 ${math}
 fn load_a(i:u32)->f32 { return bitcast<f32>(a[i]); }
-fn load_w(i:u32)->f32 { return bitcast<f32>(weights[i]); }
-fn w4(i:u32)->vec4<f32> { return vec4<f32>(load_w(i),load_w(i+1u),load_w(i+2u),load_w(i+3u)); }
+fn load_w(i:u32)->f32 { return bitcast<f32>(weights[i>>2u][i&3u]); }
+// All packed fields and matrix columns are four-float aligned by the plan.
+fn w4(i:u32)->vec4<f32> { return bitcast<vec4<f32>>(weights[i>>2u]); }
 fn store4(i:u32,v:vec4<f32>) {
- output[i]=bitcast<u32>(v.x);output[i+1u]=bitcast<u32>(v.y);
- output[i+2u]=bitcast<u32>(v.z);output[i+3u]=bitcast<u32>(v.w);
+ output[i]=bitcast<u32>(inspect(v.x));output[i+1u]=bitcast<u32>(inspect(v.y));
+ output[i+2u]=bitcast<u32>(inspect(v.z));output[i+3u]=bitcast<u32>(inspect(v.w));
 }
 fn finish() { if (faults!=0u) { atomicOr(&guard[0],faults); } }
 @compute @workgroup_size(64) fn matmul(@builtin(global_invocation_id) id:vec3<u32>) {
@@ -99,7 +100,7 @@ var<workgroup> row_std:f32;
      mean=plus(mean,inspect(divide(delta,f32(j+1u))));
      m2=fused(delta,minus(values[j],mean),m2);
    }
-   row_mean=mean;row_std=inspect(square_root(plus(inspect(divide(m2,f32(p.n))),bitcast<f32>(p.epsilon))));
+   row_mean=mean;row_std=inspect(square_root(plus(inspect(divide(m2,f32(p.n))),constructed(p.epsilon))));
  }
  workgroupBarrier();
  for(var j=local.x;j<p.n;j+=64u){
@@ -138,6 +139,25 @@ var<workgroup> row_std:f32;
   default:{faults|=UNCERTIFIED;value=0.0;}
  }
  output[i*2u]=bitcast<u32>(value);output[i*2u+1u]=faults;finish();
+}
+fn invalid_word(word:u32)->bool {
+ let m=word&0x7fffffffu;var invalid=false;
+ if(m>0u&&m<0x800000u){faults|=SUBNORMAL;invalid=true;}
+ if(m>=0x7f800000u){faults|=NONFINITE;invalid=true;}
+ if(m>0x4f800000u){faults|=DOMAIN;invalid=true;}
+ return invalid;
+}
+@compute @workgroup_size(64) fn weights_scan(@builtin(global_invocation_id) id:vec3<u32>){
+ // A second grid dimension also accommodates a full 128 MiB default binding.
+ let i=id.x+id.y*(65535u*64u);if(i>=p.math_count/4u){return;}
+ let word=weights[i];
+ let x=invalid_word(word.x);let y=invalid_word(word.y);let z=invalid_word(word.z);let w=invalid_word(word.w);
+ finish();
+}
+@compute @workgroup_size(64) fn image_scan(@builtin(global_invocation_id) id:vec3<u32>){
+ let start=id.x*4u;if(start>=p.math_count){return;}
+ for(var j=0u;j<4u;j++){let i=start+j;if(invalid_word(output[i])){output[i]=0u;}}
+ finish();
 }
 `;
 }

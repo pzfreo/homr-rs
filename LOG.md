@@ -2011,7 +2011,7 @@ Ma*2^(25+parity) with (2M-1)^2 and (2M+1)^2. Adjust M by one if necessary,
 then repeat the midpoint test. Equality accepts only even M. A failed
 certificate sets a flag; it cannot silently accept an approximate answer.
 
-WGSL implements these <=50-bit products with exact u32 limbs, not f64 or
+WGSL implements these <=51-bit products with exact u32 limbs, not f64 or
 GPU approximate division/sqrt. Exponents are restored by constructing bits.
 A special exact threshold handles rounding up to minimum normal from below
 (the CPU random/bin-edge tests caught this case during development). A result
@@ -2062,8 +2062,8 @@ The GPU plan's 113 operations match every observed CPU intermediate on
 angelus_0 staff 0; its 655,360-value final context has zero differing bits
 against decoder_native_ref. The plan contains 13,197,408 packed float32
 weights (52,789,632 bytes, 50.34 MiB). Largest activation binding: 7,864,320
-values / 30 MiB. Seven activation slots total 66,846,720 bytes. There are five
-storage bindings, a 64-byte uniform, 64 invocations/workgroup and 1,568 padded
+values / 30 MiB. Seven activation slots total 66,846,720 bytes. There are four
+storage bindings per pipeline (five module declarations), a 64-byte uniform, 64 invocations/workgroup and 1,568 padded
 bytes of workgroup storage. No fp16, subgroups, dot products, reduction trees
 or optional arithmetic features. Every binding is below the default 128 MiB;
 all dispatch dimensions stay below 65,535. Timestamp queries are optional
@@ -2118,3 +2118,91 @@ Chrome launch was attempted once with the new single-staff runner: SIGABRT
 before CDP (scratch gpu_chrome_smoke.json). There was no GPU execution. The
 sandbox blocker persists; no alternate launch/permission bypass was attempted.
 Safari is likewise delegated to the maintainer's local runner, as requested.
+
+### Final guard fast path and validation runners
+
+Final numeric domain decision: stored activations/weights are bounded by
++/-2^32 (tightened from the earlier conservative prototype's 2^60). The host
+checks K<=1536. Therefore vector GEMM/Conv/depthwise prefix sums stay below
+2^76 even including accumulated rounding. No overflow is possible, and the
+hot vector FMA loop can check only zero/subnormal magnitudes. Complete outputs
+are checked/clipped before storage for the next op. Scalar arithmetic remains
+checked at each operation. No canonical weight was rejected by the native
+bit-domain scan; all 13,197,408 packed weights have flags zero. This is a
+data-independent safety bound, not an input/corpus shortcut. Its speed benefit
+is unmeasured until the external guarded/control timestamps run.
+
+Operand checks now run in **integer GPU scan passes**, not per-FMA weight
+loads or CPU image loops: all model weights once at load, and a sanitizing
+image-copy scan once per staff. Both check raw u32 storage bits before any
+float expression, so FTZ at float construction/load cannot conceal an input.
+The image scan zeros unsafe GPU words while latching flags; the original WASM
+image remains unchanged for whole-staff CPU recomputation. Arithmetic-result
+guards ensure all subsequent operands are normal/zero; constructed exp scales
+and epsilon are raw-bit checked too. Weight scanning uses a two-dimensional
+grid to stay within default workgroup-count limits even for a 128 MiB binding.
+The image scan is inside the measured staff timestamp interval.
+
+Self-test now also checks weight/image scanners and vector FMA cases with
+normal results despite subnormal unrounded products. Pipeline layouts are
+explicit, including the guard binding even in diagnostic controls. Full
+load/probe timing budgets remain unmeasured. The exact midpoint arithmetic
+uses at most 51 bits (the upper sqrt midpoint squared can exceed 2^50); the
+limb implementation handles full 64-bit products and passed the million-case
+independent u64 comparison.
+
+The single-staff native CPU-plan test also passes on pdf-1 staff 8: all 113
+operation outputs and the final native context have zero differing bits.
+This remains CPU/plan evidence, not a GPU result. Ordinary fused and shared
+strict/fused ABI/fallback tests pass on angelus_0 staff 0; final checks below
+repeat all ordinary/shared variants after the final source freeze.
+
+Runners: gpu_encoder_chrome.mjs and the static gpu_encoder.html page with
+gpu_encoder_server.py. The manifest verifies all 88 pages / 627 staffs /
+38,076 native steps, using staff inputs from models_native and context/step
+references from decoder_native_ref. First: production-kernel load tests and
+one million random/edge cases **per primitive**; then one whole staff with
+all 113 op comparisons; then every staff. Default audit=full maintains a
+separate CPU state and streams **all** CPU div/sqrt and GELU/Erf/inner-exp
+operands through GPU probes, plus compares every op output. CPU audit state
+never repairs GPU state, including after guards/drift. It validates each
+CPU-plan final context against native too. This expensive audit is separate
+from the unobserved production timing pass; audit=first/none explicitly
+report partial primitive coverage. No hashes or input deduplication.
+
+Reports keep raw GPU context/token differences, effective results after CPU
+fallback, exact guard reasons/frequency, timestamp GPU ms and end-to-end
+encode wall ms. Guard-cost controls use one warm-up and three interleaved
+trials; both guarded and unguarded outputs must match the native context or
+no overhead percentage is accepted. Controls never provide an encoder result.
+Their timestamps retain rounding barriers/certificates and omit FTZ/domain
+checks and the input scan. Missing timestamp-query reports null timing rather
+than inventing GPU milliseconds.
+
+Local server transport is verified by GET/HEAD: static page, manifest, JS,
+WASM, image and native context all serve correctly with COOP/COEP and MIME
+types. Full manifest counts are correct. No browser execution or report POST
+was part of that transport check. The Chrome launch blocker is SIGABRT before
+CDP; Safari execution is unavailable here. Thus **GPU primitive/corpus parity,
+guard frequency/cost and the 100 ms load target are still unmeasured**.
+
+The final scanner implementation removes the CPU image/weight loops from the
+production host. The GPU scans actual uploaded model words as part of load
+qualification, then scans/sanitizes each image before the float kernels.
+The CPU u32 scan remains a diagnostic test only. GPU scan load tests include
+intentional subnormal/nonfinite/domain words and verify both flags and zeroed
+GPU data while preserving signed zero. There are now eleven shader entry
+points, four storage bindings maximum per pipeline, and twelve small schedule/
+scanner cases plus scalar known answers. The self-test's real weights scan
+covers all 13,197,408 words. No GPU result from those tests is available locally.
+
+The native audit oracle also preserves SIMD's +0-minus-p sign convention in
+its unselected Erf large branch (rather than unary minus at a=0). New native
+assertions cover both zero signs. Primitive and per-op audit data come from
+independent CPU buffers, never repaired GPU buffers. The two complete native
+plan checks (angelus_0/0 and pdf-1/8) each match every operation and context.
+
+Source freeze for final checks: all host-control tests pass; both guarded and
+diagnostic-unguarded shader modules pass offline validation/Metal translation
+after the scanner and vector-load changes. GPU arithmetic remains pending
+the external runs. No Partsong/homr modifications, pushes or external posts.
