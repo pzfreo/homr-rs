@@ -83,60 +83,69 @@ impl Step {
         )
     }
 }
-#[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
-type CacheFloat = f64;
-#[cfg(any(not(target_arch = "wasm32"), target_feature = "relaxed-simd"))]
+// The caches hold f32 on every target. The strict SIMD128 kernels widen each
+// value to f64 as they read it: every f32 is exactly representable in f64, so
+// the results are the same as caching f64, in half the memory.
 type CacheFloat = f32;
-#[inline]
-fn cache_float(v: f32) -> CacheFloat {
-    #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
-    {
-        v as f64
-    }
-    #[cfg(any(not(target_arch = "wasm32"), target_feature = "relaxed-simd"))]
-    {
-        v
-    }
-}
-#[inline]
-fn cache_narrow(v: CacheFloat) -> f32 {
-    #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
-    {
-        v as f32
-    }
-    #[cfg(any(not(target_arch = "wasm32"), target_feature = "relaxed-simd"))]
-    {
-        v
-    }
-}
 struct Cache {
     // Channel-major K permits four independent scores in SIMD lanes. V stays
-    // position-major, contiguous across output channels. Neither grows in stride.
+    // position-major, contiguous across output channels. Both start small and
+    // grow as positions are appended (K's channel stride is its capacity), so
+    // a short staff doesn't reserve room for the longest one.
     k: Vec<CacheFloat>,
     v: Vec<CacheFloat>,
     len: usize,
     capacity: usize,
+    limit: usize,
 }
+// Positions reserved at first, and at least as many again each time it grows.
+const CACHE_GROWTH: usize = 64;
 impl Cache {
+    #[cfg(test)]
     fn new(capacity: usize) -> Self {
+        Self::growing(capacity, capacity)
+    }
+    /// Room for `start` positions at first, growing to at most `limit`.
+    fn growing(start: usize, limit: usize) -> Self {
+        let capacity = start.min(limit);
+        let mut v = Vec::new();
+        v.reserve_exact(DIM * capacity);
         Self {
             k: vec![0.0; DIM * capacity],
-            v: Vec::with_capacity(DIM * capacity),
+            v,
             len: 0,
             capacity,
+            limit,
         }
+    }
+    fn grow(&mut self, needed: usize) {
+        let capacity = (self.capacity + CACHE_GROWTH.max(self.capacity / 4))
+            .max(needed)
+            .min(self.limit);
+        assert!(needed <= capacity);
+        let mut k = vec![0.0; DIM * capacity];
+        for d in 0..DIM {
+            k[d * capacity..d * capacity + self.len]
+                .copy_from_slice(&self.k[d * self.capacity..d * self.capacity + self.len]);
+        }
+        self.k = k;
+        self.v.reserve_exact(DIM * capacity - self.v.len());
+        self.capacity = capacity;
     }
     fn append(&mut self, k: &[f32], v: &[f32]) {
         let _g = profile::enter(profile::Phase::Copy);
         let rows = k.len() / DIM;
         assert_eq!(k.len(), v.len());
+        if self.len + rows > self.capacity {
+            self.grow(self.len + rows);
+        }
         assert!(self.len + rows <= self.capacity);
         for d in 0..DIM {
             for r in 0..rows {
-                self.k[d * self.capacity + self.len + r] = cache_float(k[r * DIM + d]);
+                self.k[d * self.capacity + self.len + r] = k[r * DIM + d];
             }
         }
-        self.v.extend(v.iter().copied().map(cache_float));
+        self.v.extend_from_slice(v);
         self.len += rows;
     }
     fn attend(&self, q: &[f32], mut map: Option<&mut [f32]>) -> Vec<f32> {
@@ -170,7 +179,7 @@ impl Cache {
                 for (p, &s) in scores.iter().enumerate() {
                     for d in 0..HD {
                         let j = h * HD + d;
-                        out[j] = activation::fma(s, cache_narrow(self.v[p * DIM + j]), out[j]);
+                        out[j] = activation::fma(s, self.v[p * DIM + j], out[j]);
                     }
                 }
             }
@@ -196,11 +205,7 @@ impl Cache {
         for (p, s) in out.iter_mut().enumerate().skip(bulk) {
             let mut sum = 0.0;
             for d in 0..HD {
-                sum = activation::fma(
-                    q[h * HD + d],
-                    cache_narrow(self.k[(h * HD + d) * self.capacity + p]),
-                    sum,
-                );
+                sum = activation::fma(q[h * HD + d], self.k[(h * HD + d) * self.capacity + p], sum);
             }
             *s = sum * 0.125;
         }
@@ -216,6 +221,22 @@ unsafe fn round2(v: core::arch::wasm32::v128) -> core::arch::wasm32::v128 {
     use core::arch::wasm32::*;
     f64x2_promote_low_f32x4(f32x4_demote_f64x2_zero(v))
 }
+/// Four f32 lanes as two f64x2 (lanes 0-1, lanes 2-3), exactly.
+#[cfg(all(
+    target_arch = "wasm32",
+    target_feature = "simd128",
+    not(target_feature = "relaxed-simd")
+))]
+#[inline(always)]
+unsafe fn widen(
+    v: core::arch::wasm32::v128,
+) -> (core::arch::wasm32::v128, core::arch::wasm32::v128) {
+    use core::arch::wasm32::*;
+    (
+        f64x2_promote_low_f32x4(v),
+        f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 2, 3>(v, v)),
+    )
+}
 #[cfg(all(
     target_arch = "wasm32",
     target_feature = "simd128",
@@ -229,9 +250,10 @@ unsafe fn score_simd(q: &[f32], keys: &[CacheFloat], stride: usize, h: usize, ou
         let mut lo = f64x2_splat(0.0);
         let mut hi = f64x2_splat(0.0);
         for (d, &query) in queries.iter().enumerate() {
-            let v = keys.as_ptr().add((h * HD + d) * stride + p);
-            lo = round2(f64x2_add(f64x2_mul(v128_load(v.cast()), query), lo));
-            hi = round2(f64x2_add(f64x2_mul(v128_load(v.add(2).cast()), query), hi));
+            let k = v128_load(keys.as_ptr().add((h * HD + d) * stride + p).cast());
+            let (k_lo, k_hi) = widen(k);
+            lo = round2(f64x2_add(f64x2_mul(k_lo, query), lo));
+            hi = round2(f64x2_add(f64x2_mul(k_hi, query), hi));
         }
         let sum =
             i32x4_shuffle::<0, 1, 4, 5>(f32x4_demote_f64x2_zero(lo), f32x4_demote_f64x2_zero(hi));
@@ -271,10 +293,12 @@ unsafe fn weighted_sum(values: &[CacheFloat], scores: &[f32], h: usize, out: &mu
         for (p, &s) in scores.iter().enumerate() {
             let scale = f64x2_splat(s as f64);
             let v = values.as_ptr().add(p * DIM + h * HD + d);
-            a = round2(f64x2_add(f64x2_mul(v128_load(v.cast()), scale), a));
-            b = round2(f64x2_add(f64x2_mul(v128_load(v.add(2).cast()), scale), b));
-            c = round2(f64x2_add(f64x2_mul(v128_load(v.add(4).cast()), scale), c));
-            e = round2(f64x2_add(f64x2_mul(v128_load(v.add(6).cast()), scale), e));
+            let (v0, v1) = widen(v128_load(v.cast()));
+            let (v2, v3) = widen(v128_load(v.add(4).cast()));
+            a = round2(f64x2_add(f64x2_mul(v0, scale), a));
+            b = round2(f64x2_add(f64x2_mul(v1, scale), b));
+            c = round2(f64x2_add(f64x2_mul(v2, scale), c));
+            e = round2(f64x2_add(f64x2_mul(v3, scale), e));
         }
         let lo =
             i32x4_shuffle::<0, 1, 4, 5>(f32x4_demote_f64x2_zero(a), f32x4_demote_f64x2_zero(b));
@@ -514,9 +538,12 @@ impl Decoder {
             .blocks
             .iter()
             .map(|b| BlockState {
-                self_cache: Cache::new(MAX_STEPS),
+                self_cache: Cache::growing(CACHE_GROWTH, MAX_STEPS),
                 cross_cache: {
-                    let mut c = Cache::new(CONTEXT_POSITIONS + MAX_STEPS);
+                    let mut c = Cache::growing(
+                        CONTEXT_POSITIONS + CACHE_GROWTH,
+                        CONTEXT_POSITIONS + MAX_STEPS,
+                    );
                     c.append(&b.k.quantized(&full), &b.v.quantized(&full));
                     c
                 },
@@ -704,5 +731,37 @@ mod tests {
                 expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
             );
         }
+    }
+    #[test]
+    fn a_growing_cache_attends_like_a_full_one() {
+        let row = |i: usize, salt: usize| -> Vec<f32> {
+            (0..DIM)
+                .map(|j| (((i * 97 + j * salt) % 509) as f32 - 254.0) / 511.0)
+                .collect()
+        };
+        let query: Vec<f32> = (0..DIM)
+            .map(|i| ((i * 131 % 503) as f32 - 251.0) / 519.0)
+            .collect();
+        let mut full = Cache::new(300);
+        let mut grown = Cache::growing(2, 300);
+        // A block first (like the cross cache's context), then rows one at a time.
+        let block_k: Vec<f32> = (0..5).flat_map(|i| row(i, 71)).collect();
+        let block_v: Vec<f32> = (0..5).flat_map(|i| row(i, 43)).collect();
+        full.append(&block_k, &block_v);
+        grown.append(&block_k, &block_v);
+        for i in 5..300 {
+            full.append(&row(i, 71), &row(i, 43));
+            grown.append(&row(i, 71), &row(i, 43));
+            if i % 37 == 0 || i == 299 {
+                let bits = |c: &Cache| {
+                    c.attend(&query, None)
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(bits(&full), bits(&grown), "after {} rows", i + 1);
+            }
+        }
+        assert_eq!(grown.capacity, 300);
     }
 }

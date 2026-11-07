@@ -1,12 +1,15 @@
 //! The small protobuf subset needed by homr's ONNX model. Unknown fields are skipped.
+use std::borrow::Cow;
 use std::collections::HashMap;
 
-pub struct Tensor {
+/// An initializer. Raw data borrows from the model bytes (no copy of the
+/// weights while a model loads); typed values are decoded into owned bytes.
+pub struct Tensor<'a> {
     pub dims: Vec<usize>,
     pub kind: u64,
-    pub data: Vec<u8>,
+    pub data: Cow<'a, [u8]>,
 }
-impl Tensor {
+impl Tensor<'_> {
     pub fn floats(&self) -> Result<Vec<f32>, String> {
         if self.kind != 1 || !self.data.len().is_multiple_of(4) {
             return Err("expected float32 initializer".into());
@@ -36,8 +39,8 @@ pub struct Node {
     pub ints: HashMap<String, Vec<i64>>,
     pub floats: HashMap<String, f32>,
 }
-pub struct Graph {
-    pub tensors: HashMap<String, Tensor>,
+pub struct Graph<'a> {
+    pub tensors: HashMap<String, Tensor<'a>>,
     pub nodes: Vec<Node>,
 }
 struct Field<'a> {
@@ -91,8 +94,8 @@ fn fields(mut b: &[u8]) -> Result<Vec<Field<'_>>, String> {
 fn string(b: &[u8]) -> Result<String, String> {
     String::from_utf8(b.to_vec()).map_err(|e| e.to_string())
 }
-impl Graph {
-    pub fn read(bytes: &[u8]) -> Result<Self, String> {
+impl<'a> Graph<'a> {
+    pub fn read(bytes: &'a [u8]) -> Result<Self, String> {
         let model = fields(bytes)?;
         let graph = model
             .iter()
@@ -159,7 +162,7 @@ impl Graph {
                 let mut t = Tensor {
                     dims: Vec::new(),
                     kind: 0,
-                    data: Vec::new(),
+                    data: Cow::Borrowed(&[]),
                 };
                 let mut raw = None;
                 for a in fields(f.bytes)? {
@@ -175,7 +178,7 @@ impl Graph {
                             }
                         }
                         2 => t.kind = a.int,
-                        4 => t.data.extend_from_slice(a.bytes),
+                        4 => t.data.to_mut().extend_from_slice(a.bytes),
                         5 | 7 => {
                             let mut vals = Vec::new();
                             if a.bytes.is_empty() {
@@ -188,14 +191,14 @@ impl Graph {
                             }
                             for v in vals {
                                 match t.kind {
-                                    2 | 3 => t.data.push(v as u8),
-                                    7 => t.data.extend_from_slice(&v.to_le_bytes()),
+                                    2 | 3 => t.data.to_mut().push(v as u8),
+                                    7 => t.data.to_mut().extend_from_slice(&v.to_le_bytes()),
                                     _ => return Err("unsupported typed initializer".into()),
                                 }
                             }
                         }
                         8 => name = string(a.bytes)?,
-                        9 => raw = Some(a.bytes.to_vec()),
+                        9 => raw = Some(a.bytes),
                         13 => {
                             return Err(
                                 "external ONNX tensors are not supported; pass the complete model"
@@ -209,7 +212,7 @@ impl Graph {
                     }
                 }
                 if let Some(raw) = raw {
-                    t.data = raw;
+                    t.data = Cow::Borrowed(raw);
                 }
                 let width: usize = match t.kind {
                     1 => 4,
@@ -232,7 +235,25 @@ impl Graph {
         }
         Ok(g)
     }
-    pub fn tensor(&self, name: &str) -> Result<&Tensor, String> {
+    /// The same graph, owning its tensors (no longer tied to the model bytes).
+    pub fn into_owned(self) -> Graph<'static> {
+        Graph {
+            tensors: self
+                .tensors
+                .into_iter()
+                .map(|(k, t)| {
+                    let t = Tensor {
+                        dims: t.dims,
+                        kind: t.kind,
+                        data: Cow::Owned(t.data.into_owned()),
+                    };
+                    (k, t)
+                })
+                .collect(),
+            nodes: self.nodes,
+        }
+    }
+    pub fn tensor(&self, name: &str) -> Result<&Tensor<'a>, String> {
         self.tensors
             .get(name)
             .ok_or_else(|| format!("initializer missing: {name}"))
