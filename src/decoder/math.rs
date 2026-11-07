@@ -75,7 +75,7 @@ impl Linear {
         let stem = weight
             .strip_suffix("_quantized")
             .ok_or("quantized weight name")?;
-        if g.tensor(&format!("{stem}_zero_point"))?.data != [0] {
+        if *g.tensor(&format!("{stem}_zero_point"))?.data != [0] {
             return Err("nonzero weight zero point unsupported".into());
         }
         let scale = g.tensor(&format!("{stem}_scale"))?.scalar()?;

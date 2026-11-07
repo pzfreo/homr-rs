@@ -26,7 +26,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut failed = false;
     for probe in manifest["probes"].as_array().unwrap() {
         let kind = probe["kind"].as_str().unwrap();
-        let g = Graph::read(&fs::read(root.join(probe["model"].as_str().unwrap()))?)?;
+        let bytes = fs::read(root.join(probe["model"].as_str().unwrap()))?;
+        let g = Graph::read(&bytes)?;
         let node = &g.nodes[0];
         let input = &probe["inputs"][0];
         let shape: Vec<_> = input["shape"]
