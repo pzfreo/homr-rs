@@ -268,6 +268,8 @@ mod probes {
     /// Readable complete single-node probe ONNX, released with encoder_probe_drop.
     #[no_mangle]
     pub unsafe extern "C" fn encoder_probe_load(p: *const u8, n: usize) -> *mut Graph<'static> {
+        // into_owned() is required: the probe outlives the caller's bytes, and
+        // from_raw_parts gives a lifetime the compiler can't check.
         match Graph::read(std::slice::from_raw_parts(p, n)) {
             Ok(g) if g.nodes.len() == 1 => Box::into_raw(Box::new(g.into_owned())),
             _ => std::ptr::null_mut(),
