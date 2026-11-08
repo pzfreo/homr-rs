@@ -1,6 +1,5 @@
 """python tools/synth_staff_cases.py <homr dir> <cases dir> <count> <seed>
-(needs record_decoder.py's Python dependencies; PAGES_DIR=<dir> also saves the masks as
-tools/dump_page.py does, for tools/pyodide_ref.mjs; NONOTES=1 makes pages with only rests)
+(needs record_decoder.py's Python dependencies; NONOTES=1 makes pages with only rests)
 Synthetic segmentation masks (staff lines, clefs, noteheads, stems, bar lines) in the
 situations homr's staff detection handles: staffs split by a gap with symbols in it,
 staffs without a clef, short staffs of a neighbor page at the edge, the empty gutter
@@ -129,11 +128,6 @@ def predictions(staff, symbols, clefs, heads, stems):
     pre = np.where(staff > 0, 0, 255).astype(np.uint8)
     p = InputPredictions(pre, pre, heads, symbols, staff, clefs, stems)
     p.staff = main.make_lines_stronger(p.staff, (1, 2))
-    if os.environ.get("PAGES_DIR"):  # the same masks as tools/dump_page.py writes, for tools/pyodide_ref.mjs
-        d = os.path.join(os.environ["PAGES_DIR"], os.path.basename(cur["dir"])); os.makedirs(d, exist_ok=True)
-        for name, m in (("notehead", p.notehead), ("symbols", p.symbols), ("staff", p.staff), ("clefs_keys", p.clefs_keys), ("stem_rests", p.stems_rest), ("preprocessed", p.preprocessed)):
-            np.ascontiguousarray(m, dtype=np.uint8).tofile(os.path.join(d, f"{name}.bin"))
-        json.dump({"shape": list(p.staff.shape), "preprocessed_shape": list(p.preprocessed.shape), "contours": {}}, open(os.path.join(d, "page.json"), "w"))
     return p, Debug(pre, "synthetic.png", False), None
 
 

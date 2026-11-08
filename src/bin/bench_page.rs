@@ -1,7 +1,7 @@
 //! A page from masks to MusicXML (page analysis, staff images, replayed
 //! transformer output, MusicXML), `reps` times, for instruction counts by
 //! difference. Builds for WASI: cargo build --release --bin bench_page --target wasm32-wasip1
-//!   REPLAY_DIR=<tools/pyodide_replay.mjs output> bench_page <reps> <page dir>:<decoder dir> ...
+//!   REPLAY_DIR=<decoder.json directory> bench_page <reps> <page dir>:<decoder dir> ...
 use homr_rs::page::{analyse_page, PageMasks};
 use homr_rs::score::{page_xml, PageMapping};
 use homr_rs::tokens::Symbol;

@@ -1,7 +1,7 @@
 """Runs homr natively on page images (the models only run here) and records,
 in call order, what the transformer returned for every staff (each symbol's
 six tokens and its coordinates), plus the crop/resize of the page and homr's
-native MusicXML. tools/pyodide_replay.mjs replays these in Pyodide.
+native MusicXML.
 
     python tools/dump_decoder.py <homr dir> <out dir> <page images...>
 """

@@ -1,7 +1,7 @@
-"""Runs homr's segmentation natively (the model only runs here) and dumps,
-per page: the image as decoded (BGR), and the class map of every tile
-(argmax of segnet's output) in homr's order. tools/pyodide_pre.mjs turns these
-into reference results with homr in Pyodide.
+"""Runs homr's segmentation natively (the model only runs here) and dumps, per page:
+the image as decoded (BGR), the class map of every tile (argmax of segnet's output)
+in homr's order, and the masks homr ends up with (final_*.bin: what page analysis
+reads). `check_pages` takes the class maps and redoes everything after them.
 
     python tools/dump_segnet.py <homr dir> <out dir> <page images...>
 """
@@ -35,7 +35,11 @@ for p in sys.argv[3:]:
     img = cv2.imread(p)
     img.tofile(os.path.join(d, "image.bin"))
     try:
-        main.load_and_preprocess_predictions(p, False, False, False)
+        predictions, _, _ = main.load_and_preprocess_predictions(p, False, False, False)
+        for label, m in (("staff", predictions.staff), ("symbols", predictions.symbols), ("notehead", predictions.notehead),
+                         ("clefs_keys", predictions.clefs_keys), ("stems_rest", predictions.stems_rest),
+                         ("preprocessed", predictions.preprocessed)):
+            np.ascontiguousarray(m, dtype=np.uint8).tofile(os.path.join(d, f"final_{label}.bin"))
     except Exception as e:
         print("skip", p, type(e).__name__, e, flush=True)
         continue
