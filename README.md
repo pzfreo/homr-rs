@@ -63,8 +63,8 @@ let steps = decoder.generate(&context)?;
 The input is 256*1280 normalized float32 values from
 `staff_image::to_model_input`, in [1,1,256,1280] order; the output is a
 [1280,512] context. This fixed executor supports homr's
-`encoder_pytorch_model_465-597144cab54c8f6d0f6c9619df5c5312694eadd6.onnx`,
-not arbitrary ONNX graphs. It shares the protobuf reader at `src/onnx.rs`.
+`encoder_pytorch_model_509-2293bba14bfea47d9d28411339362af15fce4c31.onnx`
+(the 465 encoder has the same graph and loads too), not arbitrary ONNX graphs. It shares the protobuf reader at `src/onnx.rs`.
 Native uses NEON fused arithmetic. The optional fused WASM artifact uses the
 same fused-host probe as the decoder. Strict SIMD128 emulates fused rounding,
 including halfway double-rounding and subnormal cases; it is substantially
@@ -294,8 +294,8 @@ For individual steps, create `decoder.session(&encoder_output)?`, then call
 position, articulation, slur. `generate` includes the EOS step for checking;
 `Step::symbol` removes it. Generation stops at rhythm EOS (2), or 608 steps.
 
-This executor supports homr's `decoder_pytorch_model_465-597144cab54c8f6d0f6c9619df5c5312694eadd6.onnx`
-graph, not arbitrary ONNX networks. It follows the native arm64 ONNX Runtime
+This executor supports homr's `decoder_pytorch_model_509-2293bba14bfea47d9d28411339362af15fce4c31.onnx`
+graph (the 465 one differs only in its vocabulary sizes, 260/62 instead of 278/89), not arbitrary ONNX networks. It follows the native arm64 ONNX Runtime
 1.31.0 default CPU kernels, including KleidiAI's fused quantization semantics.
 No runtime dependencies were added. Native int8 multiplication uses NEON/dotprod
 where available; WASM uses SIMD128; other native targets have a portable path.

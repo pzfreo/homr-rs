@@ -2410,3 +2410,42 @@ use server --bind/--cert/--key with HTTPS trusted by the phone. README gives
 the scratch-only Dawn install/run and independent CPU simulation commands.
 Copy all three host JS files together and rebuild WASM for the thirteen-case
 load gate; ABI version and EncoderGPU API usage remain unchanged.
+
+## Following homr: 863eb3c -> 33dd138 (509 model), in progress
+Upstream homr moved 62 commits (Oct-Nov 2026, all unreleased). Reference: plain
+homr 33dd138 run natively (OpenCV 4.11.0.86, onnxruntime 1.31.0, arm64) from
+tools/record_decoder.py, tools/record_models.py and the two tools below.
+- **509 model**: same encoder graph (bit-identical on 56 staffs of 6 pages), decoder
+  differs in vocabulary sizes (rhythm 260 -> 278, articulation 62 -> 89) and a
+  SkipLayerNormalization for the post-embedding norm (ORT's kernel is the same
+  Welford arithmetic as LayerNormalization). tokens.rs vocabularies equal
+  vocabulary.py's, all six tables; decoder 0 of 1,782 steps differ on 6 pages.
+- **Plain homr over the 148-page corpus, 863eb3c vs 33dd138**: 65 read both ways
+  (all XML differs, as expected), 11 that crashed with an AssertionError now read,
+  8 app screenshots that gave "No staffs found" now read as 12 invented notes in one
+  measure (a regression to look at), nothing that worked before fails.
+- **MusicXML generator** (music_xml_generator.py): per-position tuplet marks and the
+  TupletParser rewrite (by time, per position, with start_stop), GroupClock (voices
+  wait for their own previous notes; forward elements), split_mixed_chords, one
+  measure length per time signature, multi-measure rests written as that many
+  measures, measureRest, dynamics (build_dynamic), strong accents, second voice
+  (upper2/lower2) preferring voice 2 and stems up/down where a staff has two voices,
+  grace notes without pitch no longer fail. XmlOptions::drop_zero_rests is gone: that
+  is homr's behaviour now.
+- **Symbols**: only_keep_lower_staff_if_there_is_a_clef is decided per staff line;
+  new triplets.rs (triplet_restoration.py), run after remove_duplicated_symbols
+  (score::clean_up_voice, _clean_up_voice).
+- **Checked with tools/dump_gen_cases.py + check_gen**: at homr's generate_xml, its
+  input voices and the file it wrote. 36 real pages (angelus, fix, pdf, app screenshots
+  ...): generate_xml 36/36 byte-identical, remove_duplicated_symbols 57/57 and
+  restore_unmarked_triplets 57/57 the same symbols. Those pages have no tuplets or
+  multi-measure rests, so tools/fuzz_gen.py makes random symbol lists (tuplets with and
+  without numbers, grace notes, dynamics, mixed chords, changing time signatures,
+  measure rests, repeats and voltas; TRIPLETS=1 makes plain notes which are triplets,
+  where restoration changes 177 of 261 voices): 500 cases, generate_xml 500/500
+  byte-identical, both clean-up functions 648/648. The checker catches a deliberate
+  break of the tuplet grid rule (3 cases differ) and of the restoration's stopping
+  rule (123 voices).
+- Still to port: autocrop (paper/desk colour), staff_detection (phone photos, rests-only
+  staffs), system_repair, parse_staffs' hidden staffs (_assign_parts, measure rests),
+  main.py's No-noteheads-or-clefs.

@@ -178,9 +178,6 @@ struct State {
 /// Departures from homr's writer an app can ask for (all off: homr's output).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct XmlOptions {
-    /// Leave out pitchless symbols of zero duration (grace "rests") from a
-    /// chord instead of failing homr's assertion on them.
-    pub drop_zero_rests: bool,
     /// Comments to write in each note after its image position.
     pub note_comments: Option<fn(&Symbol) -> Vec<String>>,
 }
@@ -211,14 +208,30 @@ impl State {
 #[derive(Clone)]
 struct Chord {
     symbols: Vec<Symbol>,
-    tuplet_mark: String,
+    /// Tuplet start or stop by position (e.g. upper2): voices have their own tuplets
+    tuplet_marks: BTreeMap<String, String>,
 }
+
+/// The attribute which carries a note's position (e.g. upper2) while a part is built.
+const POSITION_ATTRIBUTE: &str = "homr-position";
 
 fn nr(r: &str) -> bool {
     r.starts_with("note") || r.starts_with("rest")
 }
 
 impl Chord {
+    fn new(symbols: Vec<Symbol>) -> Chord {
+        Chord {
+            symbols,
+            tuplet_marks: BTreeMap::new(),
+        }
+    }
+    fn mark_for(&self, s: &Symbol) -> &str {
+        self.tuplet_marks
+            .get(&s.position)
+            .map(|m| m.as_str())
+            .unwrap_or("")
+    }
     fn is_barline(&self) -> bool {
         !self.symbols.is_empty()
             && (self.symbols[0].rhythm.contains("barline")
@@ -248,7 +261,7 @@ impl Chord {
             .into_iter()
             .map(|b| Chord {
                 symbols: b,
-                tuplet_mark: self.tuplet_mark.clone(),
+                tuplet_marks: self.tuplet_marks.clone(),
             })
             .collect();
         // sort(key=all rests, reverse=True), stable
@@ -310,7 +323,8 @@ fn build_articulations(
     let notation = t.sub(note, "notations", &[]);
     let mut xa: Vec<usize> = Vec::new();
     let mut xo: Vec<usize> = Vec::new();
-    for a in arts.split('_') {
+    // A dynamic's modifier ("dynamic_dolce") isn't an articulation
+    for a in arts.split('_').filter(|_| !arts.starts_with("dynamic")) {
         match a {
             "" => {}
             "." => {}
@@ -323,6 +337,7 @@ fn build_articulations(
             "accent" | "mordent" | "staccato" | "staccatissimo" | "tenuto" | "caesura" | "doit" => {
                 xa.push(t.el(a, &[]))
             }
+            "accentStrong" => xa.push(t.el("strong-accent", &[])),
             "breathMark" => xa.push(t.el("breath-mark", &[])),
             "tremolo" => {
                 let ty = st.toggle_tremolo();
@@ -347,8 +362,8 @@ fn build_articulations(
             other => return Err(format!("ValueError: Unsupported articulation {other}")),
         }
     }
-    if !tuplet_mark.is_empty() {
-        t.sub(notation, "tuplet", &[("type", tuplet_mark)]);
+    for mark in tuplet_mark.split('_').filter(|m| !m.is_empty()) {
+        t.sub(notation, "tuplet", &[("type", mark)]);
     }
     if !xa.is_empty() {
         let p = t.sub(notation, "articulations", &[]);
@@ -450,7 +465,14 @@ fn build_note_or_rest(
     let staff = staff_of(s);
     t.sub_text(note, "voice", &xml_voice(staff, layer).to_string());
     t.sub_text(note, "staff", &staff.to_string());
-    build_articulations(t, note, &s.articulation, tuplet_mark, st)?;
+    // Used for voices and stems, removed at the end of the part
+    t.els[note]
+        .attrs
+        .push((POSITION_ATTRIBUTE.into(), s.position.clone()));
+    // The other notes of a group, e.g. in the other staff, aren't part of the tuplet
+    let is_tuplet = d.actual_notes != d.normal_notes;
+    let mark = if is_tuplet { tuplet_mark } else { "" };
+    build_articulations(t, note, &s.articulation, mark, st)?;
     build_slurs(t, note, &s.slur, staff)?;
     if let Some((x, y)) = s.image_coordinates {
         t.els[note].children.push(Child::Comment(format!(
@@ -503,41 +525,6 @@ fn build_note_chord(
     st: &mut State,
     chord_duration: Frac,
 ) -> XmlResult<Vec<usize>> {
-    if st.opts.drop_zero_rests {
-        let groups = group_notes(&chord.symbols);
-        let zero: Vec<Symbol> = groups
-            .get(&Frac::ZERO)
-            .map(|g| {
-                g.iter()
-                    .filter(|s| s.pitch == EMPTY || s.pitch == NONOTE)
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !zero.is_empty() {
-            let kept: Vec<Symbol> = chord
-                .symbols
-                .iter()
-                .filter(|s| !zero.iter().any(|z| z.key() == s.key()))
-                .cloned()
-                .collect();
-            if kept.is_empty() {
-                return Ok(vec![]);
-            }
-            let chord = Chord {
-                symbols: kept,
-                tuplet_mark: chord.tuplet_mark.clone(),
-            };
-            let mut st2 = XmlOptions {
-                drop_zero_rests: false,
-                ..st.opts
-            };
-            std::mem::swap(&mut st.opts, &mut st2);
-            let r = build_note_chord(t, &chord, st, chord_duration);
-            std::mem::swap(&mut st.opts, &mut st2);
-            return r;
-        }
-    }
     let by = group_notes(&chord.symbols);
     let count = by.len();
     let mut out = Vec::new();
@@ -558,14 +545,12 @@ fn build_note_chord(
                 i as i64,
                 !first,
                 st,
-                &chord.tuplet_mark,
+                chord.mark_for(n),
             )?);
             first = false;
         }
-        if !rests.is_empty() {
-            if !(*gd > Frac::ZERO) {
-                return Err("AssertionError".into());
-            }
+        // A grace note without pitch would be a rest which takes no time
+        if !rests.is_empty() && *gd > Frac::ZERO {
             if !notes.is_empty() {
                 out.push(build_backup(t, *gd, st)?);
             }
@@ -575,7 +560,7 @@ fn build_note_chord(
                 i as i64,
                 false,
                 st,
-                &chord.tuplet_mark,
+                chord.mark_for(rests[0]),
             )?);
         }
         if i != count - 1 && *gd > Frac::ZERO {
@@ -600,13 +585,37 @@ fn lcm(a: i64, b: i64) -> i64 {
     (a * b).abs() / g
 }
 
-fn division_and_nominator(voice: &[Chord]) -> (i64, Frac) {
+/// np.median of fractions (the mean of the two middle ones for an even count).
+fn median(mut v: Vec<Frac>) -> Frac {
+    v.sort();
+    let n = v.len();
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / Frac::int(2)
+    }
+}
+
+/// find_division_and_time_signature_nominators: the division and one measure
+/// length per time signature, estimated from the measures up to the next time
+/// signature. Measures before the first one count towards it.
+fn division_and_nominators(voice: &[Chord]) -> (i64, Vec<Frac>) {
     let mut durations = vec![Frac::new(1, 4)];
     let mut in_measure = Frac::ZERO;
-    let mut measures: Vec<Frac> = Vec::new();
+    let mut segments: Vec<Vec<Frac>> = vec![vec![]];
+    let mut has_time_signature = false;
     for c in voice {
-        if c.is_barline() && in_measure > Frac::ZERO {
-            measures.push(in_measure);
+        if !c.symbols.is_empty() && c.symbols[0].rhythm.starts_with("timeSignature") {
+            if in_measure > Frac::ZERO {
+                segments.last_mut().unwrap().push(in_measure);
+                in_measure = Frac::ZERO;
+            }
+            if has_time_signature {
+                segments.push(vec![]);
+            }
+            has_time_signature = true;
+        } else if c.is_barline() && in_measure > Frac::ZERO {
+            segments.last_mut().unwrap().push(in_measure);
             in_measure = Frac::ZERO;
         } else {
             for s in &c.symbols {
@@ -624,7 +633,7 @@ fn division_and_nominator(voice: &[Chord]) -> (i64, Frac) {
         }
     }
     if in_measure > Frac::ZERO {
-        measures.push(in_measure);
+        segments.last_mut().unwrap().push(in_measure);
     }
     let dens: Vec<i64> = durations
         .iter()
@@ -632,52 +641,208 @@ fn division_and_nominator(voice: &[Chord]) -> (i64, Frac) {
         .map(|d| d.d)
         .collect();
     let division = dens[1..].iter().fold(dens[0], |c, &d| lcm(c, d));
-    if measures.is_empty() {
-        return (division, Frac::int(1));
+    let all: Vec<Frac> = segments.iter().flatten().copied().collect();
+    if all.is_empty() {
+        return (division, vec![Frac::int(1); segments.len()]);
     }
-    measures.sort();
-    let n = measures.len();
-    let median = if n % 2 == 1 {
-        measures[n / 2]
-    } else {
-        (measures[n / 2 - 1] + measures[n / 2]) / Frac::int(2)
-    };
-    (division, median)
+    // A time signature without measures after it, e.g. a courtesy one at the end of a
+    // system, belongs to the measures of the next one
+    let mut nominators = Vec::new();
+    let mut following = median(all);
+    for segment in segments.iter().rev() {
+        if !segment.is_empty() {
+            following = median(segment.clone());
+        }
+        nominators.push(following);
+    }
+    nominators.reverse();
+    (division, nominators)
 }
 
-fn tuplet_duration(c: &Chord) -> Option<Duration> {
-    c.symbols
-        .iter()
-        .filter(|s| nr(&s.rhythm))
-        .map(|s| s.duration())
-        .find(|d| d.normal_notes != d.actual_notes)
+/// When the groups of a measure start. Tokens say which notes start together, not
+/// when each group starts. A group starts when the earliest still-sounding note ends
+/// (that is how training data is grouped), but not before the earlier notes of its
+/// own positions (voices) have ended.
+struct GroupClock {
+    time: Frac,
+    sounding: Vec<Frac>,
+    voice_free: BTreeMap<String, Frac>,
 }
 
-fn add_tuplets(groups: &mut [Chord]) -> bool {
-    let mut cursor = 0;
-    while cursor < groups.len() {
-        let Some(d) = tuplet_duration(&groups[cursor]) else {
-            cursor += 1;
-            continue;
+impl GroupClock {
+    fn new() -> GroupClock {
+        GroupClock {
+            time: Frac::ZERO,
+            sounding: Vec::new(),
+            voice_free: BTreeMap::new(),
+        }
+    }
+    /// Grace notes have no duration and take no time
+    fn timed(group: &Chord) -> impl Iterator<Item = &Symbol> {
+        group
+            .symbols
+            .iter()
+            .filter(|s| nr(&s.rhythm) && s.duration().fraction > Frac::ZERO)
+    }
+    /// Moves the time to when the positions of the group are free, returns the gap.
+    fn wait_for_voices(&mut self, group: &Chord) -> Frac {
+        let free = Self::timed(group)
+            .map(|s| self.voice_free.get(&s.position).copied().unwrap_or(Frac::ZERO))
+            .max()
+            .unwrap_or(Frac::ZERO);
+        let gap = if free - self.time > Frac::ZERO {
+            free - self.time
+        } else {
+            Frac::ZERO
         };
-        let start = cursor;
-        let format = (d.actual_notes, d.normal_notes);
-        let size = d.actual_notes as usize;
-        while cursor - start < size {
-            if cursor >= groups.len() {
-                return false;
-            }
-            match tuplet_duration(&groups[cursor]) {
-                Some(cd) if (cd.actual_notes, cd.normal_notes) == format => cursor += 1,
-                _ => return false,
+        self.time = self.time + gap;
+        let time = self.time;
+        self.sounding.retain(|e| *e > time);
+        gap
+    }
+    /// Moves the time to the start of the next group and returns how far.
+    fn advance(&mut self, group: &Chord) -> Frac {
+        // A position can hold notes of different lengths, the shortest one frees it
+        let mut shortest: BTreeMap<String, Frac> = BTreeMap::new();
+        for s in Self::timed(group) {
+            let d = s.duration().fraction;
+            let e = shortest.entry(s.position.clone()).or_insert(d);
+            if d < *e {
+                *e = d;
             }
         }
-        groups[start].tuplet_mark = "start".into();
-        groups[cursor - 1].tuplet_mark = "stop".into();
+        for (position, d) in shortest {
+            self.voice_free.insert(position, self.time + d);
+        }
+        let advance = advance_to_next_group(group, self.time, &mut self.sounding);
+        self.time = self.time + advance;
+        let time = self.time;
+        self.sounding.retain(|e| *e > time);
+        advance
     }
-    true
 }
 
+fn is_power_of_two(v: i64) -> bool {
+    v > 0 && v & (v - 1) == 0
+}
+
+/// A tuplet note or rest (not a grace note).
+fn is_tuplet_symbol(s: &Symbol) -> bool {
+    if !nr(&s.rhythm) || s.rhythm.contains('G') {
+        return false;
+    }
+    let d = s.duration();
+    d.normal_notes != d.actual_notes
+}
+
+/// The duration of the first tuplet note or rest at the position, otherwise of the
+/// first timed one. None if the position has no timed symbol.
+fn duration_at(group: &Chord, position: &str) -> Option<Duration> {
+    let timed: Vec<&Symbol> = group
+        .symbols
+        .iter()
+        .filter(|s| s.position == position && nr(&s.rhythm) && !s.rhythm.contains('G'))
+        .collect();
+    if let Some(s) = timed.iter().find(|s| is_tuplet_symbol(s)) {
+        return Some(s.duration());
+    }
+    timed.first().map(|s| s.duration())
+}
+
+/// When each group of a measure starts, the same way as build_measures counts.
+fn start_times(groups: &[Chord]) -> Vec<Frac> {
+    let mut clock = GroupClock::new();
+    let mut result = Vec::new();
+    for group in groups {
+        if group.symbols.iter().any(|s| nr(&s.rhythm)) {
+            clock.wait_for_voices(group);
+            result.push(clock.time);
+            clock.advance(group);
+        } else {
+            result.push(clock.time);
+        }
+    }
+    result
+}
+
+type Run = Vec<(usize, Frac, Frac)>; // group, start time and duration
+
+/// The complete tuplets as (first, last) group and the groups left over: a tuplet
+/// ends once what it covers (`by_length`: its own notes added up, otherwise where
+/// it ends) has a power of two as denominator.
+fn split_run(run: &Run, by_length: bool) -> (Vec<(usize, usize)>, Vec<usize>) {
+    let mut tuplets = Vec::new();
+    let mut pending: Vec<usize> = Vec::new();
+    let mut total = Frac::ZERO;
+    for &(index, start, duration) in run {
+        pending.push(index);
+        total = total + duration;
+        let measured = if by_length { total } else { start + duration };
+        if is_power_of_two(measured.d) {
+            tuplets.push((pending[0], index));
+            pending.clear();
+            total = Frac::ZERO;
+        }
+    }
+    (tuplets, pending)
+}
+
+/// Splits consecutive tuplet notes of one position into tuplets. A tuplet ends once
+/// its own notes add up to a duration without a tuplet, e.g. three eighth triplets or
+/// a quarter and an eighth triplet. That keeps working if an earlier note has a wrong
+/// length. If that leaves notes over, e.g. if the tuplet starts with a rest in another
+/// voice, a tuplet ends where it reaches the beat grid instead. Notes which are
+/// left over form an incomplete tuplet.
+fn mark_run(groups: &mut [Chord], position: &str, run: &Run) {
+    let by_length = split_run(run, true);
+    let by_grid = split_run(run, false);
+    let (mut tuplets, left_over) = if by_length.1.len() <= by_grid.1.len() {
+        by_length
+    } else {
+        by_grid
+    };
+    if !left_over.is_empty() {
+        // An incomplete tuplet, e.g. one note too many, still has tuplet durations
+        tuplets.push((left_over[0], *left_over.last().unwrap()));
+    }
+    for (first, last) in tuplets {
+        let marks = |g: &mut Chord, m: &str| {
+            g.tuplet_marks.insert(position.to_string(), m.to_string());
+        };
+        if first == last {
+            marks(&mut groups[first], "start_stop");
+        } else {
+            marks(&mut groups[first], "start");
+            marks(&mut groups[last], "stop");
+        }
+    }
+}
+
+fn add_tuplets(groups: &mut [Chord], position: &str) {
+    let times = start_times(groups);
+    let durations: Vec<Option<Duration>> = groups.iter().map(|g| duration_at(g, position)).collect();
+    let mut run: Run = Vec::new();
+    let mut format = (1, 1);
+    for (index, duration) in durations.iter().enumerate() {
+        let Some(d) = duration else { continue };
+        let current = (d.actual_notes, d.normal_notes);
+        if current != format && !run.is_empty() {
+            mark_run(groups, position, &run);
+            run.clear();
+        }
+        format = current;
+        if current.0 != current.1 {
+            run.push((index, times[index], d.fraction));
+        }
+    }
+    if !run.is_empty() {
+        mark_run(groups, position, &run);
+    }
+}
+
+/// TupletParser.parse: marks the start and stop of tuplets, per measure and
+/// position. Groups without a tuplet note at the position, e.g. a duplet in the
+/// other staff, are skipped.
 fn tuplet_parse(groups: &mut [Chord]) {
     let mut start = 0;
     let mut bounds = Vec::new();
@@ -691,14 +856,87 @@ fn tuplet_parse(groups: &mut [Chord]) {
         bounds.push((start, groups.len()));
     }
     for (a, b) in bounds {
-        let saved: Vec<String> = groups[a..b].iter().map(|g| g.tuplet_mark.clone()).collect();
-        if add_tuplets(&mut groups[a..b]) {
-            continue;
-        }
-        for (g, m) in groups[a..b].iter_mut().zip(saved) {
-            g.tuplet_mark = m;
+        let positions: std::collections::BTreeSet<String> = groups[a..b]
+            .iter()
+            .flat_map(|g| g.symbols.iter())
+            .filter(|s| is_tuplet_symbol(s))
+            .map(|s| s.position.clone())
+            .collect();
+        for position in positions {
+            add_tuplets(&mut groups[a..b], &position);
         }
     }
+}
+
+const BEFORE_NOTES_ORDER: [&str; 3] = ["clef", "keySignature", "timeSignature"];
+
+/// The transformer sometimes joins a clef, key, time signature or barline to a chord
+/// of notes, e.g. a clef change in one staff on the beat where the other staff plays.
+/// Split it: clefs, keys and time signatures go before the notes (in the order they
+/// have at the start of a line), barlines and repeats after them.
+fn split_mixed_chord(symbols: &[Symbol]) -> Vec<Vec<Symbol>> {
+    let notes: Vec<Symbol> = symbols.iter().filter(|s| nr(&s.rhythm)).cloned().collect();
+    if notes.is_empty() || notes.len() == symbols.len() {
+        return vec![symbols.to_vec()];
+    }
+    let others: Vec<&Symbol> = symbols.iter().filter(|s| !nr(&s.rhythm)).collect();
+    let is_after = |s: &Symbol| s.rhythm.contains("barline") || s.rhythm.contains("repeat");
+    let mut before: Vec<(String, Vec<Symbol>)> = Vec::new();
+    for s in &others {
+        if is_after(s) {
+            continue;
+        }
+        let kind = s.rhythm.split('_').next().unwrap().split('/').next().unwrap();
+        match before.iter_mut().find(|(k, _)| k == kind) {
+            Some((_, v)) => v.push((*s).clone()),
+            None => before.push((kind.to_string(), vec![(*s).clone()])),
+        }
+    }
+    let rank = |kind: &str| {
+        BEFORE_NOTES_ORDER
+            .iter()
+            .position(|k| *k == kind)
+            .unwrap_or(BEFORE_NOTES_ORDER.len())
+    };
+    before.sort_by_key(|(k, _)| rank(k)); // stable
+    let mut parts: Vec<Vec<Symbol>> = before.into_iter().map(|(_, v)| v).collect();
+    parts.push(notes);
+    parts.extend(others.iter().filter(|s| is_after(s)).map(|s| vec![(*s).clone()]));
+    parts
+}
+
+/// split_mixed_chords: applies split_mixed_chord to every group. Runs after the
+/// tuplet marks are set, so the notes keep their mark and a split-off clef doesn't
+/// interrupt a tuplet.
+fn split_mixed_chords(groups: Vec<Chord>) -> Vec<Chord> {
+    let mut result: Vec<Chord> = Vec::new();
+    let mut split_barline = false;
+    for group in groups {
+        let parts = split_mixed_chord(&group.symbols);
+        if split_barline && group.is_barline() && parts.len() == 1 {
+            // The barline split off the previous chord and this one are the same barline:
+            // keep one, preferring a repeat or double barline over a plain barline.
+            if group.symbols[0].rhythm == "barline" && result.last().unwrap().symbols[0].rhythm != "barline" {
+                split_barline = false;
+                continue;
+            }
+            result.pop();
+        }
+        let n = parts.len();
+        for part in parts {
+            let is_notes = nr(&part[0].rhythm);
+            result.push(Chord {
+                symbols: part,
+                tuplet_marks: if is_notes {
+                    group.tuplet_marks.clone()
+                } else {
+                    BTreeMap::new()
+                },
+            });
+        }
+        split_barline = n > 1 && result.last().unwrap().is_barline();
+    }
+    result
 }
 
 fn advance_to_next_group(g: &Chord, clock: Frac, sounding: &mut Vec<Frac>) -> Frac {
@@ -802,9 +1040,13 @@ fn rebalance_measure_voices(t: &mut Tree, measure: usize) {
         let mut active: Vec<(i64, i64)> = Vec::new();
         for e in evs {
             active.retain(|(end, _)| *end > e.start);
-            let mut v = 1;
-            while active.iter().any(|(_, u)| *u == v) {
-                v += 1;
+            // The second voice of the model (e.g. upper2) prefers the second voice
+            let mut v = if is_second_voice(t, e.notes[0]) { 2 } else { 1 };
+            if active.iter().any(|(_, u)| *u == v) {
+                v = 1;
+                while active.iter().any(|(_, u)| *u == v) {
+                    v += 1;
+                }
             }
             active.push((e.end, v));
             let xv = xml_voice(staff, v - 1).to_string();
@@ -815,6 +1057,149 @@ fn rebalance_measure_voices(t: &mut Tree, measure: usize) {
             }
         }
     }
+}
+
+fn is_second_voice(t: &Tree, note: usize) -> bool {
+    t.get(note, POSITION_ATTRIBUTE)
+        .unwrap_or("")
+        .ends_with('2')
+}
+
+fn remove_position_attributes(t: &mut Tree, part: usize) {
+    for measure in t.findall(part, "measure") {
+        for note in t.findall(measure, "note") {
+            t.els[note].attrs.retain(|(k, _)| k != POSITION_ATTRIBUTE);
+        }
+    }
+}
+
+/// Where a staff has two voices in a measure, the first voice has its stems up
+/// and the second one down. Other stems are left to the reader.
+fn add_stems(t: &mut Tree, part: usize) {
+    for measure in t.findall(part, "measure") {
+        let notes: Vec<usize> = t
+            .findall(measure, "note")
+            .into_iter()
+            .filter(|&n| t.find(n, "rest").is_none())
+            .collect();
+        let mut staffs: Vec<String> = Vec::new();
+        for &n in &notes {
+            let staff = t.findtext(n, "staff", "1");
+            if !staffs.contains(&staff) {
+                staffs.push(staff);
+            }
+        }
+        for staff in staffs {
+            let on_staff: Vec<usize> = notes
+                .iter()
+                .copied()
+                .filter(|&n| t.findtext(n, "staff", "1") == staff)
+                .collect();
+            let voices: std::collections::BTreeSet<bool> = on_staff
+                .iter()
+                .filter(|&&n| !t.get(n, POSITION_ATTRIBUTE).unwrap_or("").is_empty())
+                .map(|&n| is_second_voice(t, n))
+                .collect();
+            if voices.len() < 2 {
+                continue;
+            }
+            for note in on_staff {
+                let stem = t.el("stem", &[]);
+                t.els[stem].text = Some(if is_second_voice(t, note) { "down" } else { "up" }.into());
+                let position = match t.find(note, "staff") {
+                    Some(staff_el) => t.index_of(note, staff_el),
+                    None => t.len(note),
+                };
+                t.insert(note, position, stem);
+            }
+        }
+    }
+}
+
+fn build_dynamic(t: &mut Tree, s: &Symbol, measure: usize) {
+    let mut marks: Vec<usize> = Vec::new();
+    if s.rhythm.starts_with("dynamic") {
+        let name = s.rhythm.split_once('_').map(|x| x.1).unwrap_or("");
+        // `dynamic_empty` is the internal placeholder used for a modifier-only
+        // marking (for example, "più"). It is not a MusicXML dynamics element.
+        if name != "empty" {
+            marks.push(t.el(name, &[]));
+        }
+    }
+    if s.articulation.starts_with("dynamic") {
+        let text = t.el("other-dynamics", &[]);
+        let modifier = s.articulation.split_once('_').map(|x| x.1).unwrap_or("");
+        t.els[text].text = Some(modifier.replace("piu", "più"));
+        marks.push(text);
+    }
+    if marks.is_empty() {
+        return;
+    }
+    let direction = t.sub(measure, "direction", &[("placement", "below")]);
+    let direction_type = t.sub(direction, "direction-type", &[]);
+    let dynamics = t.sub(direction_type, "dynamics", &[]);
+    for m in marks {
+        t.append(dynamics, m);
+    }
+    t.sub_text(direction, "staff", &staff_of(s).to_string());
+}
+
+/// A rest which fills the measure, e.g. in a staff which is hidden in a system.
+fn build_measure_rest(t: &mut Tree, staff: i64, st: &State) -> usize {
+    let note = t.el("note", &[]);
+    t.sub(note, "rest", &[("measure", "yes")]);
+    let duration = (st.nominator * Frac::int(st.division)).trunc().max(1);
+    t.sub_text(note, "duration", &duration.to_string());
+    t.sub_text(note, "voice", "1");
+    t.sub_text(note, "staff", &staff.to_string());
+    note
+}
+
+fn build_forward(t: &mut Tree, d: Frac, st: &State) -> usize {
+    let f = t.el("forward", &[]);
+    t.sub_text(
+        f,
+        "duration",
+        &(d * Frac::int(st.division)).trunc().max(1).to_string(),
+    );
+    f
+}
+
+/// One measure rest per staff of the part, the second one after a backup.
+fn measure_rests(t: &mut Tree, measure: usize, has_two_staves: bool, st: &State) -> XmlResult<()> {
+    let staffs: &[i64] = if has_two_staves { &[1, 2] } else { &[1] };
+    for (i, &staff) in staffs.iter().enumerate() {
+        if i > 0 {
+            let b = build_backup(t, st.nominator, st)?;
+            t.append(measure, b);
+        }
+        let r = build_measure_rest(t, staff, st);
+        t.append(measure, r);
+    }
+    Ok(())
+}
+
+/// close_current_measure: the voices of the measure are balanced, and a
+/// multi-measure rest is written as that many measures.
+fn close_measure(
+    t: &mut Tree,
+    measures: &mut Vec<usize>,
+    current: usize,
+    measure_number: &mut i64,
+    rest_measures: &mut i64,
+    has_two_staves: bool,
+    st: &State,
+) -> XmlResult<()> {
+    rebalance_measure_voices(t, current);
+    measures.push(current);
+    for _ in 0..*rest_measures {
+        *measure_number += 1;
+        let m = t.el("measure", &[("number", &measure_number.to_string())]);
+        measure_rests(t, m, has_two_staves, st)?;
+        measures.push(m);
+    }
+    *rest_measures = 0;
+    Ok(())
 }
 
 fn note_pitch(t: &Tree, note: usize) -> Option<String> {
@@ -908,27 +1293,27 @@ fn build_measures(
     has_two_staves: bool,
     opts: XmlOptions,
 ) -> XmlResult<Vec<usize>> {
-    let mut clock = Frac::ZERO;
-    let mut sounding: Vec<Frac> = Vec::new();
+    let mut clock = GroupClock::new();
     let mut measure_number = 1i64;
+    // Measures a multi-measure rest still covers after the current one
+    let mut rest_measures = 0i64;
     let mut groups: Vec<Chord> = sort_token_chords(voice)
         .into_iter()
-        .map(|s| Chord {
-            symbols: s,
-            tuplet_mark: String::new(),
-        })
+        .map(Chord::new)
         .collect();
     tuplet_parse(&mut groups);
-    let (division, nominator) = division_and_nominator(&groups);
+    let groups = split_mixed_chords(groups);
+    let (division, nominators) = division_and_nominators(&groups);
     let mut st = State {
         beats: 4 * 16,
         division,
-        nominator,
+        nominator: nominators[0],
         tremolo_start: false,
         volta_number: 1,
         last_volta_measure: -10,
         opts,
     };
+    let mut time_signature_no = 0usize;
     let mut measures: Vec<usize> = Vec::new();
     let mut current = t.el("measure", &[("number", &measure_number.to_string())]);
     let first_attributes = t.sub(current, "attributes", &[]);
@@ -968,12 +1353,19 @@ fn build_measures(
                         .unwrap();
                     let s = t.sub(a, "measure-style", &[]);
                     t.sub_text(s, "multiple-rest", &d.to_string());
+                    if d > 0 {
+                        measure_rests(t, current, has_two_staves, &st)?;
+                        rest_measures = d - 1;
+                    }
                 }
             } else {
                 let positions = group.to_positions();
-                let advance = advance_to_next_group(group, clock, &mut sounding);
-                clock = clock + advance;
-                sounding.retain(|e| *e > clock);
+                let gap = clock.wait_for_voices(group);
+                if gap > Frac::ZERO {
+                    let f = build_forward(t, gap, &st);
+                    t.append(current, f);
+                }
+                let advance = clock.advance(group);
                 let np = positions.len();
                 for (pno, sp) in positions.iter().enumerate() {
                     let cd = if pno == np - 1 { advance } else { Frac::ZERO };
@@ -984,11 +1376,18 @@ fn build_measures(
             }
             continue;
         }
-        let close = |t: &mut Tree, measures: &mut Vec<usize>, current: usize| {
-            rebalance_measure_voices(t, current);
-            measures.push(current);
-        };
-        if rhythm == "newline" {
+        if rhythm == "measureRest" {
+            let mut rests: Vec<&Symbol> = group.symbols.iter().collect();
+            rests.sort_by_key(|s| staff_of(s)); // stable
+            for (staff_no, rest) in rests.into_iter().enumerate() {
+                if staff_no > 0 {
+                    let b = build_backup(t, st.nominator, &st)?;
+                    t.append(current, b);
+                }
+                let r = build_measure_rest(t, staff_of(rest), &st);
+                t.append(current, r);
+            }
+        } else if rhythm == "newline" {
             if gno != n_groups - 1 {
                 t.sub(current, "print", &[("new-system", "yes")]);
             }
@@ -1011,6 +1410,8 @@ fn build_measures(
         } else if rhythm.starts_with("timeSignature") {
             let a = get_attrs(t, current, last_attributes, false);
             attributes = Some(a);
+            st.nominator = nominators[time_signature_no.min(nominators.len() - 1)];
+            time_signature_no += 1;
             let time = t.sub(a, "time", &[]);
             let den = rhythm.split('/').nth(1).unwrap().to_string();
             let beats = (st.nominator * Frac::int(den.parse::<i64>().unwrap()))
@@ -1029,15 +1430,13 @@ fn build_measures(
                 };
                 t.sub_text(b, "bar-style", style);
             }
-            close(t, &mut measures, current);
-            clock = Frac::ZERO;
-            sounding.clear();
+            close_measure(t, &mut measures, current, &mut measure_number, &mut rest_measures, has_two_staves, &st)?;
+            clock = GroupClock::new();
             measure_number += 1;
             current = t.el("measure", &[("number", &measure_number.to_string())]);
         } else if rhythm == "repeatStart" {
-            close(t, &mut measures, current);
-            clock = Frac::ZERO;
-            sounding.clear();
+            close_measure(t, &mut measures, current, &mut measure_number, &mut rest_measures, has_two_staves, &st)?;
+            clock = GroupClock::new();
             measure_number += 1;
             current = t.el("measure", &[("number", &measure_number.to_string())]);
             let b = barline(t, current, "right");
@@ -1045,17 +1444,15 @@ fn build_measures(
         } else if rhythm == "repeatEnd" {
             let b = barline(t, current, "right");
             repeat(t, b, "repeatEnd");
-            close(t, &mut measures, current);
-            clock = Frac::ZERO;
-            sounding.clear();
+            close_measure(t, &mut measures, current, &mut measure_number, &mut rest_measures, has_two_staves, &st)?;
+            clock = GroupClock::new();
             measure_number += 1;
             current = t.el("measure", &[("number", &measure_number.to_string())]);
         } else if rhythm == "repeatEndStart" {
             let b = barline(t, current, "right");
             repeat(t, b, "repeatEnd");
-            close(t, &mut measures, current);
-            clock = Frac::ZERO;
-            sounding.clear();
+            close_measure(t, &mut measures, current, &mut measure_number, &mut rest_measures, has_two_staves, &st)?;
+            clock = GroupClock::new();
             measure_number += 1;
             current = t.el("measure", &[("number", &measure_number.to_string())]);
             let b = barline(t, current, "right");
@@ -1077,13 +1474,21 @@ fn build_measures(
                 "discontinue"
             };
             t.sub(b, "ending", &[("type", ty), ("number", &v.to_string())]);
+        } else if rhythm.starts_with("dynamic") || symbol.articulation.starts_with("dynamic") {
+            for dynamic in &group.symbols {
+                build_dynamic(t, dynamic, current);
+            }
         }
     }
     if t.len(current) > 0 {
-        rebalance_measure_voices(t, current);
-        measures.push(current);
+        close_measure(t, &mut measures, current, &mut measure_number, &mut rest_measures, has_two_staves, &st)?;
     }
-    if t.find(first_attributes, "time").is_none() {
+    // A clef opens a second attributes element, so look at the whole first measure
+    let has_time = t
+        .findall(measures[0], "attributes")
+        .into_iter()
+        .any(|a| t.find(a, "time").is_some());
+    if !has_time {
         let time = t.sub(first_attributes, "time", &[]);
         t.sub_text(
             time,
@@ -1163,6 +1568,8 @@ pub fn generate_xml_with(
             t.append(part, m);
         }
         convert_ties(&mut t, part);
+        add_stems(&mut t, part);
+        remove_position_attributes(&mut t, part);
     }
     Ok(to_document(&t, root))
 }

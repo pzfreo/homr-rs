@@ -251,15 +251,24 @@ fn fix_over_eager_tuplets(chords: Vec<Vec<Symbol>>) -> Vec<Vec<Symbol>> {
     out
 }
 
+/// Decided per staff line, as a voice can join single staffs and grand staffs.
 fn only_keep_lower_staff_if_there_is_a_clef(chords: Vec<Vec<Symbol>>) -> Vec<Vec<Symbol>> {
     let mut has_lower_clef = false;
+    let mut line_start = 0;
     let mut out = Vec::new();
     for (i, chord) in chords.into_iter().enumerate() {
+        if chord.iter().any(|s| s.rhythm == "newline") {
+            has_lower_clef = false;
+            line_start = i + 1;
+        }
         let mut r = Vec::new();
         for s in chord {
             if has_lower_clef {
                 r.push(s);
-            } else if i < 5 && s.rhythm.starts_with("clef") && is_lower(&s.position) {
+            } else if (i as i64) - (line_start as i64) < 5
+                && s.rhythm.starts_with("clef")
+                && is_lower(&s.position)
+            {
                 has_lower_clef = true;
                 r.push(s);
             } else {
@@ -334,6 +343,27 @@ pub fn remove_duplicated_symbols(symbols: &[Symbol]) -> Vec<Symbol> {
     let chords: Vec<Vec<Symbol>> = chords.into_iter().map(remove_duplicated_pitches).collect();
     let chords = remove_redundant_clefs_keys_times(chords);
     flatten_chords(&chords)
+}
+
+/// sort_token_chords as indices into `symbols` (the symbols themselves aren't
+/// copied, so a caller can tell which of them is which).
+pub fn sort_token_chord_indices(symbols: &[Symbol]) -> Vec<Vec<usize>> {
+    let mut chords: Vec<Vec<usize>> = Vec::new();
+    let mut in_chord = false;
+    for (i, s) in symbols.iter().enumerate() {
+        if s.rhythm == "chord" {
+            in_chord = true;
+        } else if in_chord && !chords.is_empty() {
+            chords.last_mut().unwrap().push(i);
+            in_chord = false;
+        } else {
+            chords.push(vec![i]);
+        }
+    }
+    for c in &mut chords {
+        c.sort_by_key(|&i| std::cmp::Reverse(symbols[i].key()));
+    }
+    chords
 }
 
 /// sort_token_chords: chords, each sorted as homr's EncodedSymbol.__lt__ orders them (by str, descending).
