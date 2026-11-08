@@ -34,10 +34,42 @@ fn compare(ours: &[Staff], expected: &Value) -> Result<f64, String> {
     for (k, (s, e)) in ours.iter().zip(exp).enumerate() {
         let e = e.as_array().unwrap();
         if s.grid.len() != e.len() {
+            let dups = |v: &[f64]| -> Vec<f64> {
+                v.windows(2)
+                    .filter(|w| w[0] == w[1])
+                    .map(|w| w[0])
+                    .collect()
+            };
+            let mine: Vec<f64> = s.grid.iter().map(|p| p.x).collect();
+            let theirs: Vec<f64> = e
+                .iter()
+                .map(|q| q.as_array().unwrap()[0].as_f64().unwrap())
+                .collect();
+            println!(
+                "  repeated x: rust {:?}, homr {:?}",
+                dups(&mine),
+                dups(&theirs)
+            );
+            let at = mine
+                .iter()
+                .zip(&theirs)
+                .position(|(a, b)| a != b)
+                .unwrap_or(mine.len().min(theirs.len()));
+            let win = |v: &[f64]| v[at.saturating_sub(3)..(at + 8).min(v.len())].to_vec();
+            println!(
+                "  first x difference at point {at}: rust {:?} homr {:?}",
+                win(&mine),
+                win(&theirs)
+            );
+            let xs = |v: Vec<f64>| format!("{:?}..{:?}", v.first(), v.last());
             return Err(format!(
-                "staff {k}: {} points, homr {}",
+                "staff {k}: {} points, homr {} (x {} vs homr {})",
                 s.grid.len(),
-                e.len()
+                e.len(),
+                xs(s.grid.iter().map(|p| p.x).collect()),
+                xs(e.iter()
+                    .map(|q| q.as_array().unwrap()[0].as_f64().unwrap())
+                    .collect())
             ));
         }
         for (p, q) in s.grid.iter().zip(e) {
@@ -106,9 +138,27 @@ fn main() {
             boxes: &boxes,
             contours: &contours,
         };
-        let _ = detect_staff(&image, shape[0], shape[1], &f, &clefs, &bars); // warm, as the Python count
+        // the symbols mask homr looks at too, from tools/dump_staff.py (homr after 33dd138)
+        let symbols = fs::read(d.join("symbols.bin")).ok();
+        let _ = detect_staff(
+            &image,
+            symbols.as_deref(),
+            shape[0],
+            shape[1],
+            &f,
+            &clefs,
+            &bars,
+        ); // warm, as the Python count
         let a = instructions();
-        let result = detect_staff(&image, shape[0], shape[1], &f, &clefs, &bars);
+        let result = detect_staff(
+            &image,
+            symbols.as_deref(),
+            shape[0],
+            shape[1],
+            &f,
+            &clefs,
+            &bars,
+        );
         let rs = instructions() - a;
         let py = case["python_instructions"].as_u64().unwrap();
         let name = d.file_name().unwrap().to_string_lossy().to_string();

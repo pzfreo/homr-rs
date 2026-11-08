@@ -49,8 +49,8 @@ def run(page_dir, out_dir):
     main.load_and_preprocess_predictions = lambda *a, **k: (pred, debug, None)
     case = {}
     orig = main.detect_staff
-    def spy(dbg, image, fragments, clefs, bars):
-        result = orig(dbg, image, fragments, clefs, bars)
+    def spy(dbg, image, fragments, clefs, bars, symbols=None):
+        result = orig(dbg, image, fragments, clefs, bars, symbols)  # homr after 33dd138 takes the symbols mask too
         case.update({
             "shape": list(image.shape),
             "fragments": [{"box": box(f), "contour": np.asarray(f.contours).reshape(-1, 2).tolist()} for f in fragments],
@@ -59,6 +59,8 @@ def run(page_dir, out_dir):
             "python_instructions": 0,
         })
         np.ascontiguousarray(image, dtype=np.uint8).tofile(f"{out_dir}/staff.bin")
+        if symbols is not None:
+            np.ascontiguousarray(symbols, dtype=np.uint8).tofile(f"{out_dir}/symbols.bin")
         return result
     main.detect_staff = spy
     multi = None

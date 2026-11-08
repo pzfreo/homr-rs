@@ -23,4 +23,5 @@ pub mod staff;
 pub mod staff_image;
 pub mod symbols;
 pub mod tokens;
+pub mod triplets;
 pub mod warp;

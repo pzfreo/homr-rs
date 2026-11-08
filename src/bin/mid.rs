@@ -59,7 +59,9 @@ fn main() {
         contours: &contours,
     };
     let mut mid = Some(Mid::default());
-    let _ = detect_staff_mid(&image, shape[0], shape[1], &f, &clefs, &bars, &mut mid);
+    let _ = detect_staff_mid(
+        &image, None, shape[0], shape[1], &f, &clefs, &bars, &mut mid,
+    );
     let m = mid.unwrap();
     println!(
         "others: rust {} python {}",

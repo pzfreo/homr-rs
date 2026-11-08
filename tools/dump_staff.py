@@ -18,12 +18,14 @@ _orig = main.detect_staff
 def box(b):
     (cx, cy), (w, h), a = b.box
     return [float(cx), float(cy), float(w), float(h), float(a)]
-def spy(debug, image, fragments, clefs, bars):
-    result = _orig(debug, image, fragments, clefs, bars)
-    a = instructions(); _orig(debug, image, fragments, clefs, bars); b = instructions()
+def spy(debug, image, fragments, clefs, bars, symbols=None):
+    result = _orig(debug, image, fragments, clefs, bars, symbols)
+    a = instructions(); _orig(debug, image, fragments, clefs, bars, symbols); b = instructions()
     os.makedirs(spy.dir, exist_ok=True)
     image = np.ascontiguousarray(image, dtype=np.uint8)
     image.tofile(os.path.join(spy.dir, "staff.bin"))
+    if symbols is not None:  # homr after 33dd138 also looks at the symbols mask for ink
+        np.ascontiguousarray(symbols, dtype=np.uint8).tofile(os.path.join(spy.dir, "symbols.bin"))
     json.dump({
         "shape": list(image.shape),
         "fragments": [{"box": box(f), "contour": np.asarray(f.contours).reshape(-1, 2).tolist()} for f in fragments],

@@ -7,6 +7,7 @@ use crate::musicxml::generate_xml;
 use crate::staff::Staff;
 use crate::staff_image::{prepare_staff, Regions};
 use crate::tokens::{is_lower, remove_duplicated_symbols, Symbol};
+use crate::triplets::restore_unmarked_triplets;
 use crate::warp::Gray;
 
 /// load_and_preprocess_predictions' mapping from the preprocessed page to the
@@ -104,6 +105,12 @@ pub fn symbol_center(s: &Symbol) -> Option<(f64, f64)> {
     Some((c[0], c[1]))
 }
 
+/// _clean_up_voice: the symbols of a voice with duplicates removed and the
+/// triplets which were printed without their number restored.
+pub fn clean_up_voice(symbols: &[Symbol]) -> Vec<Symbol> {
+    restore_unmarked_triplets(&remove_duplicated_symbols(symbols))
+}
+
 /// The page's MusicXML from its MultiStaffs (homr's process_image after page
 /// analysis). `predict` is the transformer: canvas in, symbols out.
 pub fn page_xml(
@@ -155,7 +162,7 @@ pub fn page_xml(
             result.push(Symbol::new("newline"));
             result_for_voice.extend(result);
         }
-        voices.push(remove_duplicated_symbols(&result_for_voice));
+        voices.push(clean_up_voice(&result_for_voice));
     }
     generate_xml(&voices, "")
 }

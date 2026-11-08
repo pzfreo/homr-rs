@@ -85,6 +85,7 @@ fn main() {
         .collect();
     let staffs = detect_staff(
         &st,
+        Some(&sy),
         h,
         w,
         &Fragments {

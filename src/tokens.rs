@@ -251,15 +251,24 @@ fn fix_over_eager_tuplets(chords: Vec<Vec<Symbol>>) -> Vec<Vec<Symbol>> {
     out
 }
 
+/// Decided per staff line, as a voice can join single staffs and grand staffs.
 fn only_keep_lower_staff_if_there_is_a_clef(chords: Vec<Vec<Symbol>>) -> Vec<Vec<Symbol>> {
     let mut has_lower_clef = false;
+    let mut line_start = 0;
     let mut out = Vec::new();
     for (i, chord) in chords.into_iter().enumerate() {
+        if chord.iter().any(|s| s.rhythm == "newline") {
+            has_lower_clef = false;
+            line_start = i + 1;
+        }
         let mut r = Vec::new();
         for s in chord {
             if has_lower_clef {
                 r.push(s);
-            } else if i < 5 && s.rhythm.starts_with("clef") && is_lower(&s.position) {
+            } else if (i as i64) - (line_start as i64) < 5
+                && s.rhythm.starts_with("clef")
+                && is_lower(&s.position)
+            {
                 has_lower_clef = true;
                 r.push(s);
             } else {
@@ -336,6 +345,27 @@ pub fn remove_duplicated_symbols(symbols: &[Symbol]) -> Vec<Symbol> {
     flatten_chords(&chords)
 }
 
+/// sort_token_chords as indices into `symbols` (the symbols themselves aren't
+/// copied, so a caller can tell which of them is which).
+pub fn sort_token_chord_indices(symbols: &[Symbol]) -> Vec<Vec<usize>> {
+    let mut chords: Vec<Vec<usize>> = Vec::new();
+    let mut in_chord = false;
+    for (i, s) in symbols.iter().enumerate() {
+        if s.rhythm == "chord" {
+            in_chord = true;
+        } else if in_chord && !chords.is_empty() {
+            chords.last_mut().unwrap().push(i);
+            in_chord = false;
+        } else {
+            chords.push(vec![i]);
+        }
+    }
+    for c in &mut chords {
+        c.sort_by_key(|&i| std::cmp::Reverse(symbols[i].key()));
+    }
+    chords
+}
+
 /// sort_token_chords: chords, each sorted as homr's EncodedSymbol.__lt__ orders them (by str, descending).
 pub fn sort_token_chords(symbols: &[Symbol]) -> Vec<Vec<Symbol>> {
     let mut chords = group_into_chords(symbols);
@@ -348,6 +378,14 @@ pub fn sort_token_chords(symbols: &[Symbol]) -> Vec<Vec<Symbol>> {
 // ---------- the vocabulary (token number <-> string) ----------
 
 const TIME_DENOMINATORS: [i64; 10] = [1, 2, 3, 4, 6, 8, 12, 16, 32, 48];
+/// DYNAMICS and DYNAMICS_MODIFIER
+const DYNAMICS: [&str; 18] = [
+    "pppp", "ppp", "pp", "p", "mp", "mf", "f", "ff", "fff", "sfz", "sffz", "fp", "sf", "fz", "rf",
+    "rfz", "sfp", "empty",
+];
+pub const DYNAMICS_MODIFIER: [&str; 9] = [
+    "piu", "dolce", "poco", "espress", "subito", "atempo", "leggiero", "pocopiu", "sempre",
+];
 
 /// build_rhythm(): the rhythm tokens in order (index = token number).
 pub fn rhythm_vocab() -> Vec<String> {
@@ -396,6 +434,7 @@ pub fn rhythm_vocab() -> Vec<String> {
     r.extend(irregular.iter().map(|k| format!("note_{k}")));
     r.extend(kern.iter().map(|k| format!("rest_{k}")));
     r.extend(irregular.iter().map(|k| format!("rest_{k}")));
+    r.extend(DYNAMICS.iter().map(|d| format!("dynamic_{d}")));
     r
 }
 
@@ -434,9 +473,10 @@ pub fn pitch_vocab() -> Vec<String> {
 }
 
 pub fn articulation_vocab() -> Vec<String> {
-    let lieder = "accent accent_arpeggiate accent_arpeggiate_fermata accent_arpeggiate_staccato accent_arpeggiate_tenuto accent_breathMark accent_breathMark_fermata accent_fermata accent_fermata_tremolo accent_staccatissimo accent_staccato accent_staccato_tenuto accent_staccato_tremolo accent_staccato_trill accent_tenuto accent_tremolo accent_trill arpeggiate arpeggiate_breathMark arpeggiate_fermata arpeggiate_fermata_staccato arpeggiate_fermata_tenuto arpeggiate_staccatissimo arpeggiate_staccatissimo_staccato arpeggiate_staccato arpeggiate_staccato_tenuto arpeggiate_tenuto arpeggiate_tremolo arpeggiate_trill breathMark breathMark_fermata breathMark_fermata_tenuto breathMark_staccato breathMark_tenuto breathMark_tremolo breathMark_trill fermata fermata_staccato fermata_tenuto fermata_tremolo fermata_trill fermata_turn mordent staccatissimo staccatissimo_staccato staccatissimo_staccato_tenuto staccatissimo_staccato_tenuto_trill staccatissimo_tenuto staccato staccato_tenuto staccato_tremolo staccato_trill staccato_turn tenuto tenuto_tremolo tenuto_trill tremolo trill trill_turn turn";
+    let lieder = "accent accent_accentStrong accent_arpeggiate accent_arpeggiate_fermata accent_arpeggiate_staccato accent_arpeggiate_tenuto accent_breathMark accent_breathMark_fermata accent_fermata accent_fermata_tremolo accent_staccatissimo accent_staccato accent_staccato_tenuto accent_staccato_tremolo accent_staccato_trill accent_tenuto accent_tremolo accent_trill accentStrong accentStrong_arpeggiate accentStrong_arpeggiate_fermata accentStrong_arpeggiate_staccato accentStrong_arpeggiate_tenuto accentStrong_breathMark accentStrong_breathMark_fermata accentStrong_fermata accentStrong_fermata_tremolo accentStrong_staccatissimo accentStrong_staccato accentStrong_staccato_tenuto accentStrong_staccato_tremolo accentStrong_staccato_trill accentStrong_tenuto accentStrong_tremolo accentStrong_trill arpeggiate arpeggiate_breathMark arpeggiate_fermata arpeggiate_fermata_staccato arpeggiate_fermata_tenuto arpeggiate_staccatissimo arpeggiate_staccatissimo_staccato arpeggiate_staccato arpeggiate_staccato_tenuto arpeggiate_tenuto arpeggiate_tremolo arpeggiate_trill breathMark breathMark_fermata breathMark_fermata_tenuto breathMark_staccato breathMark_tenuto breathMark_tremolo breathMark_trill fermata fermata_staccato fermata_tenuto fermata_tremolo fermata_trill fermata_turn mordent staccatissimo staccatissimo_staccato staccatissimo_staccato_tenuto staccatissimo_staccato_tenuto_trill staccatissimo_tenuto staccato staccato_tenuto staccato_tremolo staccato_trill staccato_turn tenuto tenuto_tremolo tenuto_trill tremolo trill trill_turn turn";
     let mut a: Vec<String> = vec![NONOTE.into(), EMPTY.into()];
     a.extend(lieder.split(' ').map(|s| s.to_string()));
+    a.extend(DYNAMICS_MODIFIER.iter().map(|d| format!("dynamic_{d}")));
     a
 }
 

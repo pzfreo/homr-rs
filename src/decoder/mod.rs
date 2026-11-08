@@ -426,7 +426,7 @@ impl Decoder {
             != 16
             || g.nodes.iter().filter(|n| n.op == "MatMulInteger").count() != 70
         {
-            return Err("unsupported decoder graph (expected homr 465 quantized decoder)".into());
+            return Err("unsupported decoder graph (expected homr 509 quantized decoder)".into());
         }
         let embeddings = [
             Embedding::load(&g, "rhythm")?,
@@ -436,7 +436,7 @@ impl Decoder {
             Embedding::load(&g, "slur")?,
             Embedding::load(&g, "pos")?,
         ];
-        for (e, rows) in embeddings.iter().zip([260, 72, 7, 62, 5, MAX_STEPS]) {
+        for (e, rows) in embeddings.iter().zip([278, 72, 7, 89, 5, MAX_STEPS]) {
             if e.rows != rows {
                 return Err("unsupported embedding vocabulary".into());
             }
@@ -521,7 +521,7 @@ impl Decoder {
                 }
             }
         }
-        for (head, n) in model.heads.iter().zip([260, 72, 7, 5, 62, 5]) {
+        for (head, n) in model.heads.iter().zip([278, 72, 7, 5, 89, 5]) {
             if head.shape() != (DIM, n) {
                 return Err("unsupported output head dimensions".into());
             }
