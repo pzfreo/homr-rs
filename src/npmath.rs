@@ -71,7 +71,12 @@ pub fn py_range(start: i64, stop: i64, step: i64) -> Vec<i64> {
 }
 
 // np.argsort(a) (kind="quicksort", the default) of float64 values: numpy's
-// introsort of indices (npysort/quicksort.cpp, aquicksort), not a stable sort:
+// introsort of indices (npysort/quicksort.cpp, aquicksort), not a stable sort.
+// This is the sort numpy runs on arm64 and in WebAssembly (Pyodide), where Partsong's
+// homr runs. On x86 CPUs with AVX2/AVX512 numpy 2.x sorts 64-bit argsort with SIMD
+// (x86-simd-sort), which orders equal values differently, so homr's own results can
+// differ between machines on pages with many equal peaks; the port follows the browser.
+// Among equal values the order depends on how the partitioning moved them:
 // among equal values the order depends on how the partitioning moved them. That
 // decides which of several equal peaks homr's find_peaks keeps. NaN sorts last.
 

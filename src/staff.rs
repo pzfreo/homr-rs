@@ -769,6 +769,8 @@ fn continues(left: &RawStaff, right: &RawStaff, anchors: &[Anchor], f: &Fragment
     if unit <= 0.0 || gap < 0.0 || gap > 15.0 * unit {
         return false;
     }
+    // homr zips the lines strictly; every staff has exactly five (an anchor has no other count)
+    debug_assert_eq!(left.lines.len(), right.lines.len());
     let mut lines_which_line_up = 0;
     for (l, r) in left.lines.iter().zip(&right.lines) {
         let left_end = &f.boxes[*l.frags.last().unwrap()];
