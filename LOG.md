@@ -2525,3 +2525,25 @@ tools/record_decoder.py, tools/record_models.py and the two tools below.
   split, not the staffs detection found (Partsong's own extension; homr has no halves).
   A grand staff left alone keeps its halves.
 - Not wired into page_xml yet: that needs the hidden-staff handling of parse_staffs.
+
+### parse_staffs' hidden staffs, and page_xml (staff_parsing.py after 33dd138), checked
+- `score::parse_staffs_with` is the new parse_staffs: systems no longer need the same
+  number of staffs. When they differ, each system's staffs are matched to the parts of
+  the largest system (`_assign_parts`, `_slots_in_layout`; if a system doesn't fit
+  unambiguously every staff is read on its own), and a part which a system hides gets a
+  measure rest for each measure of a staff which is shown (`measure_rests_like`, written
+  as `measureRest` symbols, which the generator already handles). `page_xml` runs
+  `repair_systems`, then this, then the generator, as homr's process_image does. The old
+  grouping (`ensure_same_number_of_staffs` in score.rs) is removed: upstream deleted it.
+- The staffs are read in homr's order (a voice at a time) through a function the caller
+  gives, so the assembly can be checked without images.
+- Checked with `PARSE=1 tools/synth_systems.py` and `check_parse`: homr's parse_staffs on
+  the repaired systems and on the systems as detected (so every layout reaches it), with the
+  transformer replaced by random symbols per staff, recorded in calling order: which staff
+  is asked for at each call and the voices assembled from the results. 18,000 runs, all
+  identical: 2,000 hidden-staff pages with measure rests, about a third where homr falls
+  back to reading each staff on its own. Breaking a rule makes 20 to 1,215 runs differ (9
+  rules); two other changes cannot differ (the fallback's parts are already one per staff,
+  and a different layout of the same size never matches a slot uniquely anyway).
+- Not covered by this check: `page_xml`'s own wiring (that it calls the repair and reads the
+  staffs); the end-to-end corpus run covers that.
