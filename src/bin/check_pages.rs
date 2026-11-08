@@ -94,6 +94,15 @@ fn main() {
             problems.push(format!("{} tiles, homr {n}", tile_origins(h, w).len()));
         }
         let tiles = fs::read(d.join("tiles.bin")).unwrap();
+        if tiles.len() != n * 320 * 320 {
+            diff += 1;
+            println!(
+                "DIFF {name}: tiles.bin holds {} bytes, {n} tiles need {}",
+                tiles.len(),
+                n * 320 * 320
+            );
+            continue;
+        }
         let classes: Vec<Vec<u8>> = tiles
             .as_chunks::<{ 320 * 320 }>()
             .0
@@ -118,11 +127,13 @@ fn main() {
         // our CLAHE against homr's (native, fused multiply-adds): how many pixels, by how much
         let homr_page = fs::read(d.join("final_preprocessed.bin")).unwrap();
         if homr_page.len() != gray.data.len() {
-            problems.push(format!(
-                "preprocessed: {} vs {} bytes",
+            diff += 1;
+            println!(
+                "DIFF {name}: preprocessed: {} vs {} bytes",
                 gray.data.len(),
                 homr_page.len()
-            ));
+            );
+            continue;
         }
         let off: Vec<u8> = gray
             .data
@@ -226,7 +237,7 @@ fn main() {
             println!("DIFF {name}: {}", problems.join("; "));
         }
     }
-    println!("{same} pages identical, {same_err} fail the same way, {diff} different, {skipped} skipped; {staffs} staffs read");
+    println!("{same} pages identical, {same_err} both fail, {diff} different, {skipped} skipped; {staffs} staffs read");
     println!("our staff images differ from homr's in {noise_pixels} of {noise_total} pixels, by at most {noise_max} grey levels");
     if diff > 0 {
         std::process::exit(1);

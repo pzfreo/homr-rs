@@ -2552,11 +2552,12 @@ tools/record_decoder.py, tools/record_models.py and the two tools below.
 - `check_pages` (tools/dump_segnet.py, run_corpus.py, dump_canvases.py record homr's side):
   everything after segmentation redone in Rust on the 148 Partsong pages, against native
   homr 33dd138. Segmentation's class maps are homr's own here (the Rust segmentation has its
-  own check). All 148 agree: 86 give identical masks, staff grids and MusicXML, 62 fail with
-  the same error as homr.
+  own check). All 148 agree: 86 give identical masks and MusicXML (so the same staffs), and
+  on 62 both fail (the Rust check does not compare the error text, only that homr also fails).
 - Native arm64 fuses multiply-adds, so CLAHE differs from ours in a few pixels by one grey
   level (up to ~180 pixels a page), and the staff images (a warp of the page) differ in about
-  2-4% of pixels, by up to 3 levels. So the transformer is given homr's staff images; the
+  2-5% of pixels, mostly by up to 3 levels (one shard saw 58 at an edge). This is reported,
+  not gated. So the transformer is given homr's staff images; the
   XML is then identical. Ours are checked separately (the count is reported).
 - The first run flagged four library screenshots (lib-1, lib-2, t-library-1, t-library-2):
   CLAHE differed by up to 28 levels. Cause: the reference environment had Pillow 13.0.0,

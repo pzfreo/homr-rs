@@ -11,8 +11,10 @@ for img in sys.argv[3:]:
     if os.path.exists(os.path.join(out, name + ".json")): continue
     dst = os.path.join(out, os.path.basename(img)); shutil.copy(img, dst)
     t = time.time(); res = {}
+    for stale in (os.path.join(out, name + ".musicxml"),):  # a failing page must not keep an old reference
+        if os.path.exists(stale): os.remove(stale)
     try:
-        xml = main.process_image(dst, cfg, XmlGeneratorArguments(False, None, None))
+        main.process_image(dst, cfg, XmlGeneratorArguments(False, None, None))
         res["ok"] = True
     except Exception as e:
         res["error"] = str(e).splitlines()[-1] if str(e) else type(e).__name__

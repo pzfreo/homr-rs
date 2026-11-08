@@ -33,11 +33,10 @@ for path in sys.argv[3:]:
     shutil.copyfile(path, copy)
     try:
         main.process_image(copy, cfg, XmlGeneratorArguments(False, None, None))
-    except Exception:
-        pass  # nothing was read, or homr fails on the page; the canvases it did cut are kept
-    for leftover in os.listdir(d):
-        if not leftover.startswith("canvas") and leftover != "canvases.json":
-            os.remove(os.path.join(d, leftover))
+    except Exception as e:  # nothing was read, or homr fails on the page: the canvases it did cut are kept
+        print(name, "homr stopped:", str(e).splitlines()[-1] if str(e) else type(e).__name__, flush=True)
+    for leftover in os.listdir(d):  # the image copy, homr's output, canvases of an earlier run
+        os.remove(os.path.join(d, leftover))
     for i, canvas in enumerate(seen):
         canvas.tofile(os.path.join(d, f"canvas-{i}.bin"))
     json.dump({"canvases": [list(c.shape) for c in seen]}, open(os.path.join(d, "canvases.json"), "w"))

@@ -400,8 +400,8 @@ cargo run --release --bin check_pages -- seg refs canv <encoder.onnx> <decoder.o
 
 `check_pages` redoes everything after segmentation in Rust (autocrop, CLAHE,
 tile merging, masks, staff detection, system repair, staff images, the
-transformer, MusicXML) and reports per page whether the masks, the staff grid
-and the XML are identical, or whether both fail with the same error. Native
+transformer, MusicXML) and reports per page whether the masks and the XML are
+identical, or whether both fail. Native
 arm64 OpenCV/numpy fuse multiply-adds, so some values differ by one grey level:
 the report counts CLAHE and staff-image differences, and the staff images
 homr produced are fed to the transformer so those one-level differences
