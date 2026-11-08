@@ -4,7 +4,10 @@ homr's repair_systems on each: a voice and a piano, grand staffs only, quartets 
 single staffs, a layout which changes on the page; with grand staffs whose brace was
 missed, systems joined by a crease, staffs hidden in some systems, a stray staff at the
 end, singles wrongly paired, nothing grouped at all. Written as one json file per case
-(the grouped staffs and homr's result, or the error), for the `check_systems` binary."""
+(the grouped staffs and homr's result, or the error), for the `check_systems` binary.
+PARSE=1 also runs homr's parse_staffs on the repaired systems, with the transformer
+replaced by random symbols for each staff (recorded, in homr's calling order), for the
+`check_parse` binary: which staff is read when, hidden staffs and their measure rests."""
 import contextlib, io, json, os, random, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
@@ -31,14 +34,15 @@ def page():
     unit = rng.uniform(9, 15)
     x0, x1 = rng.randrange(80, 140, 10), rng.randrange(900, 1100, 10)
     tilt = rng.uniform(-0.01, 0.01)
-    shape = rng.choice(["voice+piano", "voice+piano", "grand", "grand", "singles", "singles", "intro", "choir+piano"])
+    shape = rng.choice(["voice+piano", "voice+piano", "grand", "grand", "singles", "singles", "intro", "choir+piano", "swapped"])
     systems = rng.randint(1, 7)
     kinds = {"voice+piano": [["s", "g"]], "grand": [["g"]], "singles": [["s"] * rng.randint(2, 4)],
-             "intro": [["g"]] * 2 + [["s", "g"]] * 5, "choir+piano": [["s", "s", "g"]]}[shape]
+             "intro": [["g"]] * 2 + [["s", "g"]] * 5, "choir+piano": [["s", "s", "g"]],
+             "swapped": [["s", "g"], ["g", "s"], ["g"]]}[shape]
     y = rng.uniform(60, 120)
     result = []
     for i in range(systems):
-        kind = kinds[i if shape == "intro" and i < len(kinds) else 0 if shape != "intro" else 2]
+        kind = kinds[i % len(kinds)] if shape == "swapped" else kinds[i if shape == "intro" and i < len(kinds) else 0 if shape != "intro" else 2]
         row = []
         for k in kind:
             xa, xb = x0 + rng.choice([0, 0, 0, 10]), x1 - rng.choice([0, 0, 0, 10])
@@ -86,8 +90,10 @@ def grouped(true_systems):
         last = max((s.max_y for row in rows for s in row), default=100)
         rows.append([staff(last + rng.uniform(1, 6) * 12, 12, 100, rng.choice([300, 600, 900]), 0.0)])
     if rng.random() < 0.05:  # points a little off the common positions
-        s = rows[rng.randrange(len(rows))][0]
-        s.grid = [StaffPoint(p.x + 0.4, p.y, p.angle) for p in s.grid]
+        row = rows[rng.randrange(len(rows))]
+        shifted = Staff([StaffPoint(p.x + 0.4, p.y, p.angle) for p in row[0].grid])
+        shifted.is_grandstaff = row[0].is_grandstaff
+        row[0] = shifted
     if rng.random() < 0.12 and len(rows) > 2:  # rows not in order down the page (MultiStaff sorts its own staffs)
         i = rng.randrange(len(rows) - 2)
         rows[i:i + 3] = rows[i:i + 3][::-1]
@@ -98,7 +104,35 @@ def dump(rows):
     return [[{"grand": s.is_grandstaff, "grid": [[p.x, [float(v) for v in p.y], float(p.angle)] for p in s.grid]} for s in row.staffs] for row in rows]
 
 
-stats = {"ok": 0, "error": 0, "changed": 0, "regrouped by pattern": 0, "single staff dropped": 0}
+PARSE = bool(os.environ.get('PARSE'))
+import homr.staff_parsing as sp  # noqa: E402
+from homr.transformer.vocabulary import EncodedSymbol  # noqa: E402
+
+
+def ser(v):
+    return [{'rhythm': x.rhythm, 'pitch': x.pitch, 'lift': x.lift, 'articulation': x.articulation, 'slur': x.slur,
+             'position': x.position} for x in v]
+
+
+def random_staff_symbols(grand):
+    if rng.random() < 0.06:
+        return []  # an empty staff
+    E, N = '_', '.'
+    out = [EncodedSymbol('clef_G2', E, E, E, E, 'upper')]
+    if grand:
+        out += [EncodedSymbol('chord'), EncodedSymbol('clef_F4', E, E, E, E, 'lower')]
+    out.append(EncodedSymbol('keySignature_0'))
+    if rng.random() < 0.7:
+        out.append(EncodedSymbol('timeSignature/4'))
+    for _ in range(rng.randint(1, 4)):
+        for _ in range(rng.randint(1, 5)):
+            pos = rng.choice(['upper', 'lower'] if grand else ['upper'])
+            out.append(EncodedSymbol(rng.choice(['note_4', 'note_8', 'note_2', 'rest_4']), 'C4' if rng.random() < 0.8 else E, E, E, E, pos))
+        out.append(EncodedSymbol(rng.choice(['barline', 'barline', 'barline', 'doublebarline', 'repeatEnd'])))
+    return out
+
+
+stats = {"ok": 0, "error": 0, "changed": 0, "regrouped by pattern": 0, "single staff dropped": 0, "every staff on its own": 0, "staffs hidden in some systems": 0}
 for n in range(count):
     rows = grouped(page())
     case = {"input": dump(rows)}
@@ -106,6 +140,26 @@ for n in range(count):
         with contextlib.redirect_stderr(io.StringIO()) as log:
             result = repair_systems(debug, rows)
         case["output"] = dump(result)
+        if PARSE:
+            calls = []
+
+            def stub(debug_, index, staff_, image, regions, config, page_to_input_image=None):
+                symbols = random_staff_symbols(staff_.is_grandstaff)
+                calls.append({"index": index, "staff": [staff_.min_x, staff_.max_x, staff_.min_y, staff_.max_y, bool(staff_.is_grandstaff)], "symbols": ser(symbols)})
+                return symbols
+
+            sp.parse_staff_image = stub
+            for key, systems in (("", result), ("raw_", rows)):  # as repaired, and as detected
+                del calls[:]
+                case[key + "calls"] = calls[:]
+                with contextlib.redirect_stderr(io.StringIO()) as plog:
+                    try:
+                        case[key + "voices"] = [ser(v) for v in sp.parse_staffs(debug, systems, np.zeros((10, 10), np.uint8), None)]
+                    except BaseException as e:  # noqa
+                        case[key + "parse_error"] = f"{type(e).__name__}: {e}"
+                stats["every staff on its own"] += "reading every staff on its own" in plog.getvalue()
+                stats["staffs hidden in some systems"] += "Staffs are hidden in some systems" in plog.getvalue()
+                case[key + "calls"] = calls[:]
         case["log"] = log.getvalue()
         stats["ok"] += 1
         stats["changed"] += case["output"] != case["input"]
