@@ -14,8 +14,8 @@ optical music recognition, aimed at running in the browser as WebAssembly
 without Python. homr is AGPL-3.0, and so is this port (see `LICENSE`).
 
 **Status: the pipeline, encoder and transformer decoder are ported.** Page,
-staff and MusicXML processing is checked against homr as Partsong runs it
-(Pyodide, OpenCV 4.11). Both Rust models target native arm64 ONNX Runtime
+staff and MusicXML processing is checked against native homr (OpenCV 4.11,
+Pillow 12, numpy 2). Both Rust models target native arm64 ONNX Runtime
 1.31.0's default CPU results. Segmentation stays with onnxruntime-web. The encoder loads its original
 float32 ONNX weights and produces the context in Rust. The decoder
 loads homr's original quantized ONNX file at runtime and runs in Rust, including
@@ -387,24 +387,42 @@ You need a homr checkout with its model files (`homr/segmentation/*.onnx`).
     # compare (and count instructions)
     cargo run --release --bin compare cases
 
+To check whole pages end to end against native homr (needs the same pinned
+reference versions as below, with Pillow in homr's range, `>=12.1.1,<13`: Pillow 13
+resizes differently):
+
+```sh
+python -I tools/dump_segnet.py <homr dir> seg <page images...>     # image, segnet tiles, homr's masks
+python -I tools/run_corpus.py <homr dir> refs <page images...>     # homr's MusicXML or its error
+python -I tools/dump_canvases.py <homr dir> canv <page images...>  # homr's staff images
+cargo run --release --bin check_pages -- seg refs canv <encoder.onnx> <decoder.onnx> [page names...]
+```
+
+`check_pages` redoes everything after segmentation in Rust (autocrop, CLAHE,
+tile merging, masks, staff detection, system repair, staff images, the
+transformer, MusicXML) and reports per page whether the masks and the XML are
+identical, or whether both fail. Native
+arm64 OpenCV/numpy fuse multiply-adds, so some values differ by one grey level:
+the report counts CLAHE and staff-image differences, and the staff images
+homr produced are fed to the transformer so those one-level differences
+can't change the XML. On the 148-page Partsong corpus every page agrees.
+
 To record and check the transformer decoder, pin the native reference versions
 that reproduce the existing corpus (ONNX Runtime 1.31.0 and OpenCV 4.11):
 
 ```sh
 uv run --no-project --with numpy==2.5.4 --with onnxruntime==1.31.0 \
   --with opencv-python-headless==4.11.0.86 --with scipy --with scikit-image \
-  --with pillow==13.0.0 --with musicxml --with typing_extensions --with scikit-learn \
+  --with "pillow>=12.1.1,<13" --with musicxml --with typing_extensions --with scikit-learn \
   python tools/record_decoder.py <homr-dir> <scratch-reference-dir> <page-images...>
 cargo run --release --bin check_decoder -- <decoder.onnx> <scratch-reference-dir> <scratch-rust-dir>
-cargo run --release --bin check_xml -- <pages-dir> <scratch-rust-dir> <replay-dir>
 ```
 
 The recorder runs homr's actual greedy loop, saves encoder outputs, all logits,
 chosen tokens and coordinates, and resumes completed pages. It copies source
 images into its scratch output directory before running homr, so input image
 directories are untouched. The Rust checker runs its own greedy trajectory,
-reports every differing page/staff/step and both logit margins, and writes
-`decoder.json` from its own tokens and attention for `check_xml`.
+reports every differing page/staff/step and both logit margins.
 Keep the large recordings in scratch. `bench/decoder.mjs rust check ...` also
 checks the WASM build against these recordings. To stream the whole corpus
 without loading all encoder outputs into JS simultaneously, use `@all`:
@@ -414,10 +432,6 @@ DECODER_WASM=<decoder.wasm> REPORT=<scratch-report.json> \
   node bench/decoder.mjs rust check <decoder.onnx> <scratch-reference-dir> @all
 ```
 
-To also generate WASM `decoder.json` files for `check_xml`, set
-`SAVE_DECODER=<scratch-output-dir>` and `VOCAB=<scratch-vocabulary.json>`;
-create the latter with `cargo run --release --bin dump_vocab` redirected into
-scratch. Every staff must complete before a page's output is written.
 
 Decoder instruction benchmarks are in `bench/measure_decoder.py` (use `--help`).
 Select an artifact explicitly with `--wasm <file>`; the report records its path.

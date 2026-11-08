@@ -220,7 +220,7 @@ fn convex_touch_i64(a: &[[i64; 2]; 4], b: &[[i64; 2]; 4]) -> bool {
 
 /// cv2.minAreaRect, ported from OpenCV (modules/imgproc/src/rotcalipers.cpp
 /// and convhull.cpp) step for step, so the float32 results match exactly.
-/// The default follows OpenCV 4.11 (as in Pyodide, which Partsong runs);
+/// The default follows OpenCV 4.11 (the version homr is run with here);
 /// the `opencv5` feature follows OpenCV 5.0, which reports the box with a
 /// different width/height/angle convention.
 pub fn min_area_rect(points: &[[i32; 2]]) -> RBox {

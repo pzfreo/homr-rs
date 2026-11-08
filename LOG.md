@@ -2547,3 +2547,24 @@ tools/record_decoder.py, tools/record_models.py and the two tools below.
   and a different layout of the same size never matches a slot uniquely anyway).
 - Not covered by this check: `page_xml`'s own wiring (that it calls the repair and reads the
   staffs); the end-to-end corpus run covers that.
+
+### End to end on the corpus, checked
+- `check_pages` (tools/dump_segnet.py, run_corpus.py, dump_canvases.py record homr's side):
+  everything after segmentation redone in Rust on the 148 Partsong pages, against native
+  homr 33dd138. Segmentation's class maps are homr's own here (the Rust segmentation has its
+  own check). All 148 agree: 86 give identical masks and MusicXML (so the same staffs), and
+  on 62 both fail (the Rust check does not compare the error text, only that homr also fails).
+- Native arm64 fuses multiply-adds, so CLAHE differs from ours in a few pixels by one grey
+  level (up to ~180 pixels a page), and the staff images (a warp of the page) differ in about
+  2-5% of pixels, mostly by up to 3 levels (one shard saw 58 at an edge). This is reported,
+  not gated. So the transformer is given homr's staff images; the
+  XML is then identical. Ours are checked separately (the count is reported).
+- The first run flagged four library screenshots (lib-1, lib-2, t-library-1, t-library-2):
+  CLAHE differed by up to 28 levels. Cause: the reference environment had Pillow 13.0.0,
+  but homr requires `Pillow >= 12.1.1, < 13`; Pillow 13 resizes differently from 10.4
+  through 12.3, which the port matches exactly. With Pillow 12.3 all four agree. Keep the
+  reference environment in homr's pinned ranges.
+- Pyodide is no longer a reference (Partsong runs the Rust port, not homr in Pyodide): its
+  scripts (pyodide_*.mjs) and the checks that used them (check_pre, check_page,
+  check_staffs, check_xml) are removed. Earlier sections of this log describe them as they
+  were.
