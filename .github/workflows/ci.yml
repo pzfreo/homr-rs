@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The benchmark and check binaries read macOS's per-process instruction counter, so
+# everything is built on macOS (arm64, which is also where the NEON paths run).
+jobs:
+  rust:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo test --release
+      - name: WebAssembly (SIMD128) build of the library
+        run: cargo build --release --lib --target wasm32-unknown-unknown
+        env:
+          RUSTFLAGS: -C target-feature=+simd128
