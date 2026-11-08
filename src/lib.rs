@@ -22,6 +22,7 @@ pub mod sintable;
 pub mod staff;
 pub mod staff_image;
 pub mod symbols;
+pub mod systems;
 pub mod tokens;
 pub mod triplets;
 pub mod warp;

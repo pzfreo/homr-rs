@@ -3,11 +3,12 @@
 
 use crate::npmath::{np_mean, py_round};
 use crate::raster::{ellipse_kernel, fill_poly, morph, subtract};
-use crate::staff::{Staff, StaffPoint};
+use crate::staff::{Staff, StaffPoint, LINES};
 use crate::symbols::{rotated_boxes, Shape};
 
-fn median(mut v: Vec<f64>) -> f64 {
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+/// np.median of floats (the mean of the two middle ones for an even count).
+pub(crate) fn median(mut v: Vec<f64>) -> f64 {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = v.len();
     if n % 2 == 1 {
         v[n / 2]
@@ -173,24 +174,46 @@ pub fn merge_staffs(a: &Staff, b: &Staff) -> Result<Staff, String> {
     for p in &b.grid {
         gb.insert(key(p), p);
     }
-    let grid: Vec<StaffPoint> = ga
-        .iter()
-        .filter_map(|(k, pa)| {
-            gb.get(k).map(|pb| {
-                let mut y = pa.y.clone();
-                y.extend_from_slice(&pb.y);
-                y.sort_by(|u, v| u.partial_cmp(v).unwrap());
-                StaffPoint {
-                    x: pa.x,
-                    y,
-                    angle: (pa.angle + pb.angle) / 2.0,
-                }
-            })
-        })
-        .collect();
+    let mut grid: Vec<StaffPoint> = Vec::new();
+    for (k, pa) in &ga {
+        let Some(pb) = gb.get(k) else { continue };
+        if (pa.x - pb.x).abs() > 1e-3 {
+            return Err("ValueError: Can't merge points at different positions".into());
+        }
+        let mut y = pa.y.clone();
+        y.extend_from_slice(&pb.y);
+        y.sort_by(|u, v| u.partial_cmp(v).unwrap_or(std::cmp::Ordering::Equal));
+        grid.push(StaffPoint {
+            x: pa.x,
+            y,
+            angle: (pa.angle + pb.angle) / 2.0,
+        });
+    }
     let mut s = Staff::from_grid(grid)?;
     s.halves = Some(Box::new((a.clone(), b.clone())));
     Ok(s)
+}
+
+/// Staff.split, the inverse of merge: a grand staff into its upper and lower staff,
+/// from the grid points which have both (ten lines). None if there are none.
+pub fn split_staff(s: &Staff) -> Option<(Staff, Staff)> {
+    let both: Vec<&StaffPoint> = s.grid.iter().filter(|p| p.y.len() == 2 * LINES).collect();
+    if both.is_empty() {
+        return None;
+    }
+    let part = |range: std::ops::Range<usize>| {
+        let grid = both
+            .iter()
+            .map(|p| StaffPoint {
+                x: p.x,
+                y: p.y[range.clone()].to_vec(),
+                angle: p.angle,
+            })
+            .collect();
+        // the grid is not empty, so this can't fail; halves of a split staff are not kept
+        Staff::from_grid(grid).expect("a staff from a non-empty grid")
+    };
+    Some((part(0..LINES), part(LINES..2 * LINES)))
 }
 
 /// find_braces_brackets_and_grand_staff_lines: staffs (top to bottom) into MultiStaffs.

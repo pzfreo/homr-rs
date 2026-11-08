@@ -2500,3 +2500,28 @@ tools/record_decoder.py, tools/record_models.py and the two tools below.
   checks use homr as run natively. Native arm64 fuses multiply-adds, so an exact tie can
   round the other way (t-library-2 differs by one grid point of a staff); that is a
   difference of the reference, not of the port.
+
+### System repair (system_repair.py after 33dd138), checked
+- Ported: repair_systems and everything it calls (layout most systems share, fitting
+  neighbor systems to it, pairing single staffs into a grand staff by their gap, the
+  repair score, a single staff below the last system, regrouping by a repeating
+  pattern, unifying grand staffs), as `systems::repair_systems`, with Staff.split
+  (`braces::split_staff`). homr tells staffs apart by object identity; the port gives
+  each staff an id, and a new one for each staff made by a merge. `merge_staffs` now
+  raises homr's error for points at the same rounded x which are not the same x.
+- Checked with tools/synth_systems.py and `check_systems`: pages of staffs grouped into
+  systems with the defects detection has (a missed brace, systems joined by a crease,
+  staffs hidden in some systems, a stray staff, nothing grouped, singles which don't
+  overlap) run through homr's repair_systems, compared staff by staff, grid values
+  included, and with rows out of order down the page (a MultiStaff sorts its own staffs by
+  their top; the port does too). 8,400 cases: identical, 2,600 of them regrouped by homr,
+  250 by a pattern, 260 with a single staff dropped, 24 where homr raises (the port
+  raises too). Breaking
+  a rule makes 1 to 308 cases differ (17 rules, including the sorting: the gap limits, connected systems, the
+  fit window, the score weights, the two-occurrence rules, the tie rules, the sort of
+  candidates...); one change, dropping the single staff on a page of two systems, cannot
+  be reached (with two systems the mixed layout always scores higher).
+- A grand staff which is split and merged again keeps, as `halves`, the parts made by the
+  split, not the staffs detection found (Partsong's own extension; homr has no halves).
+  A grand staff left alone keeps its halves.
+- Not wired into page_xml yet: that needs the hidden-staff handling of parse_staffs.
