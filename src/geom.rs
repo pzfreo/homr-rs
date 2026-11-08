@@ -571,6 +571,12 @@ fn convex_hull_cv(pts: &[[i32; 2]]) -> Vec<usize> {
     hb
 }
 
+/// cv2.convexHull(points) (clockwise=False, returnPoints=True): the hull's points in
+/// OpenCV's order.
+pub fn convex_hull_points(pts: &[[i32; 2]]) -> Vec<[i32; 2]> {
+    convex_hull_cv(pts).into_iter().map(|i| pts[i]).collect()
+}
+
 #[allow(dead_code)]
 fn convex_hull(pts: &[(i64, i64)]) -> Vec<(i64, i64)> {
     if pts.len() < 3 {

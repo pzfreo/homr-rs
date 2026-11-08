@@ -2,6 +2,8 @@
 name = "homr-rs"
 version = "0.1.0"
 edition = "2021"
+# the NEON dot-product intrinsics (vdotq_s32) are stable since 1.98
+rust-version = "1.98"
 description = "Experimental Rust port of homr, including its quantized transformer decoder"
 license = "AGPL-3.0-only"
 

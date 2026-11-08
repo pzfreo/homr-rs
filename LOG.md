@@ -2477,3 +2477,26 @@ tools/record_decoder.py, tools/record_models.py and the two tools below.
   line up, neighbor share/width, column share, long-staff width, slice width) differs
   on 2-44 pages per rule.
 - Still to port: autocrop, system_repair, parse_staffs' hidden staffs.
+
+### Autocrop (autocrop.py after 33dd138), checked
+- Ported: the full-page test now compares the paper's width and height with 25% of the
+  image (it compared its corner, so an off-centre page was left uncut), a margin round
+  the eroded contour, strips beside the paper which keep the whole side when they
+  have the paper's color (shadows), and the surroundings of a rotated sheet painted in
+  the paper color (what made the app screenshots read differently).
+- numpy details checked on numpy 2.5.4: float32 chromaticity with the three channels
+  added left to right, float32 medians (the mean of the two middle values when even),
+  float32 compared with 0.07 in float32. cv2.blur(7x7)'s result is (sum + 24) / 49:
+  49 is odd, so no float32/float64 rounding path differs, for every possible sum.
+- Compared with homr's autocrop_with_offset (tools/dump_autocrop.py, `check_autocrop`),
+  crop size, offset and every pixel: the 148 corpus images (94 cropped and painted over),
+  450 synthetic photos from tools/synth_photos.py (a page rotated and in perspective on
+  random desks, shadows, a warm lamp, off-centre, filling the frame, tiny, in a book,
+  on a white table, some images under 500 px, one side in deep shadow): all identical.
+  Changing each rule makes 3 to 96 images differ (margin, its 5 px minimum, color
+  threshold, dark-pixel cut, dilation size, paper sampling, the full-page test, blur size,
+  top/bottom strips, strips without corners).
+- Pyodide is no longer used as a reference: Partsong runs homr-rs, not homr, so the
+  checks use homr as run natively. Native arm64 fuses multiply-adds, so an exact tie can
+  round the other way (t-library-2 differs by one grid point of a staff); that is a
+  difference of the reference, not of the port.

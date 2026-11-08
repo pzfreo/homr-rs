@@ -85,8 +85,7 @@ fn less(a: f64, b: f64) -> bool {
 }
 
 /// A range of more than 16 elements (pr - pl >= 16, both ends inclusive) is partitioned;
-/// shorter ones are insertion sorted. Matches numpy 2.4 (Pyodide) and 2.5 on every case of
-/// tools/argsort_ref.mjs.
+/// shorter ones are insertion sorted. Matches numpy on every case of tools/argsort_cases.py.
 const SMALL_QUICKSORT: usize = 15;
 
 /// The heapsort numpy falls back to when the quicksort recursion gets too deep.
