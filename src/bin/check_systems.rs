@@ -47,8 +47,12 @@ fn rows(v: &Value) -> Vec<MultiStaff> {
         .collect()
 }
 
-/// Every staff as (grand, [(x, [y], angle)]), row by row.
-fn shape(r: &[MultiStaff]) -> Vec<Vec<(bool, Vec<(f64, Vec<f64>, f64)>)>> {
+/// A grid point as (x, [y], angle).
+type Point = (f64, Vec<f64>, f64);
+/// Every staff as (grand, grid), row by row.
+type Shape = Vec<Vec<(bool, Vec<Point>)>>;
+
+fn shape(r: &[MultiStaff]) -> Shape {
     r.iter()
         .map(|m| {
             m.staffs
