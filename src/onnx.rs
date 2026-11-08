@@ -38,6 +38,7 @@ pub struct Node {
     pub outputs: Vec<String>,
     pub ints: HashMap<String, Vec<i64>>,
     pub floats: HashMap<String, f32>,
+    pub strings: HashMap<String, String>,
 }
 pub struct Graph<'a> {
     pub tensors: HashMap<String, Tensor<'a>>,
@@ -136,6 +137,9 @@ impl<'a> Graph<'a> {
                                         );
                                     }
                                     3 => ints.push(value.int as i64),
+                                    4 => {
+                                        n.strings.insert(key.clone(), string(value.bytes)?);
+                                    }
                                     8 => {
                                         if value.bytes.is_empty() {
                                             ints.push(value.int as i64);

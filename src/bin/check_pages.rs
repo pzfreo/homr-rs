@@ -1,7 +1,9 @@
 //! Whole pages against homr: from the decoded image to the MusicXML, all in Rust (autocrop,
 //! resize, CLAHE, tiles, masks, page analysis, system repair, staff images, the Rust encoder
 //! and decoder, voices, MusicXML), except the segmentation network, whose class maps of the
-//! tiles come from native homr (tools/dump_segnet.py: that network runs elsewhere in an app).
+//! tiles come from native homr (tools/dump_segnet.py), unless SEGNET=<segnet.onnx> is set: then
+//! the Rust network segments the page (THREADS=<n> threads) and nothing but the decoder's
+//! input comes from homr.
 //! Compared with native homr's masks and with the MusicXML it wrote (tools/run_corpus.py); a page
 //! homr fails on must fail here. Exit status 1 if a page differs.
 //!
@@ -21,9 +23,11 @@ use homr_rs::decoder::Decoder;
 use homr_rs::encoder::Encoder;
 use homr_rs::page::{analyse_page, PageMasks};
 use homr_rs::preprocess::{
-    autocrop, bgr_to_gray, clahe, masks, merge_tiles, postprocess, resize_image, tile_origins, Bgr,
+    autocrop, bgr_to_gray, clahe, masks, merge_tiles, postprocess, resize_image, tile_input,
+    tile_origins, Bgr,
 };
 use homr_rs::score::{page_xml, PageMapping};
+use homr_rs::segnet::Segnet;
 use homr_rs::staff_image::to_model_input;
 use homr_rs::tokens::{Symbol, Vocab};
 use homr_rs::warp::Gray;
@@ -31,13 +35,57 @@ use serde_json::Value;
 use std::fs;
 use std::path::Path;
 
-fn differs(label: &str, ours: &[u8], theirs: &[u8], problems: &mut Vec<String>) {
+/// The class maps of a page's tiles, spread over threads (THREADS, 8 by default).
+fn segment_threads(net: &Segnet, page: &Gray) -> Vec<Vec<u8>> {
+    let origins = tile_origins(page.h, page.w);
+    let threads: usize = std::env::var("THREADS")
+        .ok()
+        .and_then(|t| t.parse().ok())
+        .unwrap_or(8);
+    let per = origins.len().div_ceil(threads).max(1);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = origins
+            .chunks(per)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|&(y, x)| net.classes(&tile_input(page, y, x)).unwrap())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect()
+    })
+}
+
+/// A mask against homr's. With the Rust segmentation (`noise` given) a few pixels may differ,
+/// where two classes are almost tied and the sums round differently from onnxruntime's:
+/// those are counted, and the page passes if its MusicXML is homr's.
+fn differs(
+    label: &str,
+    ours: &[u8],
+    theirs: &[u8],
+    problems: &mut Vec<String>,
+    noise: Option<&mut usize>,
+) {
     if ours.len() != theirs.len() {
         problems.push(format!("{label}: {} vs {} bytes", ours.len(), theirs.len()));
     } else {
         let n = ours.iter().zip(theirs).filter(|(a, b)| a != b).count();
-        if n > 0 {
-            problems.push(format!("{label}: {n} of {} differ", ours.len()));
+        match noise {
+            Some(total) => {
+                *total += n;
+                // a few pixels are near-ties; more than 1 in 100,000 is a segmentation bug
+                if n * 100_000 > ours.len() {
+                    problems.push(format!("{label}: {n} of {} differ", ours.len()));
+                }
+            }
+            None if n > 0 => problems.push(format!("{label}: {n} of {} differ", ours.len())),
+            None => {}
         }
     }
 }
@@ -49,6 +97,9 @@ fn main() {
     let encoder = Encoder::from_onnx(&fs::read(&args[4]).unwrap()).unwrap();
     let decoder = Decoder::from_onnx(&fs::read(&args[5]).unwrap()).unwrap();
     let vocab = Vocab::default();
+    // SEGNET=<segnet.onnx>: segment in Rust too, instead of reading homr's class maps
+    let segnet =
+        std::env::var_os("SEGNET").map(|path| Segnet::from_onnx(&fs::read(path).unwrap()).unwrap());
     let mut names: Vec<String> = if args.len() > 6 {
         args[6..].to_vec()
     } else {
@@ -60,6 +111,7 @@ fn main() {
     names.sort();
     let (mut same, mut same_err, mut diff, mut skipped, mut staffs) = (0, 0, 0, 0, 0usize);
     let (mut noise_pixels, mut noise_total, mut noise_max) = (0usize, 0usize, 0u8);
+    let mut mask_noise = 0usize;
     for name in names {
         let d = seg.join(&name);
         if !d.join("segnet.json").exists() || !refs.join(format!("{name}.json")).exists() {
@@ -103,12 +155,15 @@ fn main() {
             );
             continue;
         }
-        let classes: Vec<Vec<u8>> = tiles
-            .as_chunks::<{ 320 * 320 }>()
-            .0
-            .iter()
-            .map(|c| c.to_vec())
-            .collect();
+        let classes: Vec<Vec<u8>> = match &segnet {
+            Some(net) => segment_threads(net, &gray),
+            None => tiles
+                .as_chunks::<{ 320 * 320 }>()
+                .0
+                .iter()
+                .map(|c| c.to_vec())
+                .collect(),
+        };
         let m = postprocess(masks(&merge_tiles(&classes, h, w), h, w), &mut gray);
         for (label, ours) in [
             ("staff", &m.staff),
@@ -122,6 +177,7 @@ fn main() {
                 ours,
                 &fs::read(d.join(format!("final_{label}.bin"))).unwrap(),
                 &mut problems,
+                segnet.is_some().then_some(&mut mask_noise),
             );
         }
         // our CLAHE against homr's (native, fused multiply-adds): how many pixels, by how much
@@ -238,6 +294,9 @@ fn main() {
         }
     }
     println!("{same} pages identical, {same_err} both fail, {diff} different, {skipped} skipped; {staffs} staffs read");
+    if segnet.is_some() {
+        println!("the Rust segmentation's masks differ from homr's in {mask_noise} pixels");
+    }
     println!("our staff images differ from homr's in {noise_pixels} of {noise_total} pixels, by at most {noise_max} grey levels");
     if diff > 0 {
         std::process::exit(1);

@@ -18,6 +18,7 @@ pub mod preprocess;
 pub mod raster;
 pub mod rational;
 pub mod score;
+pub mod segnet;
 pub mod sintable;
 pub mod staff;
 pub mod staff_image;
