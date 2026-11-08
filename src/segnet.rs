@@ -7,7 +7,10 @@
 //!
 //! The results are those of any float32 implementation of the graph: sums in another order
 //! than onnxruntime's differ in the last bits, so a pixel where two classes are about equally
-//! likely can come out the other way. `tools/dump_segnet.py` and `check_segnet` measure that.
+//! likely can come out the other way. `tools/dump_segnet.py` and `check_segnet` measure that
+//! (on arm64, which fuses multiply-adds like onnxruntime's kernels; the WebAssembly build
+//! multiplies and adds separately, so its near-ties can fall the other way and are not
+//! covered by those numbers).
 
 use crate::onnx::{Graph, Tensor};
 use crate::preprocess::{tile_input, tile_origins, WIN};
@@ -357,6 +360,14 @@ fn per_channel(t: &Tensor) -> Result<[f32; 3], String> {
         .map_err(|_| "expected one value per channel".to_string())
 }
 
+/// The name of a node's i-th input.
+fn input_name(n: &crate::onnx::Node, i: usize) -> Result<&str, String> {
+    n.inputs
+        .get(i)
+        .map(String::as_str)
+        .ok_or_else(|| format!("a {} without its input {i}", n.op))
+}
+
 /// A new tensor of the graph, known by its name.
 fn add(shapes: &mut Vec<Shape>, ids: &mut HashMap<String, usize>, name: &str, s: Shape) -> usize {
     shapes.push(s);
@@ -401,8 +412,11 @@ impl Segnet {
                 .as_str();
             match n.op.as_str() {
                 "Sub" | "Div" => {
-                    let x = get(&n.inputs[0], &ids)?;
-                    let v = per_channel(g.tensor(&n.inputs[1])?)?;
+                    let x = get(input_name(n, 0)?, &ids)?;
+                    let v = per_channel(g.tensor(input_name(n, 1)?)?)?;
+                    if shapes[x].c != 3 {
+                        return Err("a normalisation of other than 3 channels".into());
+                    }
                     let o = {
                         let same = shapes[x];
                         add(&mut shapes, &mut ids, out, same)
@@ -422,8 +436,11 @@ impl Segnet {
                     });
                 }
                 "Conv" => {
-                    let x = get(&n.inputs[0], &ids)?;
-                    let (w, b) = (g.tensor(&n.inputs[1])?, g.tensor(&n.inputs[2])?);
+                    let x = get(input_name(n, 0)?, &ids)?;
+                    let (w, b) = (
+                        g.tensor(input_name(n, 1)?)?,
+                        g.tensor(input_name(n, 2).map_err(|_| "a convolution without bias")?)?,
+                    );
                     let ints = |k: &str| n.ints.get(k).cloned().unwrap_or_default();
                     let (strides, pads, dilations) =
                         (ints("strides"), ints("pads"), ints("dilations"));
@@ -445,6 +462,12 @@ impl Segnet {
                     }
                     let (oc, ic, k) = (w.dims[0], w.dims[1], w.dims[2]);
                     let s = shapes[x];
+                    if pads[0] < 0 || strides[0] < 1 || k == 0 {
+                        return Err("a convolution with negative padding or no stride".into());
+                    }
+                    if s.h + 2 * (pads[0] as usize) < k || s.w + 2 * (pads[0] as usize) < k {
+                        return Err("a convolution larger than its padded input".into());
+                    }
                     if ic != s.c {
                         return Err(format!("a convolution of {ic} channels reads {}", s.c));
                     }
@@ -476,10 +499,13 @@ impl Segnet {
                     });
                 }
                 "Relu" => {
-                    let x = get(&n.inputs[0], &ids)?;
+                    let x = get(input_name(n, 0)?, &ids)?;
                     // a convolution only this ReLU reads has it applied as it stores its result
                     if let Some(Op::Conv { output, conv, .. }) = ops.last_mut() {
-                        if *output == x && uses.get(n.inputs[0].as_str()) == Some(&1) {
+                        if *output == x
+                            && uses.get(n.inputs[0].as_str()) == Some(&1)
+                            && n.inputs[0] != "output"
+                        {
                             conv.relu = true;
                             ids.insert(out.to_string(), x);
                             continue;
@@ -495,7 +521,7 @@ impl Segnet {
                     });
                 }
                 "MaxPool" => {
-                    let x = get(&n.inputs[0], &ids)?;
+                    let x = get(input_name(n, 0)?, &ids)?;
                     let ints = |k: &str| n.ints.get(k).cloned().unwrap_or_default();
                     let (kernel, strides, pads) =
                         (ints("kernel_shape"), ints("strides"), ints("pads"));
@@ -509,6 +535,16 @@ impl Segnet {
                         || ints("dilations").iter().any(|&d| d != 1)
                     {
                         return Err("a max-pool other than square, uniform, floor mode".into());
+                    }
+                    if kernel[0] < 1 || strides[0] < 1 || pads[0] < 0 {
+                        return Err(
+                            "a max-pool with no kernel or stride, or negative padding".into()
+                        );
+                    }
+                    if shapes[x].h + 2 * (pads[0] as usize) < kernel[0] as usize
+                        || shapes[x].w + 2 * (pads[0] as usize) < kernel[0] as usize
+                    {
+                        return Err("a max-pool larger than its padded input".into());
                     }
                     let (k, st, p, s) = (
                         kernel[0] as usize,
@@ -535,7 +571,7 @@ impl Segnet {
                     });
                 }
                 "Add" => {
-                    let (a, b) = (get(&n.inputs[0], &ids)?, get(&n.inputs[1], &ids)?);
+                    let (a, b) = (get(input_name(n, 0)?, &ids)?, get(input_name(n, 1)?, &ids)?);
                     if shapes[a] != shapes[b] {
                         return Err("an addition of different shapes".into());
                     }
@@ -547,14 +583,16 @@ impl Segnet {
                 }
                 "Shape" => {
                     // only feeds a Resize: the dimensions it names are known here
-                    let x = get(&n.inputs[0], &ids)?;
+                    let x = get(input_name(n, 0)?, &ids)?;
                     let s = shapes[x];
                     let dims = [1, s.c as i64, s.h as i64, s.w as i64];
-                    let (start, end) = (
-                        n.ints.get("start").map_or(0, |v| v[0]),
-                        n.ints.get("end").map_or(4, |v| v[0]),
-                    );
-                    consts.insert(out.to_string(), dims[start as usize..end as usize].to_vec());
+                    // start and end count from the back when negative, and are clamped to 0..=4
+                    let bound = |v: Option<&Vec<i64>>, default: i64| {
+                        let v = v.and_then(|v| v.first().copied()).unwrap_or(default);
+                        (if v < 0 { v + 4 } else { v }).clamp(0, 4) as usize
+                    };
+                    let (start, end) = (bound(n.ints.get("start"), 0), bound(n.ints.get("end"), 4));
+                    consts.insert(out.to_string(), dims[start..end.max(start)].to_vec());
                 }
                 "Concat" => {
                     let axis = n.ints.get("axis").map(|a| a[0]);
@@ -597,7 +635,7 @@ impl Segnet {
                     }
                 }
                 "Resize" => {
-                    let x = get(&n.inputs[0], &ids)?;
+                    let x = get(input_name(n, 0)?, &ids)?;
                     let mode = |k: &str| n.strings.get(k).map(String::as_str);
                     if mode("mode") != Some("nearest")
                         || mode("coordinate_transformation_mode") != Some("asymmetric")
@@ -899,6 +937,7 @@ mod tests {
     /// Prints how many instructions the convolution takes: cargo test --release speed -- --ignored --nocapture
     #[test]
     #[ignore]
+    #[cfg(target_os = "macos")]
     fn speed() {
         for &(ic, oc, k, s, p, h, w) in &[
             (64, 64, 3, 1, 1, 80, 80),

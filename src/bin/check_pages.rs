@@ -77,7 +77,13 @@ fn differs(
     } else {
         let n = ours.iter().zip(theirs).filter(|(a, b)| a != b).count();
         match noise {
-            Some(total) => *total += n,
+            Some(total) => {
+                *total += n;
+                // a few pixels are near-ties; more than 1 in 100,000 is a segmentation bug
+                if n * 100_000 > ours.len() {
+                    problems.push(format!("{label}: {n} of {} differ", ours.len()));
+                }
+            }
             None if n > 0 => problems.push(format!("{label}: {n} of {} differ", ours.len())),
             None => {}
         }

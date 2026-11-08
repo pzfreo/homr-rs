@@ -8,12 +8,19 @@ use homr_rs::warp::Gray;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
+#[cfg(target_os = "macos")]
 extern "C" {
     fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut u64) -> i32;
     fn getpid() -> i32;
 }
 
-/// Instructions this process has retired (macOS): a busy machine doesn't change them.
+/// Instructions this process has retired (macOS only, 0 elsewhere): a busy machine doesn't change them.
+#[cfg(not(target_os = "macos"))]
+fn instructions() -> u64 {
+    0
+}
+
+#[cfg(target_os = "macos")]
 fn instructions() -> u64 {
     let mut buf = [0u64; 96];
     assert_eq!(unsafe { proc_pid_rusage(getpid(), 4, buf.as_mut_ptr()) }, 0);
