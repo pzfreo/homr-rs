@@ -69,8 +69,10 @@ fn check(
     error: Option<&Value>,
 ) -> (Vec<String>, bool) {
     let mut asked: Vec<String> = Vec::new();
+    let asked_count = std::cell::Cell::new(0usize);
     let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        parse_staffs_with(rows, &mut |i, staff, grand, _| {
+        parse_staffs_with(rows.to_vec(), &mut |i, staff, grand, _| {
+            asked_count.set(asked_count.get() + 1);
             let call = calls.get(i).ok_or("asked for more staffs than homr")?;
             let want = call["staff"].as_array().unwrap();
             let fingerprint = [staff.min_x, staff.max_x, staff.min_y, staff.max_y];
@@ -95,12 +97,21 @@ fn check(
     let mut problems = asked;
     let mut hidden = false;
     if let Some(error) = error {
-        if !matches!(got, Ok(Err(_)) | Err(_)) {
-            problems.push(format!("homr failed ({error}), the Rust did not"));
+        match got {
+            Ok(Err(_)) => {}
+            Ok(Ok(_)) => problems.push(format!("homr failed ({error}), the Rust did not")),
+            Err(_) => problems.push(format!("homr failed ({error}), the Rust panicked")),
         }
     } else {
         match got {
             Ok(Ok(got)) => {
+                if asked_count.get() != calls.len() {
+                    problems.push(format!(
+                        "asked for {} staffs, homr for {}",
+                        asked_count.get(),
+                        calls.len()
+                    ));
+                }
                 let want: Vec<Vec<String>> = voices
                     .unwrap()
                     .as_array()

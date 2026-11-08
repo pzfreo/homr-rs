@@ -28,44 +28,6 @@ impl PageMapping {
     }
 }
 
-#[derive(Clone)]
-pub struct Row {
-    pub staffs: Vec<(Staff, bool)>,
-}
-
-pub fn sorted_row(mut staffs: Vec<(Staff, bool)>) -> Row {
-    staffs.sort_by(|a, b| a.0.min_y.partial_cmp(&b.0.min_y).unwrap());
-    Row { staffs }
-}
-
-/// _find_periodic_core
-pub fn find_periodic_core(layout: &[bool]) -> Option<(usize, usize, usize)> {
-    let n = layout.len();
-    let mut best: Option<(usize, usize, usize, usize)> = None;
-    for period in 1..=n / 2 {
-        for front in 0..=period {
-            for back in 0..=period {
-                if front + back > n {
-                    continue;
-                }
-                let core = &layout[front..n - back];
-                if core.len() < 2 * period || !core.len().is_multiple_of(period) {
-                    continue;
-                }
-                let first = &core[..period];
-                if !core.chunks(period).all(|r| r == first) {
-                    continue;
-                }
-                let cand = (front + back, period, front, back);
-                if best.is_none_or(|b| (cand.0, cand.1) < (b.0, b.1)) {
-                    best = Some(cand);
-                }
-            }
-        }
-    }
-    best.map(|b| (b.1, b.2, b.3))
-}
-
 pub fn symbol_center(s: &Symbol) -> Option<(f64, f64)> {
     if s.rhythm.starts_with("chord") {
         return None;
@@ -86,25 +48,33 @@ pub fn clean_up_voice(symbols: &[Symbol]) -> Vec<Symbol> {
 /// _slots_in_layout: the staffs of the layout which the staffs of a system are, None if
 /// that isn't unique, e.g. a system shows only the piano as the voice is hidden.
 fn slots_in_layout(row: &[bool], layout: &[bool]) -> Option<Vec<usize>> {
-    // itertools.combinations(range(len(layout)), len(row)), in its order
-    fn combine(n: usize, k: usize, from: usize, now: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
-        if now.len() == k {
-            out.push(now.clone());
+    // itertools.combinations(range(len(layout)), len(row)) keeping those which match, in
+    // its order; only whether there is exactly one matters, so stop at the second
+    fn walk(
+        row: &[bool],
+        layout: &[bool],
+        from: usize,
+        now: &mut Vec<usize>,
+        found: &mut Vec<Vec<usize>>,
+    ) {
+        if found.len() > 1 {
             return;
         }
-        for i in from..n {
-            now.push(i);
-            combine(n, k, i + 1, now, out);
-            now.pop();
+        if now.len() == row.len() {
+            found.push(now.clone());
+            return;
+        }
+        for slot in from..layout.len() {
+            if layout[slot] == row[now.len()] {
+                now.push(slot);
+                walk(row, layout, slot + 1, now, found);
+                now.pop();
+            }
         }
     }
-    let mut all = Vec::new();
-    combine(layout.len(), row.len(), 0, &mut Vec::new(), &mut all);
-    let mut matches = all
-        .into_iter()
-        .filter(|slots| slots.iter().zip(row).all(|(&slot, &g)| layout[slot] == g));
-    let first = matches.next()?;
-    matches.next().is_none().then_some(first)
+    let mut found = Vec::new();
+    walk(row, layout, 0, &mut Vec::new(), &mut found);
+    (found.len() == 1).then(|| found.remove(0))
 }
 
 /// _assign_parts: for every system the parts which its staffs belong to; the parts are
@@ -166,16 +136,17 @@ pub fn measure_rests_like(symbols: &[Symbol], is_grandstaff: bool) -> Vec<Symbol
 pub type StaffSymbols<'a> =
     dyn FnMut(usize, &Staff, bool, &Regions) -> Result<Vec<Symbol>, String> + 'a;
 
-/// parse_staffs: the voices of a page. `staff_symbols(index, staff, is_grandstaff, regions)`
+/// parse_staffs: the voices of a page (without homr's selected_staff option, which reads one
+/// staff for debugging). `staff_symbols(index, staff, is_grandstaff, regions)`
 /// reads one staff (the transformer); it is called in homr's order, a voice at a time. A
 /// system with fewer staffs than the largest one hides some (a voice which only shows in
 /// some systems): its staffs are matched to the parts of the largest, and the hidden ones
 /// get a measure rest for every measure of a staff which is shown.
 pub fn parse_staffs_with(
-    multi: &[MultiStaff],
+    multi: Vec<MultiStaff>,
     staff_symbols: &mut StaffSymbols,
 ) -> Result<Vec<Vec<Symbol>>, String> {
-    let mut staffs: Vec<MultiStaff> = multi.to_vec();
+    let mut staffs: Vec<MultiStaff> = multi;
     let mut parts: Vec<Vec<usize>> = staffs
         .iter()
         .map(|r| (0..r.staffs.len()).collect())
@@ -238,13 +209,16 @@ pub fn parse_staffs_with(
     for (voice, &voice_is_grandstaff) in layout.iter().enumerate() {
         let mut result_for_voice: Vec<Symbol> = Vec::new();
         for (staff_index, slots) in parts.iter().enumerate() {
-            let mut symbols = results.get(&(staff_index, voice)).cloned();
-            let shown = slots.iter().find_map(|v| results.get(&(staff_index, *v)));
-            if !slots.contains(&voice) {
-                if let Some(shown) = shown {
-                    symbols = Some(measure_rests_like(shown, voice_is_grandstaff));
-                }
-            }
+            let symbols = if slots.contains(&voice) {
+                results.get(&(staff_index, voice)).cloned()
+            } else {
+                // a part this system hides: a measure rest for each measure of the first
+                // staff of the system which was read
+                slots
+                    .iter()
+                    .find_map(|v| results.get(&(staff_index, *v)))
+                    .map(|shown| measure_rests_like(shown, voice_is_grandstaff))
+            };
             let Some(symbols) = symbols else { continue };
             result_for_voice.extend(symbols);
             result_for_voice.push(Symbol::new("newline"));
@@ -264,7 +238,7 @@ pub fn page_xml(
     predict: &mut dyn FnMut(&Gray) -> Result<Vec<Symbol>, String>,
 ) -> Result<String, String> {
     let multi = repair_systems(multi.to_vec())?;
-    let voices = parse_staffs_with(&multi, &mut |_, staff, grand, regions| {
+    let voices = parse_staffs_with(multi, &mut |_, staff, grand, regions| {
         let prepared = prepare_staff(staff, image, regions)?;
         let mut result: Vec<Symbol> = predict(&prepared.canvas)?;
         if !grand {

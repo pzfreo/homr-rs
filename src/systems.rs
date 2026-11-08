@@ -6,7 +6,6 @@
 //! for each staff made by a merge or a split.
 
 use crate::braces::{median, merge_staffs, split_staff, unit_size, MultiStaff};
-use crate::score::find_periodic_core;
 use crate::staff::{Staff, StaffPoint, LINES};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -53,6 +52,34 @@ impl Ids {
         self.0 += 1;
         self.0 - 1
     }
+}
+
+/// _find_periodic_core
+pub fn find_periodic_core(layout: &[bool]) -> Option<(usize, usize, usize)> {
+    let n = layout.len();
+    let mut best: Option<(usize, usize, usize, usize)> = None;
+    for period in 1..=n / 2 {
+        for front in 0..=period {
+            for back in 0..=period {
+                if front + back > n {
+                    continue;
+                }
+                let core = &layout[front..n - back];
+                if core.len() < 2 * period || !core.len().is_multiple_of(period) {
+                    continue;
+                }
+                let first = &core[..period];
+                if !core.chunks(period).all(|r| r == first) {
+                    continue;
+                }
+                let cand = (front + back, period, front, back);
+                if best.is_none_or(|b| (cand.0, cand.1) < (b.0, b.1)) {
+                    best = Some(cand);
+                }
+            }
+        }
+    }
+    best.map(|b| (b.1, b.2, b.3))
 }
 
 fn flatten(rows: &[System]) -> Vec<Node> {
