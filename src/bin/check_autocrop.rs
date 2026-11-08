@@ -1,7 +1,6 @@
-//! autocrop against homr's autocrop_with_offset: the images dumped by
-//! tools/dump_autocrop.py and the crops from that script (native) or from
-//! tools/pyodide_autocrop.mjs (Pyodide). Crop size, offset and every pixel must match.
-//!   check_autocrop <cases dir> <reference dir>
+//! autocrop against homr's autocrop_with_offset: the images and crops dumped by
+//! tools/dump_autocrop.py. Crop size, offset and every pixel must match; the exit
+//! status is 1 if one doesn't.   check_autocrop <cases dir> <reference dir>
 use homr_rs::preprocess::{autocrop, Bgr};
 use serde_json::Value;
 use std::fs;
@@ -89,4 +88,7 @@ fn main() {
         }
     }
     println!("{same} same, {diff} different; {cropped} of the same were cropped, {painted} had surroundings painted over");
+    if diff > 0 {
+        std::process::exit(1);
+    }
 }

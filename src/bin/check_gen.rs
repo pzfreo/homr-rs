@@ -157,4 +157,7 @@ fn main() {
         calls[1].0, calls[1].1
     );
     println!("generate_xml: identical {same}, different {diff}, failed {failed}");
+    if diff + failed + calls[0].1 + calls[1].1 > 0 {
+        std::process::exit(1);
+    }
 }

@@ -10,8 +10,12 @@ import numpy as np
 src, out, count, seed = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 os.makedirs(out, exist_ok=True)
 rng = random.Random(seed)
+# the score pages of the corpus, not its screenshots of the app (named by what they show)
+SKIP_PREFIXES = ("t-", "app", "lib", "home", "shot")
 pages = [p for p in sorted(glob.glob(os.path.join(src, "*.png")) + glob.glob(os.path.join(src, "*.jpg")))
-         if not any(k in os.path.basename(p) for k in ("teaser", "shot", "app", "lib", "home", "t-"))]
+         if not os.path.basename(p).startswith(SKIP_PREFIXES) and "teaser" not in os.path.basename(p)]
+if not pages:
+    sys.exit("no score pages in " + src)
 
 
 def desk(h, w):

@@ -63,17 +63,24 @@ fn median_f32(v: &mut [f32]) -> f32 {
     }
 }
 
-/// np.median(_chromaticity(pixels), axis=0).
-fn median_chromaticity(pixels: &[[u8; 3]]) -> [f32; 3] {
-    let mut out = [0f32; 3];
-    for (c, o) in out.iter_mut().enumerate() {
-        let mut v: Vec<f32> = pixels.iter().map(|p| chromaticity(*p)[c]).collect();
-        *o = median_f32(&mut v);
+/// np.median(_chromaticity(pixels), axis=0), the chromaticity of each pixel computed once.
+fn median_chromaticity(pixels: impl Iterator<Item = [u8; 3]>) -> [f32; 3] {
+    let mut channels: [Vec<f32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for p in pixels {
+        let c = chromaticity(p);
+        for (v, x) in channels.iter_mut().zip(c) {
+            v.push(x);
+        }
     }
-    out
+    [
+        median_f32(&mut channels[0]),
+        median_f32(&mut channels[1]),
+        median_f32(&mut channels[2]),
+    ]
 }
 
-/// np.abs(a - b).sum() <= max_chromaticity_difference, in float32 as numpy does it.
+/// np.abs(a - b).sum() <= max_chromaticity_difference, in float32 as numpy 2 does it (a
+/// float32 scalar against a Python float; homr requires numpy 2.4 or newer).
 fn chromaticity_close(a: [f32; 3], b: [f32; 3]) -> bool {
     let d = [
         (a[0] - b[0]).abs(),
@@ -85,14 +92,17 @@ fn chromaticity_close(a: [f32; 3], b: [f32; 3]) -> bool {
 
 /// _is_paper: the median color of the pixels is the paper's (no pixels count as paper).
 fn is_paper(img: &Bgr, rows: (usize, usize), cols: (usize, usize), paper: [f32; 3]) -> bool {
-    let mut pixels: Vec<[u8; 3]> = Vec::new();
-    for y in rows.0..rows.1 {
-        for x in cols.0..cols.1 {
-            let i = (y * img.w + x) * 3;
-            pixels.push([img.data[i], img.data[i + 1], img.data[i + 2]]);
-        }
+    if rows.0 >= rows.1 || cols.0 >= cols.1 {
+        return true;
     }
-    pixels.is_empty() || chromaticity_close(median_chromaticity(&pixels), paper)
+    let pixels = (rows.0..rows.1).flat_map(|y| {
+        img.data[(y * img.w + cols.0) * 3..(y * img.w + cols.1) * 3]
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .copied()
+    });
+    chromaticity_close(median_chromaticity(pixels), paper)
 }
 
 /// _keep_sides_with_paper: extends the box to the image border on every side where
@@ -116,30 +126,48 @@ fn keep_sides_with_paper(
 
 /// cv2.blur(img, (7, 7)): the box sum of 7x7 (reflected at the border) divided by 49
 /// and rounded. 49 is odd, so there are no ties and float32, float64 and
-/// (sum + 24) / 49 all round alike.
+/// (sum + 24) / 49 all round alike. The seven pixels of a window are summed across
+/// each row, and the column sums slide down one row at a time.
 fn blur7(img: &Bgr) -> Bgr {
     let (w, h) = (img.w, img.h);
-    let mut rows = vec![0u32; w * h * 3];
-    for y in 0..h {
+    let columns: Vec<usize> = (-3..w as i64 + 3)
+        .map(|x| reflect101(x, w as i64) as usize)
+        .collect();
+    // the sums of seven pixels across, for one row
+    let across = |row: usize| -> Vec<u32> {
+        let src = &img.data[row * w * 3..(row + 1) * w * 3];
+        let mut out = vec![0u32; w * 3];
         for c in 0..3 {
-            for x in 0..w {
-                let mut sum = 0u32;
-                for k in -3i64..=3 {
-                    sum += img.data[(y * w + reflect101(x as i64 + k, w as i64) as usize) * 3 + c]
-                        as u32;
-                }
-                rows[(y * w + x) * 3 + c] = sum;
+            let mut sum: u32 = (0..7).map(|k| src[columns[k] * 3 + c] as u32).sum();
+            out[c] = sum;
+            for x in 1..w {
+                sum = sum + src[columns[x + 6] * 3 + c] as u32 - src[columns[x - 1] * 3 + c] as u32;
+                out[x * 3 + c] = sum;
             }
+        }
+        out
+    };
+    let row_of = |y: i64| reflect101(y, h as i64) as usize;
+    let mut window: std::collections::VecDeque<Vec<u32>> =
+        (-3..=3).map(|y| across(row_of(y))).collect();
+    let mut down = vec![0u32; w * 3];
+    for r in &window {
+        for (d, v) in down.iter_mut().zip(r) {
+            *d += v;
         }
     }
     let mut data = vec![0u8; w * h * 3];
     for y in 0..h {
-        for i in 0..w * 3 {
-            let mut sum = 0u32;
-            for k in -3i64..=3 {
-                sum += rows[reflect101(y as i64 + k, h as i64) as usize * w * 3 + i];
+        for (o, d) in data[y * w * 3..(y + 1) * w * 3].iter_mut().zip(&down) {
+            *o = ((d + 24) / 49) as u8;
+        }
+        if y + 1 < h {
+            let leaving = window.pop_front().unwrap();
+            let entering = across(row_of(y as i64 + 4));
+            for ((d, l), e) in down.iter_mut().zip(&leaving).zip(&entering) {
+                *d = *d + e - l;
             }
-            data[y * w * 3 + i] = ((sum + 24) / 49) as u8;
+            window.push_back(entering);
         }
     }
     Bgr { w, h, data }
@@ -149,7 +177,7 @@ fn blur7(img: &Bgr) -> Bgr {
 /// beside a rotated sheet, by filling it with the color of the paper. The sheet
 /// itself is unchanged. `sheet` is the paper's contour in the crop's coordinates.
 fn remove_surroundings(
-    crop: &Bgr,
+    mut crop: Bgr,
     sheet: &[[i32; 2]],
     paper: &[[u8; 3]],
     paper_chroma: [f32; 3],
@@ -174,7 +202,7 @@ fn remove_surroundings(
         };
     }
     // Single pixels are too noisy to compare their color
-    let smooth = blur7(crop);
+    let smooth = blur7(&crop);
     let bright_over = 0.25 * (((paper_color[0] + paper_color[1]) + paper_color[2]) / 3.0);
     let mut background = vec![0u8; w * h];
     for i in 0..w * h {
@@ -203,13 +231,12 @@ fn remove_surroundings(
         paper_color[1] as u8,
         paper_color[2] as u8,
     ];
-    let mut result = crop.clone();
     for i in 0..w * h {
         if background[i] & beside_sheet[i] > 0 {
-            result.data[i * 3..i * 3 + 3].copy_from_slice(&fill);
+            crop.data[i * 3..i * 3 + 3].copy_from_slice(&fill);
         }
     }
-    result
+    crop
 }
 
 /// autocrop_with_offset: the page cut out of a photo, and its top-left corner. Areas
@@ -281,7 +308,7 @@ pub fn autocrop(img: &Bgr) -> (Bgr, (usize, usize)) {
     if paper.is_empty() {
         return (img.clone(), (0, 0));
     }
-    let paper_chroma = median_chromaticity(&paper);
+    let paper_chroma = median_chromaticity(paper.iter().copied());
     // The contour was eroded, keep a margin so that staffs at the edge of the paper stay
     let margin = 5.max(img.w.max(img.h) / 100);
     let (x0, y0) = (x.saturating_sub(margin), y.saturating_sub(margin));
@@ -300,7 +327,7 @@ pub fn autocrop(img: &Bgr) -> (Bgr, (usize, usize)) {
         .map(|p| [p[0] - x as i32, p[1] - y as i32])
         .collect();
     (
-        remove_surroundings(&crop, &sheet, &paper, paper_chroma),
+        remove_surroundings(crop, &sheet, &paper, paper_chroma),
         (x, y),
     )
 }
@@ -781,4 +808,92 @@ pub fn postprocess(mut m: SegMasks, gray: &mut Gray) -> SegMasks {
     let strong = morph(&m.staff, m.h, m.w, &ellipse_kernel(1, 2), true);
     m.staff = strong.iter().map(|&v| (v as f64 > 0.1) as u8).collect();
     m
+}
+
+#[cfg(test)]
+mod autocrop_tests {
+    use super::*;
+
+    fn flat(w: usize, h: usize, c: [u8; 3]) -> Bgr {
+        Bgr {
+            w,
+            h,
+            data: (0..w * h).flat_map(|_| c).collect(),
+        }
+    }
+
+    #[test]
+    fn median_of_float32_values() {
+        assert_eq!(median_f32(&mut [3.0, 1.0, 2.0]), 2.0);
+        assert_eq!(median_f32(&mut [4.0, 1.0, 2.0, 3.0]), 2.5);
+        assert_eq!(median_f32(&mut [7.0]), 7.0);
+    }
+
+    #[test]
+    fn chromaticity_ignores_brightness() {
+        let a = chromaticity([10, 20, 30]);
+        let b = chromaticity([20, 40, 60]);
+        assert!(a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.01));
+        assert!(chromaticity_close(a, b));
+        assert!(!chromaticity_close(
+            chromaticity([200, 20, 20]),
+            chromaticity([20, 20, 200])
+        ));
+    }
+
+    #[test]
+    fn blur_keeps_flat_images_and_spreads_a_dot() {
+        let flat7 = flat(9, 8, [10, 100, 250]);
+        assert_eq!(blur7(&flat7).data, flat7.data);
+        // one bright pixel in the middle: every pixel of the 7x7 window around it gets 49 / 49
+        let mut dot = flat(15, 15, [0, 0, 0]);
+        dot.data[(7 * 15 + 7) * 3] = 49;
+        let out = blur7(&dot);
+        assert_eq!(out.data[(7 * 15 + 7) * 3], 1);
+        assert_eq!(out.data[(4 * 15 + 4) * 3], 1);
+        assert_eq!(out.data[(3 * 15 + 3) * 3], 0);
+        // a one pixel wide image reflects onto itself
+        assert_eq!(
+            blur7(&flat(1, 5, [40, 40, 40])).data,
+            flat(1, 5, [40, 40, 40]).data
+        );
+    }
+
+    #[test]
+    fn a_page_filling_the_photo_is_left_alone() {
+        let img = flat(60, 40, [230, 235, 240]);
+        let (crop, offset) = autocrop(&img);
+        assert_eq!(offset, (0, 0));
+        assert_eq!((crop.w, crop.h), (60, 40));
+        assert_eq!(crop.data, img.data);
+    }
+
+    #[test]
+    fn the_desk_in_the_corners_beside_a_rotated_sheet_is_painted_in_the_paper_color() {
+        // a diamond of white paper on a blue desk: the corners of its bounding box are desk
+        let (w, h) = (300, 300);
+        let (desk, paper) = ([160u8, 90, 40], [235u8, 235, 235]);
+        let mut img = flat(w, h, desk);
+        for y in 0..h {
+            for x in 0..w {
+                if x.abs_diff(150) + y.abs_diff(150) < 100 {
+                    img.data[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&paper);
+                }
+            }
+        }
+        let (crop, (x, y)) = autocrop(&img);
+        assert!(
+            x > 0 && y > 0 && crop.w < w && crop.h < h,
+            "cut out of the photo"
+        );
+        let pixel = |cx: usize, cy: usize| {
+            crop.data[(cy * crop.w + cx) * 3..(cy * crop.w + cx) * 3 + 3].to_vec()
+        };
+        // the corner of the crop was desk in the photo, and is the paper's color now
+        assert_eq!(&img.data[(y * w + x) * 3..(y * w + x) * 3 + 3], &desk);
+        assert_eq!(pixel(0, 0), paper);
+        assert_eq!(pixel(crop.w - 1, crop.h - 1), paper);
+        // the sheet itself is unchanged
+        assert_eq!(pixel(150 - x, 150 - y), paper);
+    }
 }
