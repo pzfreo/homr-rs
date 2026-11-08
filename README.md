@@ -16,7 +16,7 @@ without Python. homr is AGPL-3.0, and so is this port (see `LICENSE`).
 **Status: the pipeline, encoder and transformer decoder are ported.** Page,
 staff and MusicXML processing is checked against native homr (OpenCV 4.11,
 Pillow 12, numpy 2). Both Rust models target native arm64 ONNX Runtime
-1.31.0's default CPU results. Segmentation stays with onnxruntime-web. The encoder loads its original
+1.31.0's default CPU results. Segmentation (homr's segnet, a ResNet-18 U-Net) also runs in Rust (`segnet.rs`, loading the original ONNX file; NEON on arm64, SIMD128 in WebAssembly). The encoder loads its original
 float32 ONNX weights and produces the context in Rust. The decoder
 loads homr's original quantized ONNX file at runtime and runs in Rust, including
 WebAssembly with SIMD128. Its caches stay inside Rust across symbols.

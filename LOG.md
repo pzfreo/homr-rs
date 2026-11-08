@@ -2568,3 +2568,15 @@ tools/record_decoder.py, tools/record_models.py and the two tools below.
   scripts (pyodide_*.mjs) and the checks that used them (check_pre, check_page,
   check_staffs, check_xml) are removed. Earlier sections of this log describe them as they
   were.
+
+### Segmentation (segnet) in Rust, checked
+- `segnet.rs` reads homr's segnet ONNX file (BatchNorm already folded: Sub, Div, Conv, Relu,
+  MaxPool, Add, Concat, Resize-nearest) and runs it directly; `check_segnet` compares its class
+  map of every tile with onnxruntime's (tools/dump_segnet.py). 13 pages, 1,056 tiles:
+  1 of 108 million pixels differ (a near-tie between two classes; the sums are in a different
+  order from onnxruntime's). Cost: 5.89 G retired instructions a tile single-threaded
+  against onnxruntime's 6.2 G (measured as retired instructions: the machine's load makes wall
+  time meaningless).
+- End to end with Rust segmentation (`SEGNET=<model> check_pages`, nothing from homr but the
+  staff images the transformer reads): on the 148 corpus pages 92 mask pixels of about 1.1
+  billion differ in total, on 49 pages, and every page gives homr's MusicXML (or both fail).
