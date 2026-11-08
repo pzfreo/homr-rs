@@ -1,5 +1,5 @@
-//! np_argsort against numpy's: cases from tools/argsort_ref.mjs (Pyodide's numpy)
-//! and the same arrays run natively.   check_argsort <cases.json> <pyodide.json> [<native.json>]
+//! np_argsort against numpy's: the arrays and numpy's argsort of them from
+//! tools/argsort_cases.py.   check_argsort <cases.json> <native.json>
 use homr_rs::npmath::np_argsort;
 use serde_json::Value;
 use std::fs;

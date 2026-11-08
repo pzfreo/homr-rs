@@ -6,7 +6,8 @@
 //! filter2D.
 
 use crate::contours::find_external_contours;
-use crate::raster::{ellipse_kernel, morph};
+use crate::geom::convex_hull_points;
+use crate::raster::{ellipse_kernel, fill_poly, morph};
 use crate::warp::Gray;
 
 /// A 3-channel uint8 image (BGR, as cv2.imread gives it), row major.
@@ -36,7 +37,184 @@ pub fn bgr_to_gray(img: &Bgr) -> Gray {
     }
 }
 
-/// autocrop_with_offset: the page cut out of a photo, and its top-left corner.
+/// Light and shadows change the brightness of paper but hardly its color. Mixed
+/// daylight and lamp light change it at most by this much.
+const MAX_CHROMATICITY_DIFFERENCE: f32 = 0.07;
+
+/// _chromaticity: color without brightness, every channel divided by the sum of the
+/// channels (float32, the sum left to right as numpy adds three values).
+fn chromaticity(p: [u8; 3]) -> [f32; 3] {
+    let v = [p[0] as f32 + 1.0, p[1] as f32 + 1.0, p[2] as f32 + 1.0];
+    let sum = (v[0] + v[1]) + v[2];
+    [v[0] / sum, v[1] / sum, v[2] / sum]
+}
+
+/// np.median of float32 values: the middle one, or for an even count the float32
+/// mean of the two middle ones.
+fn median_f32(v: &mut [f32]) -> f32 {
+    let n = v.len();
+    let (lower, mid, _) = v.select_nth_unstable_by(n / 2, |a, b| a.total_cmp(b));
+    let upper = *mid;
+    if n % 2 == 1 {
+        upper
+    } else {
+        let below = lower.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        (below + upper) / 2.0
+    }
+}
+
+/// np.median(_chromaticity(pixels), axis=0).
+fn median_chromaticity(pixels: &[[u8; 3]]) -> [f32; 3] {
+    let mut out = [0f32; 3];
+    for (c, o) in out.iter_mut().enumerate() {
+        let mut v: Vec<f32> = pixels.iter().map(|p| chromaticity(*p)[c]).collect();
+        *o = median_f32(&mut v);
+    }
+    out
+}
+
+/// np.abs(a - b).sum() <= max_chromaticity_difference, in float32 as numpy does it.
+fn chromaticity_close(a: [f32; 3], b: [f32; 3]) -> bool {
+    let d = [
+        (a[0] - b[0]).abs(),
+        (a[1] - b[1]).abs(),
+        (a[2] - b[2]).abs(),
+    ];
+    (d[0] + d[1]) + d[2] <= MAX_CHROMATICITY_DIFFERENCE
+}
+
+/// _is_paper: the median color of the pixels is the paper's (no pixels count as paper).
+fn is_paper(img: &Bgr, rows: (usize, usize), cols: (usize, usize), paper: [f32; 3]) -> bool {
+    let mut pixels: Vec<[u8; 3]> = Vec::new();
+    for y in rows.0..rows.1 {
+        for x in cols.0..cols.1 {
+            let i = (y * img.w + x) * 3;
+            pixels.push([img.data[i], img.data[i + 1], img.data[i + 2]]);
+        }
+    }
+    pixels.is_empty() || chromaticity_close(median_chromaticity(&pixels), paper)
+}
+
+/// _keep_sides_with_paper: extends the box to the image border on every side where
+/// the strip beside it is paper, e.g. in a shadow. Only the strips beside the box,
+/// the corners can contain e.g. a desk at another side. (x, y, w, h)
+fn keep_sides_with_paper(
+    img: &Bgr,
+    (x, y, w, h): (usize, usize, usize, usize),
+    paper: [f32; 3],
+) -> (usize, usize, usize, usize) {
+    let keep_left = is_paper(img, (y, y + h), (0, x), paper);
+    let keep_right = is_paper(img, (y, y + h), (x + w, img.w), paper);
+    let keep_top = is_paper(img, (0, y), (x, x + w), paper);
+    let keep_bottom = is_paper(img, (y + h, img.h), (x, x + w), paper);
+    let left = if keep_left { 0 } else { x };
+    let top = if keep_top { 0 } else { y };
+    let right = if keep_right { img.w } else { x + w };
+    let bottom = if keep_bottom { img.h } else { y + h };
+    (left, top, right - left, bottom - top)
+}
+
+/// cv2.blur(img, (7, 7)): the box sum of 7x7 (reflected at the border) divided by 49
+/// and rounded. 49 is odd, so there are no ties and float32, float64 and
+/// (sum + 24) / 49 all round alike.
+fn blur7(img: &Bgr) -> Bgr {
+    let (w, h) = (img.w, img.h);
+    let mut rows = vec![0u32; w * h * 3];
+    for y in 0..h {
+        for c in 0..3 {
+            for x in 0..w {
+                let mut sum = 0u32;
+                for k in -3i64..=3 {
+                    sum += img.data[(y * w + reflect101(x as i64 + k, w as i64) as usize) * 3 + c]
+                        as u32;
+                }
+                rows[(y * w + x) * 3 + c] = sum;
+            }
+        }
+    }
+    let mut data = vec![0u8; w * h * 3];
+    for y in 0..h {
+        for i in 0..w * 3 {
+            let mut sum = 0u32;
+            for k in -3i64..=3 {
+                sum += rows[reflect101(y as i64 + k, h as i64) as usize * w * 3 + i];
+            }
+            data[y * w * 3 + i] = ((sum + 24) / 49) as u8;
+        }
+    }
+    Bgr { w, h, data }
+}
+
+/// _remove_surroundings: removes what is beside the sheet, e.g. the corners of a desk
+/// beside a rotated sheet, by filling it with the color of the paper. The sheet
+/// itself is unchanged. `sheet` is the paper's contour in the crop's coordinates.
+fn remove_surroundings(
+    crop: &Bgr,
+    sheet: &[[i32; 2]],
+    paper: &[[u8; 3]],
+    paper_chroma: [f32; 3],
+) -> Bgr {
+    let (w, h) = (crop.w, crop.h);
+    let mut beside_sheet = vec![1u8; w * h];
+    let hull: Vec<[i64; 2]> = convex_hull_points(sheet)
+        .iter()
+        .map(|p| [p[0] as i64, p[1] as i64])
+        .collect();
+    fill_poly(&mut beside_sheet, h, w, &hull, 0);
+    // np.median(paper, axis=0) of uint8: float64, the mean of the middle two if even
+    let mut paper_color = [0f64; 3];
+    for (c, o) in paper_color.iter_mut().enumerate() {
+        let mut v: Vec<u8> = paper.iter().map(|p| p[c]).collect();
+        let n = v.len();
+        let (lower, mid, _) = v.select_nth_unstable(n / 2);
+        *o = if n % 2 == 1 {
+            *mid as f64
+        } else {
+            (*lower.iter().max().unwrap() as f64 + *mid as f64) / 2.0
+        };
+    }
+    // Single pixels are too noisy to compare their color
+    let smooth = blur7(crop);
+    let bright_over = 0.25 * (((paper_color[0] + paper_color[1]) + paper_color[2]) / 3.0);
+    let mut background = vec![0u8; w * h];
+    for i in 0..w * h {
+        let p = [
+            smooth.data[i * 3],
+            smooth.data[i * 3 + 1],
+            smooth.data[i * 3 + 2],
+        ];
+        // The color of dark pixels is noise, e.g. ink in a shadow must stay
+        let bright = (p[0] as u32 + p[1] as u32 + p[2] as u32) as f64 / 3.0 > bright_over;
+        let c = chromaticity(p);
+        let d = [
+            (c[0] - paper_chroma[0]).abs(),
+            (c[1] - paper_chroma[1]).abs(),
+            (c[2] - paper_chroma[2]).abs(),
+        ];
+        let difference = (d[0] + d[1]) + d[2];
+        background[i] =
+            (beside_sheet[i] != 0 && bright && difference > MAX_CHROMATICITY_DIFFERENCE) as u8;
+    }
+    // Also the pixels at the edge of the paper, which mix paper and background
+    let kernel = vec![vec![1u8; 5]; 5];
+    let background = morph(&background, h, w, &kernel, true);
+    let fill = [
+        paper_color[0] as u8,
+        paper_color[1] as u8,
+        paper_color[2] as u8,
+    ];
+    let mut result = crop.clone();
+    for i in 0..w * h {
+        if background[i] & beside_sheet[i] > 0 {
+            result.data[i * 3..i * 3 + 3].copy_from_slice(&fill);
+        }
+    }
+    result
+}
+
+/// autocrop_with_offset: the page cut out of a photo, and its top-left corner. Areas
+/// beside the paper which have another color than the paper, e.g. a desk, are painted
+/// in the paper color.
 pub fn autocrop(img: &Bgr) -> (Bgr, (usize, usize)) {
     let gray = bgr_to_gray(img);
     let mut hist = [0u64; 256];
@@ -75,22 +253,56 @@ pub fn autocrop(img: &Bgr) -> (Bgr, (usize, usize)) {
             best = Some(c);
         }
     }
-    let Some(c) = best else {
+    let Some(contour) = best else {
         return (img.clone(), (0, 0));
     };
-    let x = c.iter().map(|p| p[0]).min().unwrap() as usize;
-    let y = c.iter().map(|p| p[1]).min().unwrap() as usize;
-    let w = c.iter().map(|p| p[0]).max().unwrap() as usize - x + 1;
-    let h = c.iter().map(|p| p[1]).max().unwrap() as usize - y + 1;
-    if (x as f64) < img.w as f64 * 0.25 || (y as f64) < img.h as f64 * 0.25 {
+    let x = contour.iter().map(|p| p[0]).min().unwrap() as usize;
+    let y = contour.iter().map(|p| p[1]).min().unwrap() as usize;
+    let w = contour.iter().map(|p| p[0]).max().unwrap() as usize - x + 1;
+    let h = contour.iter().map(|p| p[1]).max().unwrap() as usize - y + 1;
+    // If we can't find a large contour, then we assume that the picture doesn't have page borders
+    if (w as f64) < img.w as f64 * 0.25 || (h as f64) < img.h as f64 * 0.25 {
         return (img.clone(), (0, 0));
     }
-    let (w, h) = (w.min(img.w - x), h.min(img.h - y));
+    // A sample of the paper is enough to know its color
+    let mut paper: Vec<[u8; 3]> = Vec::new();
+    let mut seen = 0usize;
+    for yy in y..y + h {
+        for xx in x..x + w {
+            if thresh[yy * img.w + xx] > 0 {
+                if seen.is_multiple_of(10) {
+                    let i = (yy * img.w + xx) * 3;
+                    paper.push([img.data[i], img.data[i + 1], img.data[i + 2]]);
+                }
+                seen += 1;
+            }
+        }
+    }
+    if paper.is_empty() {
+        return (img.clone(), (0, 0));
+    }
+    let paper_chroma = median_chromaticity(&paper);
+    // The contour was eroded, keep a margin so that staffs at the edge of the paper stay
+    let margin = 5.max(img.w.max(img.h) / 100);
+    let (x0, y0) = (x.saturating_sub(margin), y.saturating_sub(margin));
+    let (x1, y1) = (img.w.min(x + w + margin), img.h.min(y + h + margin));
+    let (x, y, w, h) = keep_sides_with_paper(img, (x0, y0, x1 - x0, y1 - y0), paper_chroma);
+    if (x, y, w, h) == (0, 0, img.w, img.h) {
+        return (img.clone(), (0, 0));
+    }
     let mut data = Vec::with_capacity(w * h * 3);
     for yy in y..y + h {
         data.extend_from_slice(&img.data[(yy * img.w + x) * 3..(yy * img.w + x + w) * 3]);
     }
-    (Bgr { w, h, data }, (x, y))
+    let crop = Bgr { w, h, data };
+    let sheet: Vec<[i32; 2]> = contour
+        .iter()
+        .map(|p| [p[0] - x as i32, p[1] - y as i32])
+        .collect();
+    (
+        remove_surroundings(&crop, &sheet, &paper, paper_chroma),
+        (x, y),
+    )
 }
 
 fn bicubic(x: f64) -> f64 {
