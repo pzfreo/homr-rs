@@ -88,6 +88,9 @@ def grouped(true_systems):
     if rng.random() < 0.05:  # points a little off the common positions
         s = rows[rng.randrange(len(rows))][0]
         s.grid = [StaffPoint(p.x + 0.4, p.y, p.angle) for p in s.grid]
+    if rng.random() < 0.12 and len(rows) > 2:  # rows not in order down the page (MultiStaff sorts its own staffs)
+        i = rng.randrange(len(rows) - 2)
+        rows[i:i + 3] = rows[i:i + 3][::-1]
     return [MultiStaff(r, []) for r in rows]
 
 

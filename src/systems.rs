@@ -5,17 +5,18 @@
 //! homr tells staffs apart by object identity; here every staff carries an id, new
 //! for each staff made by a merge or a split.
 
-use crate::braces::{merge_staffs, split_staff, unit_size, MultiStaff};
+use crate::braces::{median, merge_staffs, split_staff, unit_size, MultiStaff};
 use crate::score::find_periodic_core;
 use crate::staff::{Staff, StaffPoint, LINES};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 type Layout = Vec<bool>;
 
 #[derive(Clone)]
 struct Node {
     id: usize,
-    staff: Staff,
+    staff: Rc<Staff>,
     grand: bool,
 }
 
@@ -26,6 +27,16 @@ struct System {
 }
 
 impl System {
+    /// MultiStaff(staffs, []): homr keeps the staffs of a system sorted by their top (stable).
+    fn new(mut nodes: Vec<Node>) -> System {
+        nodes.sort_by(|a, b| {
+            a.staff
+                .min_y
+                .partial_cmp(&b.staff.min_y)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        System { nodes }
+    }
     /// _layout: is_grandstaff of each staff.
     fn layout(&self) -> Layout {
         self.nodes.iter().map(|n| n.grand).collect()
@@ -54,17 +65,6 @@ fn is_uniform(rows: &[System]) -> bool {
         .collect::<HashSet<_>>()
         .len()
         == 1
-}
-
-/// np.median of floats
-fn median(mut v: Vec<f64>) -> f64 {
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let n = v.len();
-    if n % 2 == 1 {
-        v[n / 2]
-    } else {
-        (v[n / 2 - 1] + v[n / 2]) / 2.0
-    }
 }
 
 /// A Counter, in the order its keys first appeared.
@@ -202,7 +202,7 @@ fn fit_to_layout(
             let staff = merge_staffs(&staffs[i].staff, &staffs[i + 1].staff)?;
             result.push(Node {
                 id: ids.next(),
-                staff,
+                staff: Rc::new(staff),
                 grand: true,
             });
             i += 2;
@@ -261,10 +261,7 @@ fn repair_systems_to(
         let row = &rows[i].nodes;
         let repeats = row.len() / layout.len();
         if repeats > 1 && rows[i].layout() == layout.repeat(repeats) {
-            result.extend(
-                row.chunks(layout.len())
-                    .map(|c| System { nodes: c.to_vec() }),
-            );
+            result.extend(row.chunks(layout.len()).map(|c| System::new(c.to_vec())));
             i += 1;
             continue;
         }
@@ -274,7 +271,7 @@ fn repair_systems_to(
                 i += 1;
             }
             Some((fitted, end)) => {
-                result.push(System { nodes: fitted });
+                result.push(System::new(fitted));
                 i = end;
             }
         }
@@ -397,13 +394,13 @@ fn regroup_by_pattern(rows: &[System]) -> Option<Vec<System>> {
     if !mixes || (trimmed && !nothing_grouped) {
         return None;
     }
-    let single = |n: &Node| System {
-        nodes: vec![n.clone()],
-    };
+    let single = |n: &Node| System::new(vec![n.clone()]);
     let mut result: Vec<System> = flat[..front].iter().map(single).collect();
-    result.extend((front..end).step_by(period).map(|i| System {
-        nodes: flat[i..(i + period).min(flat.len())].to_vec(),
-    }));
+    result.extend(
+        (front..end)
+            .step_by(period)
+            .map(|i| System::new(flat[i..(i + period).min(flat.len())].to_vec())),
+    );
     result.extend(flat[end..].iter().map(single));
     Some(result)
 }
@@ -418,36 +415,38 @@ fn convert_to_layout(
     if row.layout() == layout {
         return Ok(Some(row.clone()));
     }
-    let mut singles: Vec<Staff> = Vec::new();
+    // a staff which is not split or merged stays the same staff (same id)
+    let mut singles: Vec<(usize, Rc<Staff>)> = Vec::new();
     for n in &row.nodes {
         if n.grand {
             let Some((upper, lower)) = split_staff(&n.staff) else {
                 return Ok(None);
             };
-            singles.push(upper);
-            singles.push(lower);
+            singles.push((ids.next(), Rc::new(upper)));
+            singles.push((ids.next(), Rc::new(lower)));
         } else {
-            singles.push(n.staff.clone());
+            singles.push((n.id, n.staff.clone()));
         }
     }
     let mut remaining = singles.into_iter();
     let mut nodes = Vec::new();
     for &is_grandstaff in layout {
-        let mut staff = remaining.next().ok_or("StopIteration")?;
+        let (mut id, mut staff) = remaining.next().ok_or("StopIteration")?;
         if is_grandstaff {
-            let lower = remaining.next().ok_or("StopIteration")?;
+            let (_, lower) = remaining.next().ok_or("StopIteration")?;
             if vertical_gap(&staff, &lower).is_none() {
                 return Ok(None);
             }
-            staff = merge_staffs(&staff, &lower)?;
+            staff = Rc::new(merge_staffs(&staff, &lower)?);
+            id = ids.next();
         }
         nodes.push(Node {
-            id: ids.next(),
+            id,
             staff,
             grand: is_grandstaff,
         });
     }
-    Ok(Some(System { nodes }))
+    Ok(Some(System::new(nodes)))
 }
 
 /// _unify_grand_staffs: if every system has the same number of staffs, but in some
@@ -508,20 +507,21 @@ pub fn repair_systems(multi: Vec<MultiStaff>) -> Result<Vec<MultiStaff>, String>
     let mut next = 0;
     let rows: Vec<System> = multi
         .into_iter()
-        .map(|m| System {
-            nodes: m
-                .staffs
-                .into_iter()
-                .zip(m.grand)
-                .map(|(staff, grand)| {
-                    next += 1;
-                    Node {
-                        id: next - 1,
-                        staff,
-                        grand,
-                    }
-                })
-                .collect(),
+        .map(|m| {
+            System::new(
+                m.staffs
+                    .into_iter()
+                    .zip(m.grand)
+                    .map(|(staff, grand)| {
+                        next += 1;
+                        Node {
+                            id: next - 1,
+                            staff: Rc::new(staff),
+                            grand,
+                        }
+                    })
+                    .collect(),
+            )
         })
         .collect();
     let mut ids = Ids(next);
@@ -529,7 +529,11 @@ pub fn repair_systems(multi: Vec<MultiStaff>) -> Result<Vec<MultiStaff>, String>
         .into_iter()
         .map(|r| MultiStaff {
             grand: r.nodes.iter().map(|n| n.grand).collect(),
-            staffs: r.nodes.into_iter().map(|n| n.staff).collect(),
+            staffs: r
+                .nodes
+                .into_iter()
+                .map(|n| Rc::try_unwrap(n.staff).unwrap_or_else(|rc| (*rc).clone()))
+                .collect(),
         })
         .collect())
 }

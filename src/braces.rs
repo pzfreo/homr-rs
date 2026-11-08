@@ -6,8 +6,9 @@ use crate::raster::{ellipse_kernel, fill_poly, morph, subtract};
 use crate::staff::{Staff, StaffPoint, LINES};
 use crate::symbols::{rotated_boxes, Shape};
 
-fn median(mut v: Vec<f64>) -> f64 {
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+/// np.median of floats (the mean of the two middle ones for an even count).
+pub(crate) fn median(mut v: Vec<f64>) -> f64 {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = v.len();
     if n % 2 == 1 {
         v[n / 2]
@@ -181,7 +182,7 @@ pub fn merge_staffs(a: &Staff, b: &Staff) -> Result<Staff, String> {
         }
         let mut y = pa.y.clone();
         y.extend_from_slice(&pb.y);
-        y.sort_by(|u, v| u.partial_cmp(v).unwrap());
+        y.sort_by(|u, v| u.partial_cmp(v).unwrap_or(std::cmp::Ordering::Equal));
         grid.push(StaffPoint {
             x: pa.x,
             y,
@@ -201,18 +202,18 @@ pub fn split_staff(s: &Staff) -> Option<(Staff, Staff)> {
         return None;
     }
     let part = |range: std::ops::Range<usize>| {
-        Staff::from_grid(
-            both.iter()
-                .map(|p| StaffPoint {
-                    x: p.x,
-                    y: p.y[range.clone()].to_vec(),
-                    angle: p.angle,
-                })
-                .collect(),
-        )
-        .ok()
+        let grid = both
+            .iter()
+            .map(|p| StaffPoint {
+                x: p.x,
+                y: p.y[range.clone()].to_vec(),
+                angle: p.angle,
+            })
+            .collect();
+        // the grid is not empty, so this can't fail; halves of a split staff are not kept
+        Staff::from_grid(grid).expect("a staff from a non-empty grid")
     };
-    Some((part(0..LINES)?, part(LINES..2 * LINES)?))
+    Some((part(0..LINES), part(LINES..2 * LINES)))
 }
 
 /// find_braces_brackets_and_grand_staff_lines: staffs (top to bottom) into MultiStaffs.

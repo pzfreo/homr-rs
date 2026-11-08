@@ -2513,10 +2513,15 @@ tools/record_decoder.py, tools/record_models.py and the two tools below.
   systems with the defects detection has (a missed brace, systems joined by a crease,
   staffs hidden in some systems, a stray staff, nothing grouped, singles which don't
   overlap) run through homr's repair_systems, compared staff by staff, grid values
-  included. 5,400 cases: identical, 1,500 of them regrouped by homr, 150 by a pattern,
-  150 with a single staff dropped, 17 where homr raises (the port raises too). Breaking
-  a rule makes 1 to 308 cases differ (16 rules: the gap limits, connected systems, the
+  included, and with rows out of order down the page (a MultiStaff sorts its own staffs by
+  their top; the port does too). 8,400 cases: identical, 2,600 of them regrouped by homr,
+  250 by a pattern, 260 with a single staff dropped, 24 where homr raises (the port
+  raises too). Breaking
+  a rule makes 1 to 308 cases differ (17 rules, including the sorting: the gap limits, connected systems, the
   fit window, the score weights, the two-occurrence rules, the tie rules, the sort of
   candidates...); one change, dropping the single staff on a page of two systems, cannot
   be reached (with two systems the mixed layout always scores higher).
+- A grand staff which is split and merged again keeps, as `halves`, the parts made by the
+  split, not the staffs detection found (Partsong's own extension; homr has no halves).
+  A grand staff left alone keeps its halves.
 - Not wired into page_xml yet: that needs the hidden-staff handling of parse_staffs.
