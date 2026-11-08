@@ -687,7 +687,12 @@ impl GroupClock {
     /// Moves the time to when the positions of the group are free, returns the gap.
     fn wait_for_voices(&mut self, group: &Chord) -> Frac {
         let free = Self::timed(group)
-            .map(|s| self.voice_free.get(&s.position).copied().unwrap_or(Frac::ZERO))
+            .map(|s| {
+                self.voice_free
+                    .get(&s.position)
+                    .copied()
+                    .unwrap_or(Frac::ZERO)
+            })
             .max()
             .unwrap_or(Frac::ZERO);
         let gap = if free - self.time > Frac::ZERO {
@@ -820,7 +825,8 @@ fn mark_run(groups: &mut [Chord], position: &str, run: &Run) {
 
 fn add_tuplets(groups: &mut [Chord], position: &str) {
     let times = start_times(groups);
-    let durations: Vec<Option<Duration>> = groups.iter().map(|g| duration_at(g, position)).collect();
+    let durations: Vec<Option<Duration>> =
+        groups.iter().map(|g| duration_at(g, position)).collect();
     let mut run: Run = Vec::new();
     let mut format = (1, 1);
     for (index, duration) in durations.iter().enumerate() {
@@ -886,7 +892,14 @@ fn split_mixed_chord(symbols: &[Symbol]) -> Vec<Vec<Symbol>> {
         if is_after(s) {
             continue;
         }
-        let kind = s.rhythm.split('_').next().unwrap().split('/').next().unwrap();
+        let kind = s
+            .rhythm
+            .split('_')
+            .next()
+            .unwrap()
+            .split('/')
+            .next()
+            .unwrap();
         match before.iter_mut().find(|(k, _)| k == kind) {
             Some((_, v)) => v.push((*s).clone()),
             None => before.push((kind.to_string(), vec![(*s).clone()])),
@@ -901,7 +914,12 @@ fn split_mixed_chord(symbols: &[Symbol]) -> Vec<Vec<Symbol>> {
     before.sort_by_key(|(k, _)| rank(k)); // stable
     let mut parts: Vec<Vec<Symbol>> = before.into_iter().map(|(_, v)| v).collect();
     parts.push(notes);
-    parts.extend(others.iter().filter(|s| is_after(s)).map(|s| vec![(*s).clone()]));
+    parts.extend(
+        others
+            .iter()
+            .filter(|s| is_after(s))
+            .map(|s| vec![(*s).clone()]),
+    );
     parts
 }
 
@@ -916,7 +934,9 @@ fn split_mixed_chords(groups: Vec<Chord>) -> Vec<Chord> {
         if split_barline && group.is_barline() && parts.len() == 1 {
             // The barline split off the previous chord and this one are the same barline:
             // keep one, preferring a repeat or double barline over a plain barline.
-            if group.symbols[0].rhythm == "barline" && result.last().unwrap().symbols[0].rhythm != "barline" {
+            if group.symbols[0].rhythm == "barline"
+                && result.last().unwrap().symbols[0].rhythm != "barline"
+            {
                 split_barline = false;
                 continue;
             }
@@ -1060,9 +1080,7 @@ fn rebalance_measure_voices(t: &mut Tree, measure: usize) {
 }
 
 fn is_second_voice(t: &Tree, note: usize) -> bool {
-    t.get(note, POSITION_ATTRIBUTE)
-        .unwrap_or("")
-        .ends_with('2')
+    t.get(note, POSITION_ATTRIBUTE).unwrap_or("").ends_with('2')
 }
 
 fn remove_position_attributes(t: &mut Tree, part: usize) {
@@ -1105,7 +1123,14 @@ fn add_stems(t: &mut Tree, part: usize) {
             }
             for note in on_staff {
                 let stem = t.el("stem", &[]);
-                t.els[stem].text = Some(if is_second_voice(t, note) { "down" } else { "up" }.into());
+                t.els[stem].text = Some(
+                    if is_second_voice(t, note) {
+                        "down"
+                    } else {
+                        "up"
+                    }
+                    .into(),
+                );
                 let position = match t.find(note, "staff") {
                     Some(staff_el) => t.index_of(note, staff_el),
                     None => t.len(note),
@@ -1430,12 +1455,28 @@ fn build_measures(
                 };
                 t.sub_text(b, "bar-style", style);
             }
-            close_measure(t, &mut measures, current, &mut measure_number, &mut rest_measures, has_two_staves, &st)?;
+            close_measure(
+                t,
+                &mut measures,
+                current,
+                &mut measure_number,
+                &mut rest_measures,
+                has_two_staves,
+                &st,
+            )?;
             clock = GroupClock::new();
             measure_number += 1;
             current = t.el("measure", &[("number", &measure_number.to_string())]);
         } else if rhythm == "repeatStart" {
-            close_measure(t, &mut measures, current, &mut measure_number, &mut rest_measures, has_two_staves, &st)?;
+            close_measure(
+                t,
+                &mut measures,
+                current,
+                &mut measure_number,
+                &mut rest_measures,
+                has_two_staves,
+                &st,
+            )?;
             clock = GroupClock::new();
             measure_number += 1;
             current = t.el("measure", &[("number", &measure_number.to_string())]);
@@ -1444,14 +1485,30 @@ fn build_measures(
         } else if rhythm == "repeatEnd" {
             let b = barline(t, current, "right");
             repeat(t, b, "repeatEnd");
-            close_measure(t, &mut measures, current, &mut measure_number, &mut rest_measures, has_two_staves, &st)?;
+            close_measure(
+                t,
+                &mut measures,
+                current,
+                &mut measure_number,
+                &mut rest_measures,
+                has_two_staves,
+                &st,
+            )?;
             clock = GroupClock::new();
             measure_number += 1;
             current = t.el("measure", &[("number", &measure_number.to_string())]);
         } else if rhythm == "repeatEndStart" {
             let b = barline(t, current, "right");
             repeat(t, b, "repeatEnd");
-            close_measure(t, &mut measures, current, &mut measure_number, &mut rest_measures, has_two_staves, &st)?;
+            close_measure(
+                t,
+                &mut measures,
+                current,
+                &mut measure_number,
+                &mut rest_measures,
+                has_two_staves,
+                &st,
+            )?;
             clock = GroupClock::new();
             measure_number += 1;
             current = t.el("measure", &[("number", &measure_number.to_string())]);
@@ -1481,7 +1538,15 @@ fn build_measures(
         }
     }
     if t.len(current) > 0 {
-        close_measure(t, &mut measures, current, &mut measure_number, &mut rest_measures, has_two_staves, &st)?;
+        close_measure(
+            t,
+            &mut measures,
+            current,
+            &mut measure_number,
+            &mut rest_measures,
+            has_two_staves,
+            &st,
+        )?;
     }
     // A clef opens a second attributes element, so look at the whole first measure
     let has_time = t

@@ -2449,3 +2449,31 @@ tools/record_decoder.py, tools/record_models.py and the two tools below.
 - Still to port: autocrop (paper/desk colour), staff_detection (phone photos, rests-only
   staffs), system_repair, parse_staffs' hidden staffs (_assign_parts, measure rests),
   main.py's No-noteheads-or-clefs.
+
+### Staff detection (staff_detection.py after 33dd138), checked
+- Ported: merge_staffs_in_same_row (with the symbols mask as ink in the gap), staffs
+  found without a clef (five-line groups in five slices across the page), neighbor
+  page filter, estimate_unit_size_from_clefs (a page with only rests has no noteheads),
+  and the guards in find_horizontal_lines. `detect_staff` takes the symbols mask now.
+- **numpy's argsort**: homr's find_peaks ranks peaks with np.argsort, which isn't
+  stable. With many equal peaks (clean scans, or faint lines shining through that
+  conflict with real ones) the rank decides which staff is found. npmath::np_argsort
+  is numpy's introsort (partitions from 17 elements); identical to numpy 2.4.6 under
+  Pyodide and 2.5.4 native on 540 tie-heavy arrays (tools/argsort_ref.mjs,
+  src/bin/check_argsort.rs).
+- **Corpus** (134 pages that reach staff detection, native reference from
+  tools/dump_staff.py): 133 identical; t-library-2 differs by one point of a staff
+  and is identical against Pyodide (the native arm64 OpenCV fuses multiply-adds; the
+  same page differs the same way against the old homr). 14 pages stop earlier with
+  homr's "No noteheads or clefs found", as before.
+- The corpus never triggers the new steps (no merges, no staffs without a clef), so
+  tools/synth_staff_cases.py draws segmentation masks in those situations: staffs
+  split by a gap with symbols, a line which jumps at the gap, indented blurry staffs
+  without clef or bar lines, short neighbor-page staffs at the edge, the empty gutter of
+  a book, lines shining through, tilted lines, pages with only rests. Against
+  Pyodide (tools/pyodide_ref.mjs): 548 pages identical staffs, 550 identical whole-page
+  analysis (check_page); 257 of 400 pages merged staffs and 40 found staffs without a
+  clef. Deliberately breaking each new rule (merge ink share, gap length, lines which
+  line up, neighbor share/width, column share, long-staff width, slice width) differs
+  on 2-44 pages per rule.
+- Still to port: autocrop, system_repair, parse_staffs' hidden staffs.

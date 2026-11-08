@@ -40,6 +40,7 @@ pub fn analyse_page(m: &PageMasks) -> Result<Vec<MultiStaff>, String> {
     let bars: Vec<RBox> = s.bar_lines.iter().map(|c| c.to_rbox(NO_FRAGMENT)).collect();
     let staffs = detect_staff(
         m.staff,
+        Some(m.symbols),
         m.h,
         m.w,
         &Fragments {

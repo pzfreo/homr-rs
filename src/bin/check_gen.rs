@@ -27,7 +27,9 @@ fn symbol(v: &Value) -> Symbol {
 fn check_calls(case: &Value, name: &str, f: fn(&[Symbol]) -> Vec<Symbol>) -> (usize, usize) {
     let (mut same, mut diff) = (0, 0);
     for call in case[name].as_array().into_iter().flatten() {
-        let Some(out) = call["out"].as_array() else { continue }; // homr itself failed
+        let Some(out) = call["out"].as_array() else {
+            continue;
+        }; // homr itself failed
         let input: Vec<Symbol> = call["in"].as_array().unwrap().iter().map(symbol).collect();
         let want: Vec<String> = out.iter().map(|v| symbol(v).key()).collect();
         let Ok(got) = std::panic::catch_unwind(|| f(&input)) else {
@@ -40,8 +42,16 @@ fn check_calls(case: &Value, name: &str, f: fn(&[Symbol]) -> Vec<Symbol>) -> (us
             same += 1;
         } else {
             diff += 1;
-            let at = got.iter().zip(&want).position(|(a, b)| a != b).unwrap_or(got.len().min(want.len()));
-            println!("  {name}: first difference at symbol {at}: rust {:?} homr {:?}", got.get(at), want.get(at));
+            let at = got
+                .iter()
+                .zip(&want)
+                .position(|(a, b)| a != b)
+                .unwrap_or(got.len().min(want.len()));
+            println!(
+                "  {name}: first difference at symbol {at}: rust {:?} homr {:?}",
+                got.get(at),
+                want.get(at)
+            );
         }
     }
     (same, diff)
@@ -60,7 +70,8 @@ fn main() {
     let mut calls = [(0, 0), (0, 0)];
     for d in dirs {
         let name = d.file_name().unwrap().to_string_lossy().to_string();
-        let case: Value = serde_json::from_str(&fs::read_to_string(d.join("voices.json")).unwrap()).unwrap();
+        let case: Value =
+            serde_json::from_str(&fs::read_to_string(d.join("voices.json")).unwrap()).unwrap();
         let voices: Vec<Vec<Symbol>> = case["voices"]
             .as_array()
             .unwrap()
@@ -69,8 +80,14 @@ fn main() {
             .collect();
         let title = case["title"].as_str().unwrap_or("");
         for (k, (name_, f)) in [
-            ("remove_duplicated_symbols", remove_duplicated_symbols as fn(&[Symbol]) -> Vec<Symbol>),
-            ("restore_unmarked_triplets", restore_unmarked_triplets as fn(&[Symbol]) -> Vec<Symbol>),
+            (
+                "remove_duplicated_symbols",
+                remove_duplicated_symbols as fn(&[Symbol]) -> Vec<Symbol>,
+            ),
+            (
+                "restore_unmarked_triplets",
+                restore_unmarked_triplets as fn(&[Symbol]) -> Vec<Symbol>,
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -108,9 +125,17 @@ fn main() {
             Ok(got) if got == want => same += 1,
             Ok(got) => {
                 diff += 1;
-                let at = got.bytes().zip(want.bytes()).position(|(a, b)| a != b).unwrap_or(got.len().min(want.len()));
+                let at = got
+                    .bytes()
+                    .zip(want.bytes())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(got.len().min(want.len()));
                 let from = at.saturating_sub(60);
-                let show = |s: &str| s.get(from..(at + 100).min(s.len())).unwrap_or("").to_string();
+                let show = |s: &str| {
+                    s.get(from..(at + 100).min(s.len()))
+                        .unwrap_or("")
+                        .to_string()
+                };
                 println!("DIFF {name}: first difference at byte {at} (rust {} bytes, homr {})\n  rust: {}\n  homr: {}", got.len(), want.len(), show(&got), show(&want));
                 if let Some(o) = &out {
                     fs::create_dir_all(o).unwrap();
@@ -123,7 +148,13 @@ fn main() {
             }
         }
     }
-    println!("remove_duplicated_symbols: identical {}, different {}", calls[0].0, calls[0].1);
-    println!("restore_unmarked_triplets: identical {}, different {}", calls[1].0, calls[1].1);
+    println!(
+        "remove_duplicated_symbols: identical {}, different {}",
+        calls[0].0, calls[0].1
+    );
+    println!(
+        "restore_unmarked_triplets: identical {}, different {}",
+        calls[1].0, calls[1].1
+    );
     println!("generate_xml: identical {same}, different {diff}, failed {failed}");
 }

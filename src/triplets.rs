@@ -14,6 +14,8 @@ use crate::rational::Frac;
 use crate::tokens::{sort_token_chord_indices, Symbol};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// A candidate three: the breaks it leaves, if it starts off the beat, its sorted indices, the three.
+type Trial<'a> = ((usize, Frac), bool, Vec<usize>, &'a Indices);
 /// A note or rest of a measure: its voice, its duration and its index in the symbols.
 type Note = (String, Frac, usize);
 type Measure = Vec<Vec<Note>>;
@@ -68,7 +70,13 @@ fn split_into_measures(symbols: &[Symbol]) -> Vec<Measure> {
                 chord
                     .iter()
                     .filter(|&&i| nr(&symbols[i].rhythm))
-                    .map(|&i| (symbols[i].position.clone(), symbols[i].duration().fraction, i))
+                    .map(|&i| {
+                        (
+                            symbols[i].position.clone(),
+                            symbols[i].duration().fraction,
+                            i,
+                        )
+                    })
                     .collect(),
             );
         }
@@ -100,7 +108,12 @@ fn play(measure: &Measure, triplets: &Indices) -> Vec<(Frac, Vec<(String, Frac)>
         result.push((clock, notes.clone()));
         if any {
             sounding.extend(notes.iter().map(|(_, end)| *end));
-            clock = sounding.iter().filter(|&&e| e > clock).min().copied().unwrap();
+            clock = sounding
+                .iter()
+                .filter(|&&e| e > clock)
+                .min()
+                .copied()
+                .unwrap();
             sounding.retain(|&e| e > clock);
         }
     }
@@ -176,7 +189,11 @@ fn find_single_threes(measure: &Measure, symbols: &[Symbol]) -> ThreesByPlace {
             .map(|(place, chord)| {
                 (
                     place,
-                    chord.iter().filter(|(v, _, _)| v == voice).map(|(_, _, i)| *i).collect::<Vec<_>>(),
+                    chord
+                        .iter()
+                        .filter(|(v, _, _)| v == voice)
+                        .map(|(_, _, i)| *i)
+                        .collect::<Vec<_>>(),
                 )
             })
             .filter(|(_, notes)| !notes.is_empty())
@@ -203,11 +220,20 @@ fn find_single_threes(measure: &Measure, symbols: &[Symbol]) -> ThreesByPlace {
             if i + 3 > values.len() || values[i..i + 3].iter().any(|v| *v != Some(*value)) {
                 continue;
             }
-            let in_voice: Vec<usize> = chords[i..i + 3].iter().flat_map(|(_, n)| n.iter().copied()).collect();
-            if !in_voice.iter().any(|&idx| symbols[idx].rhythm.starts_with("note")) {
+            let in_voice: Vec<usize> = chords[i..i + 3]
+                .iter()
+                .flat_map(|(_, n)| n.iter().copied())
+                .collect();
+            if !in_voice
+                .iter()
+                .any(|&idx| symbols[idx].rhythm.starts_with("note"))
+            {
                 continue;
             }
-            let key = (chords[i..i + 3].iter().map(|(p, _)| *p).collect::<Vec<_>>(), value.to_string());
+            let key = (
+                chords[i..i + 3].iter().map(|(p, _)| *p).collect::<Vec<_>>(),
+                value.to_string(),
+            );
             let entry = found.entry(key).or_insert((Indices::new(), false));
             entry.0.extend(in_voice);
             entry.1 = entry.1 || (i - start_of_run) % 3 != 0;
@@ -225,18 +251,31 @@ fn add_following_three(
 ) -> ThreesByPlace {
     let mut longer: ThreesByPlace = BTreeMap::new();
     for ((places, value), (indices, off_beat)) in in_a_row {
-        let voices: BTreeSet<&str> = indices.iter().map(|&i| symbols[i].position.as_str()).collect();
-        let next_place = (places[places.len() - 1] + 1..measure.len())
-            .find(|&place| measure[place].iter().any(|(v, _, _)| voices.contains(v.as_str())));
+        let voices: BTreeSet<&str> = indices
+            .iter()
+            .map(|&i| symbols[i].position.as_str())
+            .collect();
+        let next_place = (places[places.len() - 1] + 1..measure.len()).find(|&place| {
+            measure[place]
+                .iter()
+                .any(|(v, _, _)| voices.contains(v.as_str()))
+        });
         for ((next_places, next_value), (next_indices, _)) in single {
             if next_value == value
                 && Some(next_places[0]) == next_place
                 && indices.is_disjoint(next_indices)
-                && next_indices.iter().map(|&i| symbols[i].position.as_str()).collect::<BTreeSet<_>>() == voices
+                && next_indices
+                    .iter()
+                    .map(|&i| symbols[i].position.as_str())
+                    .collect::<BTreeSet<_>>()
+                    == voices
             {
                 let mut key = places.clone();
                 key.extend(next_places);
-                longer.insert((key, value.clone()), (indices.union(next_indices).copied().collect(), *off_beat));
+                longer.insert(
+                    (key, value.clone()),
+                    (indices.union(next_indices).copied().collect(), *off_beat),
+                );
             }
         }
     }
@@ -271,7 +310,7 @@ fn choose_triplets(measure: &Measure, symbols: &[Symbol]) -> Vec<Indices> {
     }
     let threes = find_threes(measure, symbols);
     loop {
-        let mut best: Option<((usize, Frac), bool, Vec<usize>, &Indices)> = None;
+        let mut best: Option<Trial> = None;
         for (indices, off_beat) in &threes {
             if !indices.is_disjoint(&triplets) {
                 continue;
@@ -283,11 +322,16 @@ fn choose_triplets(measure: &Measure, symbols: &[Symbol]) -> Vec<Indices> {
                 indices.iter().copied().collect::<Vec<_>>(),
                 indices,
             );
-            if best.as_ref().is_none_or(|b| (trial.0, trial.1, &trial.2) < (b.0, b.1, &b.2)) {
+            if best
+                .as_ref()
+                .is_none_or(|b| (trial.0, trial.1, &trial.2) < (b.0, b.1, &b.2))
+            {
                 best = Some(trial);
             }
         }
-        let Some((best_breaks, _, _, indices)) = best else { break };
+        let Some((best_breaks, _, _, indices)) = best else {
+            break;
+        };
         if best_breaks.0 >= breaks.0 {
             break;
         }
@@ -299,7 +343,11 @@ fn choose_triplets(measure: &Measure, symbols: &[Symbol]) -> Vec<Indices> {
 }
 
 fn note_value<'a>(symbols: &'a [Symbol], indices: &Indices) -> &'a str {
-    symbols[*indices.iter().next().unwrap()].rhythm.split('_').nth(1).unwrap_or("")
+    symbols[*indices.iter().next().unwrap()]
+        .rhythm
+        .split('_')
+        .nth(1)
+        .unwrap_or("")
 }
 
 /// restore_unmarked_triplets: the symbols of one voice of a page with the triplets
@@ -322,6 +370,12 @@ pub fn restore_unmarked_triplets(symbols: &[Symbol]) -> Vec<Symbol> {
     symbols
         .iter()
         .enumerate()
-        .map(|(i, s)| if triplets.contains(&i) { as_triplet(s) } else { s.clone() })
+        .map(|(i, s)| {
+            if triplets.contains(&i) {
+                as_triplet(s)
+            } else {
+                s.clone()
+            }
+        })
         .collect()
 }

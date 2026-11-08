@@ -4,8 +4,9 @@
 
 use crate::contours::find_contours;
 use crate::ellipse::fit_ellipse;
-use crate::geom::{box_points_f32, min_area_rect_raw, RBox};
+use crate::geom::{box_points_f32, min_area_rect_raw, RBox, NO_FRAGMENT};
 use crate::polygon::{ellipse2poly, polygons_overlap};
+use crate::staff::{estimate_unit_size_from_clefs, Fragments};
 
 /// homr's RotatedBoundingBox / BoundingEllipse: the box as OpenCV gave it
 /// (`raw`), normalised (angle in [-45, 45]), its polygon and its contour.
@@ -362,10 +363,26 @@ pub fn page_symbols(m: &Masks) -> Result<PageSymbols, String> {
     let bar_candidates = rotated_boxes(&bar_img, h, w, true, Some((1.0, 5.0)), None);
     let fragments = break_wide_fragments(fragments, 100.0);
     let noteheads = combine_noteheads_with_stems(noteheads, &stems_rest);
-    if noteheads.is_empty() {
-        return Err("No noteheads found".into());
-    }
-    let unit = median(noteheads.iter().map(|n| n.notehead.h).collect());
+    let unit = if noteheads.is_empty() {
+        // estimate_unit_size_from_clefs: a staff with only rests has no noteheads
+        let boxes: Vec<RBox> = fragments
+            .iter()
+            .enumerate()
+            .map(|(i, f)| f.to_rbox(i))
+            .collect();
+        let contours: Vec<Vec<[i32; 2]>> = fragments.iter().map(|f| f.contour.clone()).collect();
+        let clefs: Vec<RBox> = clefs_keys.iter().map(|c| c.to_rbox(NO_FRAGMENT)).collect();
+        estimate_unit_size_from_clefs(
+            &Fragments {
+                boxes: &boxes,
+                contours: &contours,
+            },
+            &clefs,
+        )
+        .ok_or("No noteheads or clefs found")?
+    } else {
+        median(noteheads.iter().map(|n| n.notehead.h).collect())
+    };
     let stems: Vec<&Shape> = noteheads
         .iter()
         .filter_map(|n| n.stem.map(|k| &stems_rest[k]))

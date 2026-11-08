@@ -181,6 +181,12 @@ impl RawStaff {
     fn max_x(&self) -> f64 {
         self.rect.cx + self.rect.w / 2.0
     }
+    fn min_y(&self) -> f64 {
+        self.rect.cy - self.rect.h / 2.0
+    }
+    fn max_y(&self) -> f64 {
+        self.rect.cy + self.rect.h / 2.0
+    }
     fn merge(&self, other: &RawStaff, f: &Fragments) -> RawStaff {
         let lines = self
             .lines
@@ -382,9 +388,10 @@ pub fn find_peaks(x: &[f64], height: f64, distance: f64, prominence: f64) -> Vec
         x[p] - left_min.max(right_min) >= prominence
     });
     if peaks.len() > 1 {
-        // np.argsort(x[peaks])[::-1]: highest first (ties: later index first, as a stable sort reversed)
-        let mut order: Vec<usize> = peaks.clone();
-        order.sort_by(|&a, &b| x[a].partial_cmp(&x[b]).unwrap());
+        // np.argsort(x[peaks])[::-1]: highest first. numpy's sort isn't stable: which of
+        // several equal peaks comes first is decided by its introsort.
+        let heights: Vec<f64> = peaks.iter().map(|&p| x[p]).collect();
+        let mut order: Vec<usize> = np_argsort(&heights).into_iter().map(|i| peaks[i]).collect();
         order.reverse();
         let mut keep: Vec<usize> = Vec::new();
         for p in order {
@@ -418,13 +425,16 @@ fn find_horizontal_lines(
     }
     let mean = np_mean(&count);
     let std = np_std(&count);
+    if std == 0.0 {
+        return Ok(vec![]);
+    }
     let norm: Vec<f64> = count.iter().map(|&c| (c - mean) / std).collect();
     let centers: Vec<i64> = find_peaks(&norm, 0.0, 0.7 * unit, 1.0)
         .into_iter()
         .map(|c| c - 1)
         .collect();
-    if centers.is_empty() {
-        return Err("no line peaks (homr raises IndexError)".into());
+    if centers.len() < LINES {
+        return Ok(vec![]);
     }
     // filter_line_peaks: only its grouping is used
     let mut gaps: Vec<f64> = centers.windows(2).map(|p| (p[1] - p[0]) as f64).collect();
@@ -467,6 +477,34 @@ fn find_horizontal_lines(
         .collect())
 }
 
+/// _find_five_line_groups: boxes around groups of five staff lines found in
+/// the pixel columns of each zone.
+fn find_five_line_groups(
+    image: &[u8],
+    h: usize,
+    w: usize,
+    zones: &[(i64, i64)],
+    unit: f64,
+) -> Result<Vec<RBox>, String> {
+    let mut result = Vec::new();
+    for &zone in zones {
+        for group in find_horizontal_lines(image, h, w, zone, unit)? {
+            let (min_y, max_y) = (group[0], group[LINES - 1]);
+            let center_y = (min_y + max_y) as f64 / 2.0;
+            let center_x = zone.0 as f64 + (zone.1 - zone.0) as f64 / 2.0;
+            result.push(RBox::new(
+                py_int(center_x) as f64,
+                py_int(center_y) as f64,
+                (zone.1 - zone.0) as f64,
+                (max_y - min_y) as f64,
+                0.0,
+                NO_FRAGMENT,
+            ));
+        }
+    }
+    Ok(result)
+}
+
 fn predict_other_anchors_from_clefs(
     clefs: &[Anchor],
     image: &[u8],
@@ -495,23 +533,8 @@ fn predict_other_anchors_from_clefs(
             _ => zones.push(r),
         }
     }
-    let mut result = Vec::new();
-    for zone in zones {
-        let zone = (zone.0, zone.1.max(zone.0));
-        for group in find_horizontal_lines(image, h, w, zone, avg_unit)? {
-            let (min_y, max_y) = (group[0], group[LINES - 1]);
-            let center_y = (min_y + max_y) as f64 / 2.0;
-            let center_x = zone.0 as f64 + (zone.1 - zone.0) as f64 / 2.0;
-            result.push(RBox::new(
-                py_int(center_x) as f64,
-                py_int(center_y) as f64,
-                (zone.1 - zone.0) as f64,
-                (max_y - min_y) as f64,
-                0.0,
-                NO_FRAGMENT,
-            ));
-        }
-    }
+    let zones: Vec<(i64, i64)> = zones.into_iter().map(|z| (z.0, z.1.max(z.0))).collect();
+    let result = find_five_line_groups(image, h, w, &zones, avg_unit)?;
     Ok(result
         .into_iter()
         .filter(|r| !clefs.iter().any(|c| r.is_overlapping(&c.symbol)))
@@ -688,6 +711,238 @@ fn filter_unusual_anchors(anchors: Vec<Anchor>) -> Vec<Anchor> {
         .collect()
 }
 
+/// The ink of the page: the staff mask, and the symbols mask when there is one.
+struct Ink<'a> {
+    staff: &'a [u8],
+    symbols: Option<&'a [u8]>,
+    h: usize,
+    w: usize,
+}
+
+impl Ink<'_> {
+    fn at(&self, y: usize, x: usize) -> bool {
+        let i = y * self.w + x;
+        self.staff[i] > 0 || self.symbols.is_some_and(|s| s[i] > 0)
+    }
+}
+
+/// A numpy slice end: clipped to the size, negative counting from the end.
+fn slice_end(e: i64, n: usize) -> usize {
+    if e < 0 {
+        (e + n as i64).max(0) as usize
+    } else {
+        (e as usize).min(n)
+    }
+}
+
+/// True if most columns between the staffs have ink: the lines or symbols on them.
+/// The gutter between the pages of a book is empty, even if the staffs of both
+/// pages line up.
+fn gap_has_ink(left: &RawStaff, right: &RawStaff, ink: &Ink) -> bool {
+    let x0 = py_int(left.max_x()).max(0);
+    let x1 = py_int(right.min_x());
+    let y0 = py_int(left.min_y().min(right.min_y())).max(0);
+    let y1 = py_int(left.max_y().max(right.max_y()));
+    if x1 <= x0 {
+        return true;
+    }
+    let (x0, x1) = ((x0 as usize).min(ink.w), slice_end(x1, ink.w));
+    let (y0, y1) = ((y0 as usize).min(ink.h), slice_end(y1, ink.h));
+    if x1 <= x0 {
+        return false; // no columns: the mean of nothing is NaN
+    }
+    let with_ink = (x0..x1).filter(|&x| (y0..y1).any(|y| ink.at(y, x))).count();
+    with_ink as f64 / (x1 - x0) as f64 >= 0.5
+}
+
+/// True if right continues left in the same row: a short gap and the lines line
+/// up. One line may be off, the line tracking sometimes jumps to a neighboring line.
+fn continues(left: &RawStaff, right: &RawStaff, anchors: &[Anchor], f: &Fragments) -> bool {
+    let units: Vec<f64> = left
+        .anchors
+        .iter()
+        .chain(&right.anchors)
+        .map(|&a| anchors[a].avg_unit)
+        .collect();
+    let unit = np_mean(&units);
+    let gap = right.min_x() - left.max_x();
+    if unit <= 0.0 || gap < 0.0 || gap > 15.0 * unit {
+        return false;
+    }
+    let mut lines_which_line_up = 0;
+    for (l, r) in left.lines.iter().zip(&right.lines) {
+        let left_end = &f.boxes[*l.frags.last().unwrap()];
+        let right_start = &f.boxes[r.frags[0]];
+        let left_y = left_end.center_at(l.max_x);
+        let right_y = right_start.center_at(r.min_x);
+        if (left_y - right_y).abs() <= unit / 2.0 {
+            lines_which_line_up += 1;
+        }
+    }
+    lines_which_line_up >= LINES - 1
+}
+
+/// The line tracking breaks a staff in two if symbols cover its lines over a long
+/// distance, e.g. at a clef change. This merges the two parts again, if the gap
+/// between them has ink.
+fn merge_staffs_in_same_row(
+    staffs: Vec<RawStaff>,
+    anchors: &[Anchor],
+    ink: &Ink,
+    f: &Fragments,
+) -> Vec<RawStaff> {
+    let mut result = staffs;
+    result.sort_by(|a, b| a.min_x().partial_cmp(&b.min_x()).unwrap());
+    let mut i = 0;
+    while i < result.len() {
+        let right = (i + 1..result.len()).find(|&j| {
+            continues(&result[i], &result[j], anchors, f)
+                && gap_has_ink(&result[i], &result[j], ink)
+        });
+        let Some(j) = right else {
+            i += 1;
+            continue;
+        };
+        let merged = result[i].merge(&result[j], f);
+        // result.remove(right): the first staff with the same box (not necessarily j)
+        let same =
+            |a: &RBox, b: &RBox| (a.cx, a.cy, a.w, a.h, a.angle) == (b.cx, b.cy, b.w, b.h, b.angle);
+        let k = result
+            .iter()
+            .position(|s| same(&s.rect, &result[j].rect))
+            .unwrap();
+        result.remove(k);
+        if i < result.len() {
+            result[i] = merged;
+        }
+    }
+    result
+}
+
+/// The horizontal range (left, right) of the long staffs on the page. The median,
+/// as single staffs can be connected to staffs of a neighbor page.
+fn main_column(extents: &[(f64, f64)]) -> (f64, f64) {
+    let longest = extents
+        .iter()
+        .map(|(l, r)| r - l)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let long: Vec<(f64, f64)> = extents
+        .iter()
+        .copied()
+        .filter(|(l, r)| r - l >= 0.75 * longest)
+        .collect();
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = v.len();
+        if n % 2 == 1 {
+            v[n / 2]
+        } else {
+            (v[n / 2 - 1] + v[n / 2]) / 2.0
+        }
+    };
+    (
+        median(long.iter().map(|e| e.0).collect()),
+        median(long.iter().map(|e| e.1).collect()),
+    )
+}
+
+fn share_in_column(left: f64, right: f64, column: (f64, f64)) -> f64 {
+    let inside = right.min(column.1) - left.max(column.0);
+    if right > left {
+        inside / (right - left)
+    } else {
+        0.0
+    }
+}
+
+/// Removes staffs of a partly visible neighbor page, e.g. in a photo of a book:
+/// much shorter than the staffs of the page and mostly beside them.
+fn filter_neighbor_page(staffs: Vec<Staff>) -> Vec<Staff> {
+    if staffs.is_empty() {
+        return staffs;
+    }
+    let extents: Vec<(f64, f64)> = staffs.iter().map(|s| (s.min_x, s.max_x)).collect();
+    let column = main_column(&extents);
+    let min_width = (column.1 - column.0) / 2.0;
+    staffs
+        .into_iter()
+        .filter(|s| {
+            s.max_x - s.min_x >= min_width || share_in_column(s.min_x, s.max_x, column) >= 0.5
+        })
+        .collect()
+}
+
+/// Positions across the page, as fraction of its width, to search for staffs without clef
+const SLICES_ACROSS_PAGE: [f64; 5] = [0.2, 0.35, 0.5, 0.65, 0.8];
+
+/// Finds staffs whose clef and bar lines were missed, e.g. in a blurry photo, by
+/// their staff lines alone. Only keeps staffs in the column of the other staffs and
+/// where no staff is yet, as lines shining through the paper can create shifted
+/// duplicates. Their anchors are appended to `anchors`.
+fn find_staffs_without_clef(
+    raw: &[RawStaff],
+    clef_anchors: &[Anchor],
+    image: &[u8],
+    h: usize,
+    w: usize,
+    f: &Fragments,
+    anchors: &mut Vec<Anchor>,
+) -> Result<Vec<RawStaff>, String> {
+    if raw.is_empty() || clef_anchors.is_empty() {
+        return Ok(vec![]);
+    }
+    let unit = np_mean(&clef_anchors.iter().map(|a| a.avg_unit).collect::<Vec<_>>());
+    let slice_width = 10.max(py_int(2.0 * unit));
+    let zones: Vec<(i64, i64)> = SLICES_ACROSS_PAGE
+        .iter()
+        .map(|fr| {
+            let start = py_int(fr * w as f64);
+            (start, (w as i64).min(start + slice_width))
+        })
+        .collect();
+    let boxes = find_five_line_groups(image, h, w, &zones, unit)?;
+    let all: Vec<usize> = (0..f.boxes.len()).collect();
+    let found = filter_unusual_anchors(find_staff_anchors(&all, &boxes, true, f));
+    let candidates = remove_duplicate_staffs(find_raw_staffs(&found, f));
+    let extents: Vec<(f64, f64)> = raw.iter().map(|s| (s.min_x(), s.max_x())).collect();
+    let column = main_column(&extents);
+    let min_width = (column.1 - column.0) / 2.0;
+    let offset = anchors.len();
+    anchors.extend(found);
+    Ok(candidates
+        .into_iter()
+        .filter(|c| {
+            c.max_x() - c.min_x() >= min_width
+                && share_in_column(c.min_x(), c.max_x(), column) >= 0.9
+                && !raw.iter().any(|s| c.rect.is_overlapping(&s.rect))
+        })
+        .map(|mut c| {
+            for a in &mut c.anchors {
+                *a += offset;
+            }
+            c
+        })
+        .collect())
+}
+
+/// Estimates the unit size from the staff lines around clefs. Fallback for
+/// images without noteheads, e.g. a staff with only rests.
+pub fn estimate_unit_size_from_clefs(f: &Fragments, clefs: &[RBox]) -> Option<f64> {
+    let all: Vec<usize> = (0..f.boxes.len()).collect();
+    let anchors = find_staff_anchors(&all, clefs, true, f);
+    if anchors.is_empty() {
+        return None;
+    }
+    let mut units: Vec<f64> = anchors.iter().map(|a| a.avg_unit).collect();
+    units.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = units.len();
+    Some(if n % 2 == 1 {
+        units[n / 2]
+    } else {
+        (units[n / 2 - 1] + units[n / 2]) / 2.0
+    })
+}
+
 fn filter_edge_of_vision(staffs: Vec<Staff>, h: usize, w: usize) -> Vec<Staff> {
     let widths: Vec<f64> = staffs.iter().map(|s| s.max_x - s.min_x).collect();
     let usual = np_mean(&widths);
@@ -716,21 +971,24 @@ pub struct Mid {
 /// homr's detect_staff. `image` is the segmentation's staff mask (h x w).
 pub fn detect_staff(
     image: &[u8],
+    symbols: Option<&[u8]>,
     h: usize,
     w: usize,
     f: &Fragments,
     clefs: &[RBox],
     bars: &[RBox],
 ) -> Result<Vec<Staff>, String> {
-    detect_staff_mid(image, h, w, f, clefs, bars, &mut None)
+    detect_staff_mid(image, symbols, h, w, f, clefs, bars, &mut None)
 }
 
 fn b5(b: &RBox) -> [f64; 5] {
     [b.cx, b.cy, b.w, b.h, b.angle]
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn detect_staff_mid(
     image: &[u8],
+    symbols: Option<&[u8]>,
     h: usize,
     w: usize,
     f: &Fragments,
@@ -739,14 +997,15 @@ pub fn detect_staff_mid(
     mid: &mut Option<Mid>,
 ) -> Result<Vec<Staff>, String> {
     let all: Vec<usize> = (0..f.boxes.len()).collect();
-    let mut anchors = find_staff_anchors(&all, clefs, true, f);
-    let others = predict_other_anchors_from_clefs(&anchors, image, h, w)?;
+    let clef_anchors = find_staff_anchors(&all, clefs, true, f);
+    let others = predict_other_anchors_from_clefs(&clef_anchors, image, h, w)?;
     if let Some(m) = mid.as_mut() {
         m.others = others.iter().map(b5).collect();
     }
+    let mut anchors = clef_anchors.clone();
     anchors.extend(find_staff_anchors(&all, &others, true, f));
     anchors.extend(find_staff_anchors(&all, bars, false, f));
-    let anchors = filter_unusual_anchors(anchors);
+    let mut anchors = filter_unusual_anchors(anchors);
     if let Some(m) = mid.as_mut() {
         m.anchors = anchors
             .iter()
@@ -754,6 +1013,15 @@ pub fn detect_staff_mid(
             .collect();
     }
     let raw = remove_duplicate_staffs(find_raw_staffs(&anchors, f));
+    let ink = Ink {
+        staff: image,
+        symbols,
+        h,
+        w,
+    };
+    let mut raw = merge_staffs_in_same_row(raw, &anchors, &ink, f);
+    let without_clef = find_staffs_without_clef(&raw, &clef_anchors, image, h, w, f, &mut anchors)?;
+    raw.extend(without_clef);
     if let Some(m) = mid.as_mut() {
         m.raw = raw
             .iter()
@@ -773,7 +1041,8 @@ pub fn detect_staff_mid(
         .iter()
         .map(|s| resample_staff(s, &anchors, f))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut staffs = filter_edge_of_vision(staffs, h, w);
+    let staffs = filter_edge_of_vision(staffs, h, w);
+    let mut staffs = filter_neighbor_page(staffs);
     staffs.sort_by(|a, b| a.min_y.partial_cmp(&b.min_y).unwrap());
     Ok(staffs)
 }

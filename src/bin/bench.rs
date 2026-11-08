@@ -64,7 +64,7 @@ fn main() {
         };
         let mut last = None;
         for _ in 0..reps {
-            last = Some(detect_staff(&image, shape[0], shape[1], &f, &clefs, &bars).unwrap());
+            last = Some(detect_staff(&image, None, shape[0], shape[1], &f, &clefs, &bars).unwrap());
         }
         let staffs = last.unwrap();
         let exp = case["expected"].as_array().unwrap();
