@@ -11,7 +11,11 @@ fn elements(dims: &[usize]) -> usize {
 pub fn fma(a: f32, b: f32, c: f32) -> f32 {
     #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
     {
-        libm::fmaf(a, b, c)
+        if super::simd::unfused() {
+            a * b + c
+        } else {
+            libm::fmaf(a, b, c)
+        }
     }
     #[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
     {
@@ -381,6 +385,37 @@ mod tests {
         for v in super::super::simd::test_fma(a, b, c) {
             assert_eq!(v.to_bits(), c.to_bits());
         }
+    }
+    #[test]
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
+    fn unfused_switch_rounds_plainly_then_exactly_again() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let a = f32::from_bits(0x3f800001);
+        let b = f32::from_bits(0x3f7ffffe);
+        let c = 16777218.0f32;
+        let plain = a * b + c; // the product rounds to 1 first: 16777220
+        assert_ne!(plain.to_bits(), c.to_bits());
+        let product = || {
+            let mut out = [0.0f32; 64];
+            unsafe {
+                super::super::simd::product(&[a; 4], &[b; 16], &mut out, 4, 1, 16, Some(&[c; 16]))
+            };
+            out
+        };
+        super::super::simd::UNFUSED.store(true, Relaxed);
+        let (scalar, vector, gemm) = (
+            fma(a, b, c),
+            super::super::simd::test_fma(a, b, c),
+            product(),
+        );
+        super::super::simd::UNFUSED.store(false, Relaxed);
+        assert_eq!(scalar.to_bits(), plain.to_bits());
+        assert!(vector
+            .iter()
+            .chain(&gemm)
+            .all(|v| v.to_bits() == plain.to_bits()));
+        assert_eq!(fma(a, b, c).to_bits(), c.to_bits());
+        assert!(product().iter().all(|v| v.to_bits() == c.to_bits()));
     }
     #[test]
     fn convolution_and_gemm_have_different_bias_schedules() {
