@@ -127,7 +127,9 @@ unsafe fn maddv(a: V, b: V, c: V) -> V {
         f32x4_relaxed_madd(a, b, c)
     }
     #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
-    {
+    if unfused() {
+        f32x4_add(f32x4_mul(a, b), c)
+    } else {
         let high = |v| i32x4_shuffle::<2, 3, 2, 3>(v, v);
         let lo = f64x2_add(
             f64x2_mul(f64x2_promote_low_f32x4(a), f64x2_promote_low_f32x4(b)),
@@ -299,6 +301,19 @@ pub(super) unsafe fn depthwise_into(
         }
     }
 }
+/// Plain multiply-then-add in the encoder's products, in place of the exactly
+/// rounded fused one, where WebAssembly has no relaxed SIMD (Safari): several
+/// times faster, but no longer homr's results bit for bit (as onnxruntime-web's
+/// aren't). For a host that prefers speed to exactness; off unless set
+/// (`encoder_set_unfused`). One flag for every thread: they share memory.
+#[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
+pub(crate) static UNFUSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
+pub(super) fn unfused() -> bool {
+    UNFUSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(super) unsafe fn product(
     a: &[f32],
     b: &[f32],
@@ -310,9 +325,31 @@ pub(super) unsafe fn product(
 ) {
     #[cfg(all(target_arch = "wasm32", not(target_feature = "relaxed-simd")))]
     {
-        product_strict(a, b, out, m, k, n, bias);
+        if unfused() {
+            product_tiles(a, b, out, m, k, n, bias, |a, b, c| {
+                f32x4_add(f32x4_mul(f32x4_splat(a), b), c)
+            });
+        } else {
+            product_strict(a, b, out, m, k, n, bias);
+        }
     }
     #[cfg(not(all(target_arch = "wasm32", not(target_feature = "relaxed-simd"))))]
+    product_tiles(a, b, out, m, k, n, bias, |a, b, c| madd(a, b, c));
+}
+
+/// Four rows by sixteen columns, ascending K, with the given multiply-add.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+unsafe fn product_tiles(
+    a: &[f32],
+    b: &[f32],
+    out: &mut [f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    bias: Option<&[f32]>,
+    madd: impl Fn(f32, V, V) -> V,
+) {
     for row in (0..m).step_by(4) {
         for col in (0..n).step_by(16) {
             let mut acc = [zero(); 16];
@@ -408,7 +445,9 @@ pub(super) unsafe fn product_prechecked(
     weights_bounded: bool,
 ) {
     #[cfg(not(target_feature = "relaxed-simd"))]
-    if weights_bounded && bounded_values(a) {
+    if unfused() {
+        product(a, b, out, m, k, n, bias);
+    } else if weights_bounded && bounded_values(a) {
         product_normal_batched(a, b, out, m, k, n, bias);
     } else {
         product_strict_inner::<false>(a, b, out, m, k, n, bias);

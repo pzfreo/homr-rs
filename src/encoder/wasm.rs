@@ -57,6 +57,24 @@ pub extern "C" fn encoder_fused_simd_supported() -> u32 {
     crate::decoder::fused_simd_supported() as u32
 }
 
+/// The encoder's products with a plain multiply-then-add (1) or exactly as
+/// homr (0, the default); see `simd::UNFUSED`. Returns 1 where that applies
+/// (a build without relaxed SIMD), else 0: a relaxed-SIMD build is fast and
+/// exact as it is.
+#[no_mangle]
+pub extern "C" fn encoder_set_unfused(on: u32) -> u32 {
+    #[cfg(not(target_feature = "relaxed-simd"))]
+    {
+        super::simd::UNFUSED.store(on != 0, std::sync::atomic::Ordering::Relaxed);
+        1
+    }
+    #[cfg(target_feature = "relaxed-simd")]
+    {
+        let _ = on;
+        0
+    }
+}
+
 /// Pack a GPU plan from a live, already validated encoder. Read-only to model.
 /// # Safety
 /// `model` is a live encoder_load handle; release the result once with plan_drop.
