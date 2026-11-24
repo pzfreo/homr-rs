@@ -417,12 +417,26 @@ pub fn prepare_staff(
     regions: &Regions,
 ) -> Result<PreparedStaff, String> {
     let u = unit_size(staff);
+    // A neighbour's limits trim the margin, never the staff itself: a bigger
+    // staff beside this one (two columns) is above and below it at once, and
+    // the crop came out upside down. (As homr where they don't overlap.)
     let region = [
         py_int(staff.min_x - 2.0 * u),
-        py_int((staff.min_y - 4.0 * u).max(regions.above(staff.min_y))),
+        py_int(
+            (staff.min_y - 4.0 * u)
+                .max(regions.above(staff.min_y))
+                .min(staff.min_y),
+        ),
         py_int(staff.max_x + 2.0 * u),
-        py_int((staff.max_y + 4.0 * u).min(regions.below(staff.max_y))),
+        py_int(
+            (staff.max_y + 4.0 * u)
+                .min(regions.below(staff.max_y))
+                .max(staff.max_y),
+        ),
     ];
+    if region[3] <= region[1] || region[2] <= region[0] {
+        return Err(format!("staff has no area: {region:?}"));
+    }
     let dims = canvas_size(region[3] - region[1], region[2] - region[0]);
     let scale = dims.1 as f64 / (region[3] - region[1]) as f64;
     let (rw, rh) = (
@@ -493,4 +507,37 @@ pub fn to_model_input(canvas: &Gray) -> Vec<f32> {
         .iter()
         .map(|&v| ((v as f64 / 255.0 - 0.7931) / 0.1738) as f32)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::staff::StaffPoint;
+
+    fn staff(x0: f64, x1: f64, top: f64, gap: f64) -> Staff {
+        let grid = (0..=((x1 - x0) / 20.0) as usize)
+            .map(|i| StaffPoint {
+                x: x0 + 20.0 * i as f64,
+                y: (0..5).map(|l| top + gap * l as f64).collect(),
+                angle: 0.0,
+            })
+            .collect();
+        Staff::from_grid(grid).unwrap()
+    }
+
+    // A bigger staff beside this one (a landscape page in two columns), above
+    // and below it at once: its bottom, taken as the limit above this staff,
+    // was below the limit below it. The crop came out upside down and its size
+    // overflowed ("capacity overflow", Windows Firefox, 23 Nov 2026).
+    #[test]
+    fn a_neighbour_overlapping_the_staff_doesnt_turn_its_crop_upside_down() {
+        let page = Gray::new(1600, 800, 255);
+        let me = staff(100.0, 700.0, 300.0, 10.0);
+        let beside = staff(900.0, 1500.0, 290.0, 25.0);
+        let regions = Regions {
+            centers: vec![(me.min_y, me.max_y), (beside.min_y, beside.max_y)],
+        };
+        let prepared = prepare_staff(&me, &page, &regions).unwrap();
+        assert!(prepared.canvas.w > 0 && prepared.canvas.h > 0);
+    }
 }
