@@ -243,12 +243,54 @@ fn remove_surroundings(
 /// beside the paper which have another color than the paper, e.g. a desk, are painted
 /// in the paper color.
 pub fn autocrop(img: &Bgr) -> (Bgr, (usize, usize)) {
-    let gray = bgr_to_gray(img);
+    autocrop_at(img, grey_histogram(img), None)
+}
+
+/// The histogram of the first channel, as homr counts it.
+fn grey_histogram(img: &Bgr) -> [u64; 256] {
     let mut hist = [0u64; 256];
     for p in img.data.as_chunks::<3>().0 {
         hist[p[0] as usize] += 1;
     }
-    let dominant = (0..256).fold(0, |b, i| if hist[i] > hist[b] { i } else { b }) as i64;
+    hist
+}
+
+/// The paper's grey level, when it is not the commonest in the photo: the
+/// brightest level that at least 5% of the pixels are near (a page lying on a
+/// desk that fills more of the frame than the paper does). None when the
+/// commonest level is already the brightest, or no brighter level has that many.
+fn brighter_paper(hist: &[u64; 256]) -> Option<i64> {
+    let total: u64 = hist.iter().sum();
+    let near = |i: usize| -> u64 { hist[i.saturating_sub(3)..=(i + 3).min(255)].iter().sum() };
+    let commonest = (0..256).fold(0, |b, i| if hist[i] > hist[b] { i } else { b });
+    let peak = (commonest + 16..256).rev().find(|&i| {
+        near(i) * 20 >= total
+            && hist[i] >= hist[i.saturating_sub(1)]
+            && hist[i] >= hist[(i + 1).min(255)]
+    })?;
+    // the top of that mode
+    let lo = peak.saturating_sub(3);
+    let top = (lo..=(peak + 3).min(255)).fold(lo, |b, i| if hist[i] > hist[b] { i } else { b });
+    Some(top as i64)
+}
+
+/// autocrop for a photo it left whole: the paper taken as the brightest large
+/// grey level, not the commonest. A page on a desk that fills more of the frame
+/// than the page does took the desk for the paper, cut nothing, and the page,
+/// shrunk with the desk to the 1920 pixels homr works at, came out too small to
+/// read (the page under about half the frame's width). None if that finds no
+/// other paper, or crops nothing either.
+pub fn autocrop_brightest(img: &Bgr) -> Option<(Bgr, (usize, usize))> {
+    let hist = grey_histogram(img);
+    let paper = brighter_paper(&hist)?;
+    let (crop, at) = autocrop_at(img, hist, Some(paper));
+    (crop.w != img.w || crop.h != img.h).then_some((crop, at))
+}
+
+fn autocrop_at(img: &Bgr, hist: [u64; 256], paper: Option<i64>) -> (Bgr, (usize, usize)) {
+    let gray = bgr_to_gray(img);
+    let dominant = paper
+        .unwrap_or_else(|| (0..256).fold(0, |b, i| if hist[i] > hist[b] { i } else { b }) as i64);
     let t = dominant - 30;
     let thresh: Vec<u8> = gray
         .data
@@ -820,6 +862,67 @@ mod autocrop_tests {
             h,
             data: (0..w * h).flat_map(|_| c).collect(),
         }
+    }
+
+    fn fill(img: &mut Bgr, (x0, y0, x1, y1): (usize, usize, usize, usize), c: [u8; 3]) {
+        for y in y0..y1 {
+            for x in x0..x1 {
+                img.data[(y * img.w + x) * 3..(y * img.w + x) * 3 + 3].copy_from_slice(&c);
+            }
+        }
+    }
+
+    /// A white page with some dark lines, on a grey desk: the page's share of the frame is `share` (of the width).
+    fn page_on_desk(w: usize, h: usize, share: f64) -> (Bgr, (usize, usize, usize, usize)) {
+        let mut img = flat(w, h, [107, 125, 138]);
+        let (pw, ph) = ((w as f64 * share) as usize, (h as f64 * share) as usize);
+        let page = (
+            (w - pw) / 2,
+            (h - ph) / 2,
+            (w - pw) / 2 + pw,
+            (h - ph) / 2 + ph,
+        );
+        fill(&mut img, page, [235, 235, 235]);
+        for k in 0..6 {
+            let y = page.1 + ph / 8 + k * ph / 8;
+            fill(
+                &mut img,
+                (page.0 + pw / 10, y, page.2 - pw / 10, y + 2),
+                [20, 20, 20],
+            );
+        }
+        (img, page)
+    }
+
+    #[test]
+    fn a_page_on_a_desk_that_fills_more_of_the_frame_is_cropped_with_the_brightest_paper() {
+        // The page is a third of the frame's width (a tenth of its area): the desk is the commonest grey.
+        let (img, page) = page_on_desk(600, 450, 0.33);
+        let (plain, at) = autocrop(&img);
+        assert_eq!(
+            (plain.w, plain.h, at),
+            (img.w, img.h, (0, 0)),
+            "homr's autocrop leaves it whole"
+        );
+        let (crop, (x, y)) = autocrop_brightest(&img).expect("the page is cropped");
+        // the page and its margin, no more
+        assert!(x <= page.0 && y <= page.1 && x + crop.w >= page.2 && y + crop.h >= page.3);
+        assert!(
+            crop.w < page.2 - page.0 + 60 && crop.h < page.3 - page.1 + 60,
+            "{}x{}",
+            crop.w,
+            crop.h
+        );
+    }
+
+    #[test]
+    fn photos_that_autocrop_already_handles_are_left_to_it() {
+        // The page fills most of the frame: the commonest grey is the paper.
+        let (img, _) = page_on_desk(600, 450, 0.8);
+        assert!(autocrop_brightest(&img).is_none());
+        // A flat white page (a PDF drawn): nothing brighter.
+        let white = flat(300, 400, [255, 255, 255]);
+        assert!(autocrop_brightest(&white).is_none());
     }
 
     #[test]
